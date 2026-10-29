@@ -268,7 +268,7 @@ static NSString *agCameraStateName(AGCameraState st) {
     return @"UNKNOWN";
 }
 
-// ==================== Dopamine (Rootless) & Relaxin (RootHide) 动态路径解析器 ====================
+// ==================== Dopamine (无根/隐根) & Relaxin (RootHide) 零依赖内存自定位解析器 ====================
 typedef const char *(*ag_jbroot_fn)(const char *path);
 static NSString *agJBRootPath(NSString *relativePath) {
     if (!relativePath || relativePath.length == 0) return @"/var/jb";
@@ -276,25 +276,36 @@ static NSString *agJBRootPath(NSString *relativePath) {
     static ag_jbroot_fn sJBRootFunc = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sJBRootFunc = (ag_jbroot_fn)dlsym(RTLD_DEFAULT, "jbroot");
-        if (!sJBRootFunc) {
-            void *rhHandle = dlopen("libroothide.dylib", RTLD_LAZY);
-            if (rhHandle) {
-                sJBRootFunc = (ag_jbroot_fn)dlsym(rhHandle, "jbroot");
+        // 1. 优先通过 dladdr 读取插件自身在内存中的真实物理路径（无视任何第三方 App 沙盒限制，0 外部库依赖）
+        Dl_info selfInfo;
+        memset(&selfInfo, 0, sizeof(selfInfo));
+        if (dladdr((const void *)&agJBRootPath, &selfInfo) != 0 && selfInfo.dli_fname) {
+            NSString *dylibPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
+            NSRange jbRange = [dylibPath rangeOfString:@".jbroot-"];
+            if (jbRange.location != NSNotFound) {
+                NSRange slashRange = [dylibPath rangeOfString:@"/" options:0 range:NSMakeRange(jbRange.location, dylibPath.length - jbRange.location)];
+                sDetectedJBRoot = (slashRange.location != NSNotFound) ? [dylibPath substringToIndex:slashRange.location] : dylibPath;
             }
         }
-        if (sJBRootFunc) {
-            const char *cRoot = sJBRootFunc("/");
-            if (cRoot && strlen(cRoot) > 1) {
-                NSString *r = [NSString stringWithUTF8String:cRoot];
-                while ([r hasSuffix:@"/"] && r.length > 1) {
-                    r = [r substringToIndex:r.length - 1];
-                }
-                sDetectedJBRoot = r;
-            }
-        }
+        // 2. 尝试符号解析与相对路径加载
         if (!sDetectedJBRoot) {
-            // 扫描 Relaxin / RootHide 动态随机根目录 (/var/containers/Bundle/Application/.jbroot-*)
+            sJBRootFunc = (ag_jbroot_fn)dlsym(RTLD_DEFAULT, "jbroot");
+            if (!sJBRootFunc) {
+                void *rhHandle = dlopen("@loader_path/.jbroot/usr/lib/libroothide.dylib", RTLD_LAZY);
+                if (!rhHandle) rhHandle = dlopen("libroothide.dylib", RTLD_LAZY);
+                if (rhHandle) sJBRootFunc = (ag_jbroot_fn)dlsym(rhHandle, "jbroot");
+            }
+            if (sJBRootFunc) {
+                const char *cRoot = sJBRootFunc("/");
+                if (cRoot && strlen(cRoot) > 1) {
+                    NSString *r = [NSString stringWithUTF8String:cRoot];
+                    while ([r hasSuffix:@"/"] && r.length > 1) r = [r substringToIndex:r.length - 1];
+                    sDetectedJBRoot = r;
+                }
+            }
+        }
+        // 3. 非沙盒进程兜底目录扫描
+        if (!sDetectedJBRoot) {
             NSString *bundleBase = @"/var/containers/Bundle/Application";
             NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundleBase error:nil];
             for (NSString *item in items) {
@@ -304,8 +315,9 @@ static NSString *agJBRootPath(NSString *relativePath) {
                 }
             }
         }
+        // 4. Dopamine 标准无根版默认路径
         if (!sDetectedJBRoot) {
-            sDetectedJBRoot = @"/var/jb"; // 默认回退至 Dopamine Rootless 路径
+            sDetectedJBRoot = @"/var/jb";
         }
     });
 
@@ -792,6 +804,7 @@ static NSString *geminiPrefsFilePath(void) {
 static __thread BOOL sIsInternalPrefsFileRead = NO;
 
 static void reloadGeminiPrefsCache(void) {
+    sIsInternalPrefsFileRead = YES;
     NSArray<NSString *> *paths = @[
         agJBRootPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
         @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist",
@@ -813,6 +826,7 @@ static void reloadGeminiPrefsCache(void) {
             }
         }
     }
+    sIsInternalPrefsFileRead = NO;
     if (newestDict) {
         [merged addEntriesFromDictionary:newestDict];
     }
@@ -968,6 +982,8 @@ static void saveGeminiPrefs(NSDictionary *dict) {
         CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     });
 
+    sIsInternalPrefsFileRead = YES;
+    NSString *detectedRoot = agJBRootPath(@"/");
     NSArray<NSString *> *writePaths = @[
         agJBRootPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
         @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist",
@@ -976,11 +992,16 @@ static void saveGeminiPrefs(NSDictionary *dict) {
     [[NSFileManager defaultManager] removeItemAtPath:@"/tmp/com.custom.geminisirioverlay.plist" error:nil];
     for (NSString *wp in writePaths) {
         NSString *dir = [wp stringByDeletingLastPathComponent];
+        // 在 Relaxin / 多巴胺隐根下，若 .jbroot-XXXX 内的 Preferences 目录尚未创建则自动补齐（绝不在隐根机上创建 /var/jb）
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dir] && [detectedRoot containsString:@".jbroot-"] && [wp hasPrefix:detectedRoot]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        }
         if ([[NSFileManager defaultManager] fileExistsAtPath:dir]) {
             [immutableCopy writeToFile:wp atomically:YES];
             chmod([wp UTF8String], 0644);
         }
     }
+    sIsInternalPrefsFileRead = NO;
 
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)kAGPrefsChangedNotification,
@@ -21881,7 +21902,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    if (path && agIsAntiDetectionShieldActive()) {
+    if (!sIsInternalPrefsFileRead && path && agIsAntiDetectionShieldActive()) {
         if (agIsSuspiciousJailbreakPath([path UTF8String])) {
             return NO;
         }
@@ -21890,7 +21911,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
-    if (path && agIsAntiDetectionShieldActive()) {
+    if (!sIsInternalPrefsFileRead && path && agIsAntiDetectionShieldActive()) {
         if (agIsSuspiciousJailbreakPath([path UTF8String])) {
             return NO;
         }
@@ -22756,6 +22777,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
 %ctor {
     @autoreleasepool {
+        (void)agJBRootPath(@"/"); // 在挂载任何反检测 Hook 前预先锁定真实越狱根目录
         NSBundle *mainBundle = [NSBundle mainBundle];
         NSString *bundleID = [mainBundle bundleIdentifier] ?: @"";
         NSString *execPath = [[mainBundle executablePath] lowercaseString] ?: @"";
