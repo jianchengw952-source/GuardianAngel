@@ -1,0 +1,9 @@
+#!/bin/sh
+# 同时兼容 Dopamine (Rootless /var/jb) 与 Relaxin (RootHide .jbroot-*)
+for helper in /var/jb/usr/bin/AngelCameraHelper /var/containers/Bundle/Application/.jbroot-*/usr/bin/AngelCameraHelper; do
+    if [ -f "$helper" ]; then
+        chown root:wheel "$helper" 2>/dev/null || true
+        chmod 6755 "$helper" 2>/dev/null || true
+    fi
+done
+exit 0
