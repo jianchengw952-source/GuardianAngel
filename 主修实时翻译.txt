@@ -7024,17 +7024,66 @@ static void agExecuteWeChatCommandDict(NSDictionary *dict, NSInteger retryCount)
                         return;
                     }
                 } else {
-                    // 默认：微信扫一扫
+                    // 默认：微信扫一扫（与付款码对齐：第一优先级直接 Push 原生扫码视图控制器）
                     BOOL scanHandled = NO;
-                    if ([appDel respondsToSelector:@selector(application:performActionForShortcutItem:completionHandler:)]) {
-                        UIApplicationShortcutItem *item = [[UIApplicationShortcutItem alloc] initWithType:@"com.tencent.xin.shortcut.scan" localizedTitle:@"扫一扫"];
-                        [appDel application:app performActionForShortcutItem:item completionHandler:^(BOOL succeeded) {}];
-                        scanHandled = YES;
+                    if (!nav) {
+                        for (UIWindow *w in app.windows) {
+                            if (!w.hidden && w.rootViewController) {
+                                UIViewController *r = w.rootViewController;
+                                if ([r isKindOfClass:[UINavigationController class]]) { nav = (UINavigationController *)r; break; }
+                                if ([r isKindOfClass:[UITabBarController class]]) {
+                                    UIViewController *s = ((UITabBarController *)r).selectedViewController;
+                                    if ([s isKindOfClass:[UINavigationController class]]) { nav = (UINavigationController *)s; break; }
+                                }
+                            }
+                        }
                     }
-                    Class scanVCCls = objc_getClass("CameraScannerViewController") ?: objc_getClass("NewQRCodeScanner");
-                    if (!scanHandled && scanVCCls && nav && ![nav.topViewController isKindOfClass:scanVCCls]) {
-                        UIViewController *scanVC = [[scanVCCls alloc] init];
-                        if (scanVC) [nav pushViewController:scanVC animated:YES];
+                    NSArray<NSString *> *scanClassNames = @[@"CameraScanViewController", @"CameraScannerViewController", @"WCScanViewController", @"BaseScanViewController"];
+                    for (NSString *clsName in scanClassNames) {
+                        Class candidateCls = objc_getClass([clsName UTF8String]);
+                        if (candidateCls && [candidateCls isSubclassOfClass:[UIViewController class]] && nav) {
+                            if ([nav.topViewController isKindOfClass:candidateCls]) {
+                                scanHandled = YES;
+                                break;
+                            }
+                            @try {
+                                UIViewController *scanVC = nil;
+                                SEL initModeSel = sel_registerName("initWithCameraMode:");
+                                if ([candidateCls instancesRespondToSelector:initModeSel]) {
+                                    scanVC = ((id(*)(id, SEL, NSInteger))objc_msgSend)([candidateCls alloc], initModeSel, 0);
+                                } else {
+                                    scanVC = [[candidateCls alloc] init];
+                                }
+                                if (scanVC) {
+                                    scanVC.hidesBottomBarWhenPushed = YES;
+                                    [nav pushViewController:scanVC animated:YES];
+                                    scanHandled = YES;
+                                    break;
+                                }
+                            } @catch (NSException *e) {}
+                        }
+                    }
+                    // 第二优先级：调用微信内部 MMURLHandler 路由打开 weixin://dl/scan
+                    if (!scanHandled) {
+                        @try {
+                            NSURL *scanURL = [NSURL URLWithString:@"weixin://dl/scan"];
+                            Class urlHandlerCls = objc_getClass("MMURLHandler");
+                            if (urlHandlerCls && [urlHandlerCls respondsToSelector:sel_registerName("sharedInstance")]) {
+                                id handler = ((id(*)(id, SEL))objc_msgSend)(urlHandlerCls, sel_registerName("sharedInstance"));
+                                SEL handleSel = sel_registerName("handleURL:");
+                                if (handler && [handler respondsToSelector:handleSel]) {
+                                    ((void(*)(id, SEL, id))objc_msgSend)(handler, handleSel, scanURL);
+                                    scanHandled = YES;
+                                }
+                            }
+                        } @catch (NSException *e) {}
+                    }
+                    // 第三优先级：ShortcutItem 兜底（同时兼容 qrscan 与 scan）
+                    if (!scanHandled && [appDel respondsToSelector:@selector(application:performActionForShortcutItem:completionHandler:)]) {
+                        UIApplicationShortcutItem *item1 = [[UIApplicationShortcutItem alloc] initWithType:@"com.tencent.xin.shortcut.qrscan" localizedTitle:@"扫一扫"];
+                        [appDel application:app performActionForShortcutItem:item1 completionHandler:^(BOOL succeeded) {}];
+                        UIApplicationShortcutItem *item2 = [[UIApplicationShortcutItem alloc] initWithType:@"com.tencent.xin.shortcut.scan" localizedTitle:@"扫一扫"];
+                        [appDel application:app performActionForShortcutItem:item2 completionHandler:^(BOOL succeeded) {}];
                     }
                     agWriteWeChatResult(YES, @"已为您打开微信扫一扫");
                     return;
@@ -12473,33 +12522,33 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if ([inputTrans isKindOfClass:[NSDictionary class]] && [inputTrans[@"text"] isKindOfClass:[NSString class]]) {
             NSString *userDelta = inputTrans[@"text"];
             if (userDelta.length > 0) {
-                self.isMutedByLocalBargeIn = NO;
-                if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
-                    NSString *cleanUD = [userDelta stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                    if ([cleanUD isEqualToString:@"¿Qué"] || [cleanUD isEqualToString:@"¿Qué?"] || [cleanUD containsString:@"de 4 a 2"] || [cleanUD containsString:@"सर"]) {
-                        agLiveDiagLog(@"ECHO_SUPPRESS", @"Suppressed speaker echo hallucination delta: '%@'", userDelta);
-                        return;
-                    }
-                }
-                // 检测云端是否把中文空耳听成了韩文、日文假名或西语反问号；若是且本地苹果 zh-CN 芯片已识别出中文，自动替换为纯正中文！
+                NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+                BOOL isAIStillPlaying = (self.pendingPlayBuffersCount > 0 || nowTs < self.aiPlaybackEndTime);
+
+                // 检测是否包含中文汉字
+                BOOL hasChineseChar = NO;
                 BOOL hasForeignGibberish = NO;
                 for (NSUInteger ci = 0; ci < userDelta.length; ci++) {
                     unichar ch = [userDelta characterAtIndex:ci];
-                    if ((ch >= 0xAC00 && ch <= 0xD7AF) || (ch >= 0x3040 && ch <= 0x30FF) || ch == 0x00BF || ch == 0x00A1) {
+                    if (ch >= 0x4E00 && ch <= 0x9FFF) {
+                        hasChineseChar = YES;
+                    } else if ((ch >= 0xAC00 && ch <= 0xD7AF) || (ch >= 0x3040 && ch <= 0x30FF) || ch == 0x00BF || ch == 0x00A1 || (ch >= 0x0900 && ch <= 0x097F)) {
                         hasForeignGibberish = YES;
-                        break;
                     }
                 }
-                if (hasForeignGibberish && self.lastNativeNeuralChineseText.length > 0) {
+                // 当 AI 正在播报或刚结束且麦克风无真实大音量人声时，直接丢弃云端幻听出的外语碎词（如 le 14h / tendo / ita / ¿Sí?）
+                if ((isAIStillPlaying || (nowTs - self.lastActiveMicDBTime > 0.8)) && !hasChineseChar) {
+                    if (self.lastNativeNeuralChineseText.length > 0 && (nowTs - self.lastActiveMicDBTime <= 0.8)) {
+                        userDelta = self.lastNativeNeuralChineseText;
+                        [self.currentVoiceQueryBuffer setString:@""];
+                    } else {
+                        agLiveDiagLog(@"ECHO_SUPPRESS", @"Suppressed non-Chinese echo/noise hallucination: '%@'", userDelta);
+                        return;
+                    }
+                } else if ((hasForeignGibberish || !hasChineseChar) && self.lastNativeNeuralChineseText.length > 0) {
                     agLiveDiagLog(@"ZH_OVERRIDE", @"Replaced foreign gibberish '%@' with local Apple zh-CN '%@'", userDelta, self.lastNativeNeuralChineseText);
                     userDelta = self.lastNativeNeuralChineseText;
                     [self.currentVoiceQueryBuffer setString:@""];
-                }
-
-                if (self.aiPlaybackEndTime > 0 && self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
-                    [self.pcmPlayerNode stop];
-                    [self.pcmPlayerNode play];
-                    self.aiPlaybackEndTime = 0;
                 }
                 NSMutableString *curTrans = [self currentTabTranscript];
                 if (!self.isLastTranscriptLineUser) {
@@ -12593,6 +12642,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     }
                 }
             }
+            self.isMutedByLocalBargeIn = NO;
             NSString *aiDelta = outputTrans[@"text"];
 // ====== 实时看屏推帧与防重复执行替换块 2 结束 ======
             if (aiDelta.length > 0) {
@@ -12818,16 +12868,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 门禁 2：声学能量校验（过去 0.55s 内麦克风真实音量必须 > -38.0dB，彻底排除 -107dB 静音延迟修字与 AI 喇叭回声！）
-                    BOOL hasRealHumanVoiceEnergy = ((now - strongSelf.lastActiveMicDBTime <= 0.55) && (strongSelf.lastActiveMicDB > -38.0f));
+                    // 门禁 2：严格声学同步校验（过去 0.12s 当下麦克风真实音量必须 > -34.0dB 且 AI 已播报 > 0.85s，彻底根除上一句尾字滞后引发的 -107dB 假打断！）
+                    BOOL hasImmediateHumanEnergy = ((now - strongSelf.lastActiveMicDBTime <= 0.12) && (strongSelf.lastActiveMicDB > -34.0f));
+                    BOOL hasRecentHumanEnergy    = ((now - strongSelf.lastActiveMicDBTime <= 0.55) && (strongSelf.lastActiveMicDB > -38.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
 
-                    if (isAIPlaying && hasRealHumanVoiceEnergy && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
+                    if (isAIPlaying && hasImmediateHumanEnergy && (now - strongSelf.aiTurnAudioStartTime > 0.85)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
 
                     // 原厂 Siri 级 0.25s 本地中文指令抢先触发（无需傻等国外服务器传回韩语/日语字幕）
-                    if (hasRealHumanVoiceEnergy && strongSelf.lastNativeNeuralChineseText.length >= 2) {
+                    if (hasRecentHumanEnergy && strongSelf.lastNativeNeuralChineseText.length >= 2) {
                         dispatch_async(dispatch_get_main_queue(), ^{
                             [NSObject cancelPreviousPerformRequestsWithTarget:strongSelf selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
                             [strongSelf performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.26];
@@ -13153,14 +13204,34 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
     AVAudioFrameCount inFrames = buffer.frameLength;
     double inSampleRate = buffer.format.sampleRate > 0 ? buffer.format.sampleRate : 48000.0;
-    NSData *copiedFloats = [NSData dataWithBytes:buffer.floatChannelData[0] length:inFrames * sizeof(float)];
+    const float *rawFloatPtr = buffer.floatChannelData[0];
 
-    // 【核心接入】将实时硬件麦克风音频流喂入苹果离线神经识别引擎，实现毫秒级人声开口检测
-    if (self.nativeNeuralVADRequest) {
-        @try {
-            [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
-        } @catch (NSException *e) {}
+    float sum = 0.0f;
+    float peakVal = 0.0f;
+    for (AVAudioFrameCount i = 0; i < inFrames; i++) {
+        float s = rawFloatPtr[i];
+        sum += s * s;
+        float absS = fabsf(s);
+        if (absS > peakVal) peakVal = absS;
     }
+    float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
+    float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
+
+    NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+    BOOL isAIPlayingNow = (self.pendingPlayBuffersCount > 0 || nowTs < self.aiPlaybackEndTime);
+
+    // 【防自听 + ANE 降温门控】：AI 播报期间仅当出现真实人声能量时才送入本地识别器，绝不让识别器听见喇叭回声
+    if (self.nativeNeuralVADRequest) {
+        BOOL shouldFeedNeural = (!isAIPlayingNow && (db > -48.0f || (nowTs - self.lastActiveMicDBTime < 1.2))) ||
+                                (isAIPlayingNow && db > -36.5f && peakDb > -22.5f);
+        if (shouldFeedNeural) {
+            @try {
+                [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
+            } @catch (NSException *e) {}
+        }
+    }
+
+    NSData *copiedFloats = [NSData dataWithBytes:rawFloatPtr length:inFrames * sizeof(float)];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.encodeQueue, ^{
@@ -13168,17 +13239,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if (!strongSelf || strongSelf.isDismissed) return;
 
         const float *floatSamples = (const float *)copiedFloats.bytes;
-        float sum = 0.0f;
-        float peakVal = 0.0f;
-        for (AVAudioFrameCount i = 0; i < inFrames; i++) {
-            float s = floatSamples[i];
-            sum += s * s;
-            float absS = fabsf(s);
-            if (absS > peakVal) peakVal = absS;
-        }
-
-        float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
-        float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
 
         strongSelf.micFramesSinceEngineStart++;
         if (strongSelf.micFramesSinceEngineStart == 1) {
@@ -13187,7 +13247,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                           (long)firstFrameMs, (unsigned int)inFrames, inSampleRate, db);
         }
 
-        NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
         if (db > -38.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
@@ -13214,12 +13273,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             NSUInteger idx0 = (NSUInteger)srcIdx;
             NSUInteger idx1 = MIN(idx0 + 1, (NSUInteger)(inFrames - 1));
             float rawSample = (float)((1.0 - (srcIdx - idx0)) * floatSamples[idx0] + (srcIdx - idx0) * floatSamples[idx1]);
-            // 【核心优化】保持 VoiceProcessingIO 硬件 AGC 归一化采样，采用微量平滑软饱和 (tanhf soft-knee) 杜绝硬削波失真与爆音
             float sample = tanhf(rawSample * 1.15f);
             outPtr[i] = (int16_t)(sample * 32767.0f);
         }
 
-        // 握手完成前存入环形缓冲，握手完成瞬间自动冲刷
         if (!strongSelf.isWebSocketConnected || !strongSelf.isSetupHandshakeCompleted) {
             @synchronized (strongSelf.wsPreRollPCMBuffer) {
                 [strongSelf.wsPreRollPCMBuffer appendData:pcm16Chunk];
@@ -13231,27 +13288,61 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             return;
         }
 
-        // 本地人声插话打断检测（自适应外放音量黄金分水岭：正常说话 -31.5dB 连续 3 帧立即秒断，远高于 -60dB 喇叭回声绝不自断）
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.40);
+        static NSMutableData *sPreBargeInRing = nil;
+        if (!sPreBargeInRing) sPreBargeInRing = [NSMutableData dataWithCapacity:8192];
+
+        // 【高灵敏人声插话打断】：2 帧 (~42ms) 极速响应 + 柔性衰减防断字 + 240ms 字头预录补偿
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.25);
         if (isAIPlaying && pastEchoGrace) {
             float curVol = [AVAudioSession sharedInstance].outputVolume;
-            float dbLimit = (curVol > 0.72f) ? -27.5f : -31.5f;
-            float peakLimit = (curVol > 0.72f) ? -14.5f : -17.5f;
+            float dbLimit   = (curVol > 0.75f) ? -32.5f : -36.5f;
+            float peakLimit = (curVol > 0.75f) ? -18.5f : -22.5f;
+
             if (db > dbLimit && peakDb > peakLimit) {
                 strongSelf.wsBargeInVoiceTicks++;
-                if (strongSelf.wsBargeInVoiceTicks >= 3) {
+                if (strongSelf.wsBargeInVoiceTicks >= 2) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
+                    isAIPlaying = NO;
+                    if (sPreBargeInRing.length > 0) {
+                        [strongSelf.outgoingPCMBuffer appendData:sPreBargeInRing];
+                        [sPreBargeInRing setLength:0];
+                    }
+                } else {
+                    [sPreBargeInRing appendData:pcm16Chunk];
+                    if (sPreBargeInRing.length > 7680) {
+                        [sPreBargeInRing replaceBytesInRange:NSMakeRange(0, sPreBargeInRing.length - 7680) withBytes:NULL length:0];
+                    }
                 }
             } else {
-                strongSelf.wsBargeInVoiceTicks = 0;
+                if (strongSelf.wsBargeInVoiceTicks > 0) {
+                    strongSelf.wsBargeInVoiceTicks--;
+                }
+                [sPreBargeInRing appendData:pcm16Chunk];
+                if (sPreBargeInRing.length > 7680) {
+                    [sPreBargeInRing replaceBytesInRange:NSMakeRange(0, sPreBargeInRing.length - 7680) withBytes:NULL length:0];
+                }
             }
         } else {
             strongSelf.wsBargeInVoiceTicks = 0;
+            if (!isAIPlaying && sPreBargeInRing.length > 0) {
+                [sPreBargeInRing setLength:0];
+            }
         }
 
-        // 持续稳定推送 16kHz 音频流（严禁发送 audioStreamEnd 关停流！）
-        [strongSelf.outgoingPCMBuffer appendData:pcm16Chunk];
-        if (strongSelf.outgoingPCMBuffer.length >= 1600) {
+        // 【核心零回声门控】：AI 播音且未打断期间，上行发送纯零静音帧（0能量），让云端 100% 听不到 AI 自己的声音
+        NSData *chunkToSend = pcm16Chunk;
+        if (isAIPlaying && !strongSelf.isMutedByLocalBargeIn) {
+            static NSData *sZeroSilenceTemplate = nil;
+            if (!sZeroSilenceTemplate || sZeroSilenceTemplate.length < pcm16Chunk.length) {
+                sZeroSilenceTemplate = [NSMutableData dataWithLength:MAX((NSUInteger)4096, pcm16Chunk.length)];
+            }
+            chunkToSend = [sZeroSilenceTemplate subdataWithRange:NSMakeRange(0, pcm16Chunk.length)];
+        }
+
+        // 刚触发打断时用 1600B 极速冲刷让云端立刻中止旧回复；日常流式用 3200B (100ms) 降低 50% 发包发热
+        NSUInteger flushThreshold = strongSelf.isMutedByLocalBargeIn ? 1600 : 3200;
+        [strongSelf.outgoingPCMBuffer appendData:chunkToSend];
+        if (strongSelf.outgoingPCMBuffer.length >= flushThreshold) {
             NSData *packet = [strongSelf.outgoingPCMBuffer copy];
             [strongSelf.outgoingPCMBuffer setLength:0];
             NSString *b64PCM = [packet base64EncodedStringWithOptions:0];
@@ -13269,7 +13360,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         }
     });
 }
-
 - (void)handleAudioSessionInterruption:(NSNotification *)note {
     NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     agLiveDiagLog(@"AUDIO_INTERRUPT", @"AVAudioSession interruption type=%lu", (unsigned long)type);
