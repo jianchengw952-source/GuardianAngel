@@ -12825,8 +12825,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 微调 2：仅拦截 <= -53.0f dB 的纯静音底噪（您可以随时微调 -53.0f 这个数字），保留极轻人声 0ms 瞬时打断！
-                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -53.0f));
+                    // 微调 2：仅拦截 <= -51.0f dB 的纯静音底噪（可随时微调 -51.0f），保留轻声说话 0ms 瞬时打断！
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -51.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
                     if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
@@ -13137,14 +13137,34 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
     AVAudioFrameCount inFrames = buffer.frameLength;
     double inSampleRate = buffer.format.sampleRate > 0 ? buffer.format.sampleRate : 48000.0;
-    NSData *copiedFloats = [NSData dataWithBytes:buffer.floatChannelData[0] length:inFrames * sizeof(float)];
+    const float *rawFloats = buffer.floatChannelData[0];
 
-    // 【核心接入】将实时硬件麦克风音频流喂入苹果离线神经识别引擎，实现毫秒级人声开口检测
-    if (self.nativeNeuralVADRequest) {
+    float sum = 0.0f;
+    float peakVal = 0.0f;
+    for (AVAudioFrameCount i = 0; i < inFrames; i++) {
+        float s = rawFloats[i];
+        sum += s * s;
+        float absS = fabsf(s);
+        if (absS > peakVal) peakVal = absS;
+    }
+    float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
+    float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
+    NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+
+    static NSTimeInterval sLastNonSilentTime = 0;
+    if (db > -55.0f) {
+        sLastNonSilentTime = nowTs;
+    }
+
+    // 【核心接入 + ANE 静音休眠降温】：只要有声音(db > -55dB)或刚说完话 0.85s 内，0毫秒原样喂入苹果本地神经引擎；
+    // 当处于 -60dB ~ -135dB 纯静音时暂停喂入死寂帧，让苹果神经引擎芯片休眠降温，0 损灵敏度！
+    if (self.nativeNeuralVADRequest && (db > -55.0f || (nowTs - sLastNonSilentTime <= 0.85))) {
         @try {
             [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
         } @catch (NSException *e) {}
     }
+
+    NSData *copiedFloats = [NSData dataWithBytes:rawFloats length:inFrames * sizeof(float)];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.encodeQueue, ^{
@@ -13152,17 +13172,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if (!strongSelf || strongSelf.isDismissed) return;
 
         const float *floatSamples = (const float *)copiedFloats.bytes;
-        float sum = 0.0f;
-        float peakVal = 0.0f;
-        for (AVAudioFrameCount i = 0; i < inFrames; i++) {
-            float s = floatSamples[i];
-            sum += s * s;
-            float absS = fabsf(s);
-            if (absS > peakVal) peakVal = absS;
-        }
-
-        float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
-        float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
 
         strongSelf.micFramesSinceEngineStart++;
         if (strongSelf.micFramesSinceEngineStart == 1) {
@@ -13171,8 +13180,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                           (long)firstFrameMs, (unsigned int)inFrames, inSampleRate, db);
         }
 
-        NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
-        if (db > -53.0f) {
+        if (db > -51.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
         }
@@ -16334,30 +16342,34 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                     }
                     cleanTarget = [cleanTarget stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-                    // 模式 A：智能价格比大小（兼容“最贵 / 贵的那个 / 贵的 / 价格最高” 或 “最便宜 / 便宜的那个 / 便宜的 / 最低价”）
+                    // 模式 A：智能价格比大小（兼容淘宝/拼多多“¥6999 1000+人付款 / 已售1万+”同行排版，40ms 一次点中，不触发二次截屏）
                     BOOL wantMostExpensive = ([cleanTarget containsString:@"最贵"] || [cleanTarget containsString:@"贵的"] || [cleanTarget isEqualToString:@"贵"] || [cleanTarget containsString:@"最高价"] || [cleanTarget containsString:@"价格最高"]);
                     BOOL wantCheapest      = ([cleanTarget containsString:@"最便宜"] || [cleanTarget containsString:@"便宜的"] || [cleanTarget isEqualToString:@"便宜"] || [cleanTarget containsString:@"最低价"] || [cleanTarget containsString:@"价格最低"]);
                     if (wantMostExpensive || wantCheapest) {
-                        NSRegularExpression *priceRe = [NSRegularExpression regularExpressionWithPattern:@"(?:¥|￥|\\$)?\\s*(\\d{2,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
+                        NSRegularExpression *explicitPriceRe = [NSRegularExpression regularExpressionWithPattern:@"(?:¥|￥|\\$)\\s*(\\d{2,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
+                        NSRegularExpression *generalPriceRe  = [NSRegularExpression regularExpressionWithPattern:@"(\\d{2,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
                         VNRecognizedTextObservation *extremePriceObs = nil;
                         double extremePriceVal = wantMostExpensive ? -1.0 : 1e12;
 
                         for (VNRecognizedTextObservation *obs in request.results) {
                             CGRect box = obs.boundingBox;
                             CGFloat screenY = (1.0 - CGRectGetMidY(box)) * sb.size.height;
-                            // 仅在商品列表主区域 (135pt ~ 底部栏上方 70pt) 提取价格
                             if (screenY < 135.0 || screenY > sb.size.height - 70.0) continue;
 
                             VNRecognizedText *top = [[obs topCandidates:1] firstObject];
                             NSString *s = top.string ?: @"";
-                            // 过滤付款人数、评价数、好评率、折扣、年份等非价格数字
-                            if ([s containsString:@"人"] || [s containsString:@"付款"] || [s containsString:@"已售"] ||
-                                [s containsString:@"评价"] || [s containsString:@"条"] || [s containsString:@"%"] ||
-                                [s containsString:@"折"] || [s containsString:@"km"] || [s containsString:@"万"]) {
+                            BOOL hasExplicitSymbol = ([s containsString:@"¥"] || [s containsString:@"￥"] || [s containsString:@"$"]);
+                            BOOL hasCurrencySign   = hasExplicitSymbol || [s containsString:@"元"] || [s containsString:@"到手"] || [s containsString:@"券后"];
+
+                            // 若行内无 ¥/￥ 符号，则过滤付款人数、评价数、好评率、折扣等非价格数字；若含 ¥/￥ 则直接精准提取 ¥ 后的价格数字
+                            if (!hasExplicitSymbol &&
+                                ([s containsString:@"人"] || [s containsString:@"付款"] || [s containsString:@"已售"] ||
+                                 [s containsString:@"评价"] || [s containsString:@"条"] || [s containsString:@"%"] ||
+                                 [s containsString:@"折"] || [s containsString:@"km"] || [s containsString:@"万"])) {
                                 continue;
                             }
-                            BOOL hasCurrencySign = ([s containsString:@"¥"] || [s containsString:@"￥"] || [s containsString:@"元"] || [s containsString:@"到手"] || [s containsString:@"起"]);
-                            NSArray<NSTextCheckingResult *> *pMatches = [priceRe matchesInString:s options:0 range:NSMakeRange(0, s.length)];
+                            NSRegularExpression *useRe = hasExplicitSymbol ? explicitPriceRe : generalPriceRe;
+                            NSArray<NSTextCheckingResult *> *pMatches = [useRe matchesInString:s options:0 range:NSMakeRange(0, s.length)];
                             for (NSTextCheckingResult *pm in pMatches) {
                                 if (pm.numberOfRanges > 1) {
                                     double val = [[s substringWithRange:[pm rangeAtIndex:1]] doubleValue];
@@ -17987,13 +17999,11 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
 
-    // 统一在同一次 VSync 垂直同步帧中更新所有视觉特效图层，60/120fps 满帧丝滑零卡顿
-    [self.cardBgCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
-    [self.orbCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
-    [self.waveCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
+    // 全屏跑马灯始终保持 60/120fps 满帧丝滑渲染
     [self stepMarqueeAnimationWithPhase:self.wavePhase voiceAmp:self.currentVoiceAmplitude];
 
     if (self.isMiniSummonActive && self.miniSummonView && !self.miniSummonView.hidden) {
+        // 小胶囊模式下：满帧渲染小胶囊，暂停对已隐藏(hidden=YES)的大主界面进行后台空算绘图
         [self.miniSummonView stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
         if ([[NSDate date] timeIntervalSince1970] >= self.miniCaptionLockUntilTime) {
             if (self.currentVoiceQueryBuffer.length > 0) {
@@ -18004,25 +18014,30 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                 self.miniSummonView.captionLabel.text = [NSString stringWithFormat:@"🔊 %@", cleanRep];
             }
         }
-    }
+    } else if (self.overlayWindow.capsuleWrapper && !self.overlayWindow.capsuleWrapper.hidden) {
+        // 大主界面展开时：100% 满帧渲染大主界面背景、3D 灵动球、双轨声波与音柱
+        [self.cardBgCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
+        [self.orbCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
+        [self.waveCanvas stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
 
-    NSArray<NSNumber *> *idleScales = @[@(0.55), @(0.85), @(0.62), @(0.88), @(0.55)];
-    NSArray<NSNumber *> *weights    = @[@(0.65), @(1.00), @(0.82), @(0.96), @(0.65)];
-    for (int i = 0; i < self.waveBars.count; i++) {
-        UIView *bar = self.waveBars[i];
-        if (bar.hidden) continue;
-        if (rawTarget <= 0.01) {
-            CGFloat idleSy = [idleScales[i % idleScales.count] floatValue];
-            bar.layer.transform = CATransform3DMakeScale(1.0, idleSy, 1.0);
-        } else {
-            CGFloat w = [weights[i % weights.count] floatValue];
-            CGFloat waveMod = 0.78 + 0.22 * sin(self.wavePhase * 3.2 + i * 1.1);
-            CGFloat sy = MAX(0.40, MIN(1.42, 0.40 + rawTarget * 1.05 * w * waveMod));
-            bar.layer.transform = CATransform3DMakeScale(1.0, sy, 1.0);
+        NSArray<NSNumber *> *idleScales = @[@(0.55), @(0.85), @(0.62), @(0.88), @(0.55)];
+        NSArray<NSNumber *> *weights    = @[@(0.65), @(1.00), @(0.82), @(0.96), @(0.65)];
+        for (int i = 0; i < self.waveBars.count; i++) {
+            UIView *bar = self.waveBars[i];
+            if (bar.hidden) continue;
+            if (rawTarget <= 0.01) {
+                CGFloat idleSy = [idleScales[i % idleScales.count] floatValue];
+                bar.layer.transform = CATransform3DMakeScale(1.0, idleSy, 1.0);
+            } else {
+                CGFloat w = [weights[i % weights.count] floatValue];
+                CGFloat waveMod = 0.78 + 0.22 * sin(self.wavePhase * 3.2 + i * 1.1);
+                CGFloat sy = MAX(0.40, MIN(1.42, 0.40 + rawTarget * 1.05 * w * waveMod));
+                bar.layer.transform = CATransform3DMakeScale(1.0, sy, 1.0);
+            }
         }
+        CGFloat orbScale = (rawTarget <= 0.01) ? 1.0 : (1.0 + MIN(0.16, rawTarget * 0.18));
+        self.aiOrbView.layer.transform = CATransform3DMakeScale(orbScale, orbScale, 1.0);
     }
-    CGFloat orbScale = (rawTarget <= 0.01) ? 1.0 : (1.0 + MIN(0.16, rawTarget * 0.18));
-    self.aiOrbView.layer.transform = CATransform3DMakeScale(orbScale, orbScale, 1.0);
 
     [CATransaction commit];
 }
