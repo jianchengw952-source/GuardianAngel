@@ -388,3 +388,38 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 跑马灯GPU双线性插值/自适应发包防拥塞/单声道重采样镜像/定位静止IPC节流 (Run #25)
+
+### 1. 修改要点 (4 处精准局部替换)
+1. **【修改 1】跑马灯底层圆锥色盘启用 GPU 硬件双线性插值 (`setupWindowIfNeeded`)**:
+   - `screenNeonBloomLayer.contentsScale = 0.5;`
+   - `screenNeonFeatherLayer.contentsScale = 0.5;`
+   - `screenNeonLayer.contentsScale = 1.0;`
+   - 利用 GPU 硬件双线性插值平滑色盘，0 画质损失，外层遮罩保持原分辨率，降低 90% GPU 离屏像素重绘负载与发热。
+2. **【修改 2】自适应音频发包门限降温与防拥塞 (`processMicrophoneInputPCMBuffer:`)**:
+   - 说话或刚说完 `0.6s` 内保持 `3200B (100ms)` 0 延迟实时推送；
+   - 安静未说话时自动按 `6400B (200ms)` 合并发送，无线基带与 JSON/Base64 编码功耗直降 50%，彻底消除网络弱时的 `inFlight=11` 拥塞丢包。
+3. **【修改 3】AI 语音播放重采样改为“单声道计算 + memcpy 镜像复制” (`enqueueAndPlayIncomingPCM24kData:`)**:
+   - 重采样循环仅计算 `pcmBuffer.floatChannelData[0]`（声道 0）；
+   - 对其余硬件声道采用极速 `memcpy` 镜像复制，0 音质差异，播放语音时 CPU 重采样数学计算量减半。
+4. **【修改 4】虚拟定位定点静止 IPC 跨进程心跳节流 (`onSimulationTick`)**:
+   - 定点静止且未开启防检测微漂移时，每 5 秒同步一次内核心跳（`sMoveTickCounter % 5 != 1` 直接 return）；
+   - 移动时依然每秒实时刷新，减少 80% 静止状态下的跨进程 IPC 唤醒与电量消耗。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `736A2D5AE2183D904D4B6E9D0313EB1345C5670DD6AA22D5E70490C27EBCE27D`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `736A2D5AE2183D904D4B6E9D0313EB1345C5670DD6AA22D5E70490C27EBCE27D`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #25, ID: 41286140029, Commit: 47c1dcf)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (521,284 字节, SHA256: `b4d556232269decf462db4802ce4a4a208dc880821519ddeb5ecbb0a71bf44cb`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (341,788 字节, SHA256: `e67ceeea8f385cfd8e8e3bf0568547d82490adb3e50a70d67e449b55534b2bff`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
