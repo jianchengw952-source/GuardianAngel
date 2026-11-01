@@ -466,3 +466,35 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 纯文字cleanStr消除句号游标吞首字/1.5s打断旧包静默锁/完整本地中文优先匹配 (Run #28)
+
+### 1. 修改要点 (3 处精准微调)
+1. **【微调点 1】存入剔除标点后的纯文字 cleanStr (`startNativeAppleNeuralVADIfNeeded`)**:
+   - `strongSelf.lastNativeNeuralChineseText = cleanStr;`；
+   - 并在 `curLen < strongSelf.lastConsumedNeuralCharOffset` 时重置游标为 0，彻底消除苹果识别器自动删改句号导致游标偏移吞掉第一个字的顽疾。
+2. **【微调点 2】打断瞬间开启 1.5s 旧语音静默锁与防腰斩保护 (`triggerNativeSiriGradeInstantBargeIn:` 与 `handleIncomingWebSocketJSON:`)**:
+   - 在打断瞬间 (`triggerNativeSiriGradeInstantBargeIn:`) 设置 `self.isMutedByLocalBargeIn = YES; self.bargeInMuteTimestamp = now;`，拦截网络半路上残留的旧音频；
+   - 在云端确认打断 (`serverContent[@"interrupted"]`) 时复位 `self.isMutedByLocalBargeIn = NO;`；
+   - 在 `outputTranscription` 分支增加开口中保护：若 `self.neuralUserSpeakingActive && (nowTs - self.lastNeuralSpeechActiveTime < 0.85)`，直接 return 忽略残留包，绝不提前清空用户正在说的半句话；
+   - 若本地识别中文比云端文本更长，优先执行本地完整中文指令；
+   - 仅在用户整句说完且 AI 真正回复本轮时，才安全推进游标同步。
+3. **【微调点 3】优先选用字数更完整的识别结果 (`checkDeferredVoiceLocalCommand`)**:
+   - 若用户打断时苹果本地 zh-CN 识别出的字数比云端更完整（如本地听全了“返回桌面”，而云端只抓到了“8 面”），优先采用本地完整中文匹配本地指令，彻底解决打断时云端漏听前半截导致的指令失效问题。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `6bbad7d4bb2ea4821212c003403fd445e25714c665031d751a9222a26325372f`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `6bbad7d4bb2ea4821212c003403fd445e25714c665031d751a9222a26325372f`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #28, ID: 41292872671, Commit: fac5162)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (525800 字节, SHA256: `214da7fb3ecf9455f8b89f16a524a00e661af342b5c0bb748e098461ab0869fc`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (342784 字节, SHA256: `2ae0d98042c220cec5affbfad6908655dd3caa9f69013ce1eeda7f18d6e1bc2b`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
