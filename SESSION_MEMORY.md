@@ -68,6 +68,29 @@
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
 
+---
+
+## 2026-11-01: 语音识别偏移量消费机制补齐与纯正 XZ 校验分发 (Run #10)
+
+### 1. 修改要点
+- 补齐 `lastConsumedNeuralCharOffset` 属性在 `GeminiAssistantManager` (`AGSystemVoiceCoordinator`) 中的声明。
+- 完整应用 4-A、4-B、4-C 中的本地神经引擎字符偏移量消费与多轮对话防重复回声机制。
+- 自动化语法检测通过（`Braces: 0, Parens: 0, Brackets: 0`，0 个非法转义）。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `EF11906D1B457D9D5D730B0BDA5E1ACC6BBCD014D5F12AB5976BD7517514C1E0`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `EF11906D1B457D9D5D730B0BDA5E1ACC6BBCD014D5F12AB5976BD7517514C1E0`)
+- 镜像状态: 100% 一致。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #10, ID: 41269860129, Commit: 27b3d5b)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (513,280 字节, SHA256: `542C252F52C0B1F75D9BA12A1FDB3D41AE8BBAA56B0913245CE2CF98A8BFE095`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (338,124 字节, SHA256: `80F622D61C74E2C5FE6DCE68C364AADE4E9FC3BCAFB18FDED9F903D0B7AFBE7D`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
 
 ---
 
@@ -142,6 +165,29 @@
 - **Deb 校验 (Pure XZ, 0% Zstandard)**:
   - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (514,416 字节, SHA256: `F489587492C29C3557B381DF98B26F30401989222256BB083E3AF66A3AF18C0F`, valid: true)
   - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (338,076 字节, SHA256: `BD3DFC716EE432A90781A139A2BDF0BAAC78666929142D30D71E438D78991376`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 语音识别偏移量消费机制补齐与纯正 XZ 校验分发 (Run #10)
+
+### 1. 修改要点
+- 补齐 `lastConsumedNeuralCharOffset` 属性在 `GeminiAssistantManager` (`AGSystemVoiceCoordinator`) 中的声明。
+- 完整应用 4-A、4-B、4-C 中的本地神经引擎字符偏移量消费与多轮对话防重复回声机制。
+- 自动化语法检测通过（`Braces: 0, Parens: 0, Brackets: 0`，0 个非法转义）。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `EF11906D1B457D9D5D730B0BDA5E1ACC6BBCD014D5F12AB5976BD7517514C1E0`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `EF11906D1B457D9D5D730B0BDA5E1ACC6BBCD014D5F12AB5976BD7517514C1E0`)
+- 镜像状态: 100% 一致。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #10, ID: 41269860129, Commit: 27b3d5b)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (513,280 字节, SHA256: `542C252F52C0B1F75D9BA12A1FDB3D41AE8BBAA56B0913245CE2CF98A8BFE095`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (338,124 字节, SHA256: `80F622D61C74E2C5FE6DCE68C364AADE4E9FC3BCAFB18FDED9F903D0B7AFBE7D`, valid: true)
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
