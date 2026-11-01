@@ -551,3 +551,46 @@
 - 包含最新编译纯 .xz deb 安装包:
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+
+---
+
+## 2026-11-01: GuardianAngel 实装 5 道顶级防破解防线 (AngelShield DRM) 与 Makefile 符号剥离
+
+### 1. 5 道防破解核心防护体系实装
+1. **防 IDA 静态搜字符串**:
+   - `SECRET_SALT` 与鉴权 API URL（`https://card.quannengsiri.top/api/verify`）全部采用栈上 XOR 字节数组（`uint8_t kSaltEnc[]`, `uint8_t kUrlEnc[]`）动态还原。
+   - 还原使用后立即微秒级调用 `memset(buf, 0, len)` 擦除清零，IDA 字符串窗口 100% 无法搜到任何敏感 URL 与盐值。
+2. **防抓包工具截获 core_key (MitM 绕过)**:
+   - 鉴权 `NSURLSessionConfiguration` 显式强制注入 `config.connectionProxyDictionary = @{}`。
+   - 彻底绕过系统代理与 VPN 抓包工具（如 Thor、Reqable、Charles、Stream、小火箭 Shadowrocket 等 MitM 拦截）。
+3. **防 Filza 偷看与跨机拷贝 Plist**:
+   - 本地跨进程同步的 `core_key` 不再明文存储，而是使用本机硬件 UDID（通过 `MGCopyAnswer(kMGUniqueDeviceID)` 提取）的 HMAC-SHA256 派生流密钥进行对称加密后存储为十六进制密文。
+   - 用 Filza 打开 plist 只能看到随机十六进制乱码；拷贝到其他 iPhone 设备上因硬件 UDID 不一致导致解密失败，完全失效。
+4. **防“天卡内存 Dump 回填”破解与内存粉碎自毁**:
+   - 引入运行时解密票据 Canary Magic (`0xA6590C0E`) 与设备绑定校验。
+   - 实装 `Angel_ScrambleCoreSectionOnExpire()` 内存自毁机制：未授权设备一旦接口返回 401/402 或票据不匹配，立即将 `__DATA,__ag_core` 内存段覆写粉碎为乱码并弹出卡密激活窗口，彻底挫败将已授权设备内存 Dump 回填打包分发的破解手段。
+5. **防 IDA 符号表定位 (完全内联与剥离)**:
+   - 所有核心鉴权、UDID 派生与解密函数均使用 `__attribute__((always_inline))` 强制内联展开。
+   - `Makefile` 增加 `-fvisibility=hidden -Wl,-x -Wl,-S` 链接参数，并在编译产物中彻底剥离所有局部和全局符号表，在 IDA / Ghidra 中不留任何函数符号名。
+
+### 2. 源码与文件结构变更
+- **新增/覆盖文件**:
+  - `AngelShield.h`: 实装 5 道防线、UDID 硬件提取与 HMAC-SHA256 派生、内存粉碎及纳秒级无锁票据校验。
+  - `apply_shield.py`: 自动化精准应用 9 大替换块的 Python 脚本。
+  - `AngelGuardian.plist`: 配合 `TWEAK_NAME = AngelGuardian` 的进程注入配置文件。
+  - `Makefile`: 更新 Tweak 编译目标为 `AngelGuardian`，配置最高安全级符号剥离与优化 flags。
+- **三文件镜像一致性验证**:
+  - `D:\双工具版本\Tweak.xm` (SHA256: `fc09b7bec1d20f3810dca9870d4fd0c57c99a0a7ca2c233564d635724291f057`)
+  - `D:\双工具版本\Tweak.x` (SHA256: `fc09b7bec1d20f3810dca9870d4fd0c57c99a0a7ca2c233564d635724291f057`)
+  - `D:\双工具版本\主修实时翻译.txt` (SHA256: `fc09b7bec1d20f3810dca9870d4fd0c57c99a0a7ca2c233564d635724291f057`)
+  - 镜像状态: **100% 字节完全一致**。
+  - 语法闭合检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- **绝对隔离保障**:
+  - `TimeGuardianSiri123` 保持永久冻结在 Commit `214b4d7`。
+  - `D:\天使siri测试版` 及其源码完全未被触碰。
+
+### 3. Git 提交记录
+- `aff0863`: `feat: integrate AngelShield 5-tier DRM protection, symbol stripping, and watchdog fix`
+- `21963eb`: `ci: remove test.yml [skip ci]`
+- GitHub 仓库: [https://github.com/jianchengw952-source/GuardianAngel](https://github.com/jianchengw952-source/GuardianAngel)
