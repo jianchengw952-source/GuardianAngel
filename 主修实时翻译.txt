@@ -15417,10 +15417,10 @@ static NSString *agNormalizedPinyinForString(NSString *str) {
     NSString *cached = [sPinyinCache objectForKey:str];
     if (cached) return cached;
 
-    NSMutableString *mutable = [str mutableCopy];
-    CFStringTransform((__bridge CFMutableStringRef)mutable, NULL, kCFStringTransformToLatin, false);
-    CFStringTransform((__bridge CFMutableStringRef)mutable, NULL, kCFStringTransformStripCombiningMarks, false);
-    NSString *clean = [[[mutable lowercaseString] componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+    NSMutableString *mutStr = [str mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)mutStr, NULL, kCFStringTransformToLatin, false);
+    CFStringTransform((__bridge CFMutableStringRef)mutStr, NULL, kCFStringTransformStripCombiningMarks, false);
+    NSString *clean = [[[mutStr lowercaseString] componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
     if (clean.length > 0) {
         [sPinyinCache setObject:clean forKey:str];
     }

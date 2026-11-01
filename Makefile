@@ -11,7 +11,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = AngelGuardian
 
 AngelGuardian_FILES = Tweak.xm
-AngelGuardian_CFLAGS = -fobjc-arc -fvisibility=hidden -fvisibility-inlines-hidden -O2 -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-function
+AngelGuardian_CFLAGS = -fobjc-arc -fvisibility=hidden -fvisibility-inlines-hidden -O2 -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-function -Wno-incomplete-implementation -Wno-unguarded-availability-new -Wno-arc-performSelector-leaks -Wno-nonnull -Wno-pointer-bool-conversion
 AngelGuardian_LDFLAGS = -Wl,-x -Wl,-S
 AngelGuardian_FRAMEWORKS = UIKit Foundation AVFoundation CoreMedia CoreVideo CoreImage Contacts QuartzCore CoreFoundation VideoToolbox ImageIO Speech ReplayKit Vision AudioToolbox CoreLocation MapKit CoreMotion SystemConfiguration NetworkExtension Security
 AngelGuardian_LIBRARIES = sqlite3
