@@ -12517,6 +12517,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     NSDictionary *serverContent = json[@"serverContent"];
     if ([serverContent isKindOfClass:[NSDictionary class]]) {
         if ([serverContent[@"interrupted"] boolValue]) {
+            self.isMutedByLocalBargeIn = NO;
             self.currentTurnPlaybackID++;
             self.pendingPlayBuffersCount = 0;
             if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
@@ -12612,24 +12613,44 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
         NSDictionary *outputTrans = serverContent[@"outputTranscription"];
         if ([outputTrans isKindOfClass:[NSDictionary class]] && [outputTrans[@"text"] isKindOfClass:[NSString class]]) {
-            [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-            if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 2.2)) {
+            NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+            if (self.isMutedByLocalBargeIn && (nowTs - self.bargeInMuteTimestamp < 1.5)) {
                 return;
             }
+            // 若用户此时正在开口说话（打断后 0.85s 内），忽略旧轮次残留的 outputTranscription，绝不提前清空用户正在说的半句话
+            if (self.neuralUserSpeakingActive && (nowTs - self.lastNeuralSpeechActiveTime < 0.85)) {
+                return;
+            }
+            [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
             if (self.currentVoiceQueryBuffer.length > 0) {
                 NSString *fullVoiceCmd = [self.currentVoiceQueryBuffer copy];
                 self.lastCommittedUserVoiceQuery = fullVoiceCmd;
                 [self.currentVoiceQueryBuffer setString:@""];
-                BOOL localHandled = [self tryExecuteDirectLocalCommand:fullVoiceCmd];
+
+                NSString *nativeSeg = nil;
+                if (self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
+                    nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
+                }
+                BOOL localHandled = NO;
                 NSString *execCmd = fullVoiceCmd;
-                if (!localHandled && self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
-                    NSString *nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
+
+                // 若打断时苹果本地识别出的中文比云端残缺文本更长，优先测试本地完整中文
+                if (nativeSeg.length > fullVoiceCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+                    localHandled = YES;
+                    execCmd = nativeSeg;
+                    agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued fuller barge-in command via Apple zh-CN: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
+                } else if ([self tryExecuteDirectLocalCommand:fullVoiceCmd]) {
+                    localHandled = YES;
+                    execCmd = fullVoiceCmd;
+                } else if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+                    localHandled = YES;
+                    execCmd = nativeSeg;
+                    agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued command via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
+                }
+
+                // 此时用户本句话已彻底说完且 AI 已开始回复本轮，安全同步游标，防止普通聊天句残留到下一轮
+                if (self.lastNativeNeuralChineseText.length > 0) {
                     self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
-                    if ([self tryExecuteDirectLocalCommand:nativeSeg]) {
-                        localHandled = YES;
-                        execCmd = nativeSeg;
-                        agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued command via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
-                    }
                 }
                 if (localHandled) {
                     NSTimeInterval nowExec = [[NSDate date] timeIntervalSince1970];
@@ -12801,13 +12822,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 // 2. 原厂 Siri 级 0 毫秒瞬时打断器（恢复 主修实时翻译.txt 原版）
 - (void)triggerNativeSiriGradeInstantBargeIn:(NSString *)sourceTag {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     self.wsBargeInVoiceTicks = 0;
     self.currentTurnPlaybackID++;
     self.pendingPlayBuffersCount = 0;
     self.aiPlaybackEndTime = 0;
     if (self.pcm24kStagingBuffer) [self.pcm24kStagingBuffer setLength:0];
     self.neuralUserSpeakingActive = YES;
-    self.lastNeuralSpeechActiveTime = [[NSDate date] timeIntervalSince1970];
+    self.lastNeuralSpeechActiveTime = now;
+    // 开启短期旧包静默锁：拦截打断瞬间已经在网络半路上的上一轮残留语音包，防止喇叭重新响起压制麦克风
+    self.isMutedByLocalBargeIn = YES;
+    self.bargeInMuteTimestamp = now;
 
     agLiveDiagLog(@"BARGE_IN_LOCAL", @"Apple Neural VAD barge-in (%@), turnID=%lu", sourceTag, (unsigned long)self.currentTurnPlaybackID);
 
@@ -12852,16 +12877,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             if (!strongSelf || strongSelf.isDismissed) return;
             if (result && result.bestTranscription.formattedString.length > 0) {
                 NSString *fullNeuralStr = result.bestTranscription.formattedString;
-                if (fullNeuralStr.length < strongSelf.lastConsumedNeuralCharOffset) {
-                    strongSelf.lastConsumedNeuralCharOffset = 0;
-                }
-                strongSelf.lastNativeNeuralChineseText = fullNeuralStr;
-
-                // 微调 1：统计字数时剔除标点符号，防止系统自动补句号误触发打断
+                // 微调 1：剔除标点符号与空格，既防止系统自动补句号误触发打断，又彻底消除跨句删改句号导致的游标偏移吞首字
                 NSMutableCharacterSet *ignoreSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
                 [ignoreSet formUnionWithCharacterSet:[NSCharacterSet punctuationCharacterSet]];
                 NSString *cleanStr = [[fullNeuralStr componentsSeparatedByCharactersInSet:ignoreSet] componentsJoinedByString:@""];
                 NSUInteger curLen = cleanStr.length;
+
+                if (curLen < strongSelf.lastConsumedNeuralCharOffset) {
+                    strongSelf.lastConsumedNeuralCharOffset = 0;
+                }
+                strongSelf.lastNativeNeuralChineseText = cleanStr;
 
                 if (curLen > strongSelf.lastNeuralRecognizedCharCount) {
                     strongSelf.lastNeuralRecognizedCharCount = curLen;
@@ -13630,18 +13655,26 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)checkDeferredVoiceLocalCommand {
     if (self.currentVoiceQueryBuffer.length == 0) return;
     NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
-    BOOL handled = [self tryExecuteDirectLocalCommand:fullCmd];
+    NSString *nativeSeg = nil;
+    if (self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
+        nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
+    }
+
+    BOOL handled = NO;
     NSString *matchedCmd = fullCmd;
 
-    // 双引擎兜底：若云端转写因外语谐音（如韩语/越南语/印地语）未命中，立即使用苹果本地 zh-CN 识别器文本二次匹配
-    if (!handled && self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
-        NSString *nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
-        if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
-            handled = YES;
-            matchedCmd = nativeSeg;
-            self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
-            agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred command rescued via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullCmd);
-        }
+    // 若边打断边说指令时苹果本地 zh-CN 识别出的字数比云端更完整（如本地听全了“返回桌面”而云端只听到“8 面”），优先用本地完整中文匹配
+    if (nativeSeg.length > fullCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+        handled = YES;
+        matchedCmd = nativeSeg;
+        agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred fuller barge-in command rescued via Apple zh-CN: '%@' (cloud was '%@')", nativeSeg, fullCmd);
+    } else if ([self tryExecuteDirectLocalCommand:fullCmd]) {
+        handled = YES;
+        matchedCmd = fullCmd;
+    } else if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+        handled = YES;
+        matchedCmd = nativeSeg;
+        agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred command rescued via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullCmd);
     }
 
     if (handled) {
