@@ -12789,7 +12789,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 }
 
-// 3. 启动苹果 iOS 本地芯片级语音活动检测（主修实时翻译.txt 原版 + 仅过滤标点与 -50.0dB 纯静音底噪微调）
+// 3. 启动苹果 iOS 本地芯片级语音活动检测（主修实时翻译.txt 原版 + 仅过滤标点与 -53.0dB 纯静音底噪微调）
 - (void)startNativeAppleNeuralVADIfNeeded {
     [self stopNativeAppleNeuralVAD];
     @try {
@@ -12825,8 +12825,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 微调 2：仅拦截 <= -50.0f dB 的纯静音底噪（您可以随时微调 -50.0f 这个数字），保留 -45dB 极轻人声 0ms 瞬时打断！
-                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -50.0f));
+                    // 微调 2：仅拦截 <= -53.0f dB 的纯静音底噪（您可以随时微调 -53.0f 这个数字），保留极轻人声 0ms 瞬时打断！
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -53.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
                     if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
@@ -13172,7 +13172,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         }
 
         NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
-        if (db > -50.0f) {
+        if (db > -53.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
         }
