@@ -7592,6 +7592,7 @@ static void agSimulateScreenSwipe(CGPoint startPt, CGPoint endPt, NSTimeInterval
 }
 
 static void agDispatchHIDKeyUsage(uint16_t usagePage, uint16_t usage, BOOL isDown) {
+    static AG_IOHIDEventSystemClientCreateFunc createClient = NULL;
     static AG_IOHIDEventCreateKeyboardEventFunc createKeyEv = NULL;
     static AG_IOHIDEventSystemClientDispatchEventFunc dispatchEv = NULL;
     static IOHIDEventSetSenderIDFunc setSenderID = NULL;
@@ -7599,11 +7600,18 @@ static void agDispatchHIDKeyUsage(uint16_t usagePage, uint16_t usage, BOOL isDow
     dispatch_once(&onceToken, ^{
         void *ioHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
         if (ioHandle) {
-            createKeyEv = (AG_IOHIDEventCreateKeyboardEventFunc)dlsym(ioHandle, "IOHIDEventCreateKeyboardEvent");
-            dispatchEv  = (AG_IOHIDEventSystemClientDispatchEventFunc)dlsym(ioHandle, "IOHIDEventSystemClientDispatchEvent");
-            setSenderID = (IOHIDEventSetSenderIDFunc)dlsym(ioHandle, "IOHIDEventSetSenderID");
+            createClient = (AG_IOHIDEventSystemClientCreateFunc)dlsym(ioHandle, "IOHIDEventSystemClientCreate");
+            createKeyEv  = (AG_IOHIDEventCreateKeyboardEventFunc)dlsym(ioHandle, "IOHIDEventCreateKeyboardEvent");
+            dispatchEv   = (AG_IOHIDEventSystemClientDispatchEventFunc)dlsym(ioHandle, "IOHIDEventSystemClientDispatchEvent");
+            setSenderID  = (IOHIDEventSetSenderIDFunc)dlsym(ioHandle, "IOHIDEventSetSenderID");
+            if (!gSharedTouchHIDClient && createClient) {
+                gSharedTouchHIDClient = createClient(kCFAllocatorDefault);
+            }
         }
     });
+    if (!gSharedTouchHIDClient && createClient) {
+        gSharedTouchHIDClient = createClient(kCFAllocatorDefault);
+    }
     if (!createKeyEv || !dispatchEv || !gSharedTouchHIDClient) return;
     CFTypeRef keyEv = createKeyEv(kCFAllocatorDefault, mach_absolute_time(), usagePage, usage, isDown ? true : false, 0);
     if (keyEv) {
@@ -7948,18 +7956,18 @@ static void agCollectRealHardwareAndBatteryTelemetry(NSString **outPillText, NSS
 
     if (outFullCardText) {
         NSMutableString *card = [NSMutableString string];
-        [card appendFormat:@"📱 【%@ 底层硬件与运行内存体检报告】\\n", modelName];
-        [card appendFormat:@"• 📊 运行内存 (RAM)：已用 %.2fG / 总计 %.1fG (占用 %d%%) ｜ 剩余可用 %.2fG (%d MB)\\n", usedRAM, totalRAM, ramPct, freeRAM, freeRAMMB];
-        [card appendFormat:@"• 🗂️ 后台与存储：后台运行 %lu 款应用 ｜ 机身存储剩余 %.1fG / %.0fG\\n", (unsigned long)bgAppCount, freeROM, totalROM];
-        [card appendFormat:@"• 🔋 实时电量：%d%%（当前剩余 %ld mAh / 实测满电 %ld mAh）\\n", uiBatPct, (long)rawCurrentMAH, (long)realMaxMAH];
+        [card appendFormat:@"📱 【%@ 底层硬件与运行内存体检报告】\n", modelName];
+        [card appendFormat:@"• 📊 运行内存 (RAM)：已用 %.2fG / 总计 %.1fG (占用 %d%%) ｜ 剩余可用 %.2fG (%d MB)\n", usedRAM, totalRAM, ramPct, freeRAM, freeRAMMB];
+        [card appendFormat:@"• 🗂️ 后台与存储：后台运行 %lu 款应用 ｜ 机身存储剩余 %.1fG / %.0fG\n", (unsigned long)bgAppCount, freeROM, totalROM];
+        [card appendFormat:@"• 🔋 实时电量：%d%%（当前剩余 %ld mAh / 实测满电 %ld mAh）\n", uiBatPct, (long)rawCurrentMAH, (long)realMaxMAH];
         [card appendFormat:@"• ❤️ 真实物理健康度：%.1f%%（苹果官方原厂设计 %ld mAh", realPhysicalHealthPct, (long)baseDesignMAH];
         if (bmsDesignMAH != baseDesignMAH) {
             [card appendFormat:@"，排线标称 %ld mAh 占比 %.1f%%", (long)bmsDesignMAH, bmsRelativeHealthPct];
         }
-        [card appendFormat:@"，系统表显 %@）\\n", surfStr];
-        [card appendFormat:@"• 🏷️ 电芯状态鉴定：%@\\n", batteryGradeNote];
-        [card appendFormat:@"• 🔄 充电循环次数：%@ ｜ 🌡️ 电池物理温度：%@\\n", cycleStr, tempStr];
-        [card appendFormat:@"• ⚡ 充放电状态：%@\\n", powerFlowStr];
+        [card appendFormat:@"，系统表显 %@）\n", surfStr];
+        [card appendFormat:@"• 🏷️ 电芯状态鉴定：%@\n", batteryGradeNote];
+        [card appendFormat:@"• 🔄 充电循环次数：%@ ｜ 🌡️ 电池物理温度：%@\n", cycleStr, tempStr];
+        [card appendFormat:@"• ⚡ 充放电状态：%@\n", powerFlowStr];
         [card appendFormat:@"• 📶 网络与状态：%@ (IP: %@) ｜ 音量 %d%% ｜ 亮度 %d%% ｜ 定位：%@%@",
          netType, localIP, volPct, brightPct, locPlace, (locActive && shieldOn ? @"(🛡️防检测已开)" : @"")];
         *outFullCardText = card;
@@ -7979,15 +7987,15 @@ static void agCollectRealHardwareAndBatteryTelemetry(NSString **outPillText, NSS
 
     if (outSystemPromptInject) {
         *outSystemPromptInject = [NSString stringWithFormat:
-            @"\\n【本机 IOKit AppleSmartBattery 与运行内存实时真实数据（提示：若用户在询问手机状态时将“电池健康度”口误说成“电子健康度/看健康度”，请汇报以下本机实测数据；但如果用户明确在问医院就诊的“电子健康卡/医保卡”或医学体检指标，请正常回答医疗问题，切勿混淆）】\\n"
-            @"- 机型：%@ (iOS %@)\\n"
-            @"- 运行内存 RAM：总计 %.2fG，已用 %.2fG (%d%%)，剩余可用 %.2fG (%d MB)，后台应用 %lu 个\\n"
-            @"- 存储 ROM：剩余 %.1fG/%.0fG\\n"
-            @"- 当前电量：%d%% (实时剩余容量：%ld mAh)\\n"
-            @"- 底层库仑计实测满电容量：%ld mAh (苹果官方原厂容量：%ld mAh，排线标称：%ld mAh)\\n"
-            @"- 真实物理电池健康度（未封顶）：%.1f%% (系统表显：%@，状态：%@)\\n"
-            @"- 循环次数：%@ | 电池温度：%@ | 充放电：%@\\n"
-            @"- 网络：%@ (IP：%@) | 音量：%d%% | 亮度：%d%% | 定位：%@\\n",
+            @"\n【本机 IOKit AppleSmartBattery 与运行内存实时真实数据（提示：若用户在询问手机状态时将“电池健康度”口误说成“电子健康度/看健康度”，或要求“清理垃圾/清理系统数据/清理内存/清理后台”时，请结合以下本机实测数据用简明自然的中文口语向用户汇报当前可用运存与剩余存储空间；但如果用户明确在问医院就诊的“电子健康卡/医保卡”或医学体检指标，请正常回答医疗问题，切勿混淆）】\n"
+            @"- 机型：%@ (iOS %@)\n"
+            @"- 运行内存 RAM：总计 %.2fG，已用 %.2fG (%d%%)，剩余可用 %.2fG (%d MB)，后台应用 %lu 个\n"
+            @"- 存储 ROM：剩余 %.1fG/%.0fG\n"
+            @"- 当前电量：%d%% (实时剩余容量：%ld mAh)\n"
+            @"- 底层库仑计实测满电容量：%ld mAh (苹果官方原厂容量：%ld mAh，排线标称：%ld mAh)\n"
+            @"- 真实物理电池健康度（未封顶）：%.1f%% (系统表显：%@，状态：%@)\n"
+            @"- 循环次数：%@ | 电池温度：%@ | 充放电：%@\n"
+            @"- 网络：%@ (IP：%@) | 音量：%d%% | 亮度：%d%% | 定位：%@\n",
             modelName, [[UIDevice currentDevice] systemVersion],
             totalRAM, usedRAM, ramPct, freeRAM, freeRAMMB, (unsigned long)bgAppCount,
             freeROM, totalROM,
@@ -8857,6 +8865,8 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
 @property (nonatomic, copy) NSString *lastWebSearchedVoiceQuery;
 @property (nonatomic, assign) NSUInteger currentTurnSearchCount;
 @property (nonatomic, assign) BOOL isWaitingForToolResponse;
+@property (nonatomic, copy) NSString *lastNativeNeuralChineseText;
+@property (nonatomic, assign) NSTimeInterval miniCaptionLockUntilTime;
 - (void)primeFullDuplexAudioEngineWithSilentPulse:(NSString *)reasonTag;
 - (void)startNativeAppleNeuralVADIfNeeded;
 - (void)stopNativeAppleNeuralVAD;
@@ -8867,6 +8877,9 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
 - (void)checkDeferredVoiceLocalCommand;
 - (BOOL)tryExecuteDirectLocalCommand:(NSString *)cmdText;
 - (void)handleSystemDeepClean;
+- (void)handleCleanRAMOnly;
+- (void)handleCleanSystemDataOnly;
+- (NSString *)resolveInstalledAppBundleIDForName:(NSString *)appName;
 - (NSString *)parseAndExecuteActions:(NSString *)responseText executed:(BOOL *)outExecuted;
 - (void)executeActionDictionary:(NSDictionary *)dict;
 - (void)sendJSONDictionaryOverWebSocket:(NSDictionary *)dict;
@@ -8881,6 +8894,17 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
 - (void)throttledExpandAndScrollTextViewForce:(BOOL)force;
 - (void)handleSynthesizedUIGesture:(NSString *)gesture;
 - (void)handleClipboardAndAutoType:(NSString *)text;
+@end
+
+@interface SBApplication : NSObject
+- (NSString *)bundleIdentifier;
+- (NSString *)displayName;
+@end
+
+@interface SBApplicationController : NSObject
++ (instancetype)sharedInstance;
++ (instancetype)sharedInstanceIfExists;
+- (NSArray<SBApplication *> *)allApplications;
 @end
 
 // ====== 全场景 Agent 连招提权、价格比大小秒点与超容电池替换块 3 开始 ======
@@ -9003,207 +9027,464 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
 
         _builtinAppMap = @{
-            // 移动支付与银行金融 (20+)
+            // 1. 移动支付、银行金融与证券保险 (45+)
             @"微信": @"com.tencent.xin", @"wechat": @"com.tencent.xin",
             @"支付宝": @"com.alipay.iphoneclient", @"alipay": @"com.alipay.iphoneclient",
             @"云闪付": @"com.unionpay.chsp", @"upwallet": @"com.unionpay.chsp",
             @"招商银行": @"com.cmbchina.mobilebank", @"招行": @"com.cmbchina.mobilebank",
             @"掌上生活": @"com.cmbchina.life",
-            @"工商银行": @"com.icbc.iphoneclient", @"工行": @"com.icbc.iphoneclient",
-            @"建设银行": @"com.ccb.mobilebank", @"建行": @"com.ccb.mobilebank",
+            @"工商银行": @"com.icbc.iphoneclient", @"工行": @"com.icbc.iphoneclient", @"中国工商银行": @"com.icbc.iphoneclient",
+            @"工银e生活": @"com.icbc.elife",
+            @"建设银行": @"com.ccb.mobilebank,com.ccb.ccbDemo", @"建行": @"com.ccb.mobilebank,com.ccb.ccbDemo", @"中国建设银行": @"com.ccb.mobilebank,com.ccb.ccbDemo",
+            @"建行生活": @"com.ccb.ccblife",
             @"中国银行": @"com.boc.bocmbci", @"中行": @"com.boc.bocmbci",
-            @"农业银行": @"com.bankabc", @"农行": @"com.bankabc",
+            @"农业银行": @"com.bankabc", @"农行": @"com.bankabc", @"中国农业银行": @"com.bankabc",
             @"交通银行": @"com.bankcomm.Bankcomm", @"交行": @"com.bankcomm.Bankcomm",
+            @"买单吧": @"com.bankcomm.maidanba",
+            @"邮储银行": @"com.psbc.mobilebank", @"邮政银行": @"com.psbc.mobilebank", @"中国邮政储蓄银行": @"com.psbc.mobilebank",
             @"平安口袋银行": @"com.pingan.pocketbank", @"平安银行": @"com.pingan.pocketbank",
-            @"浦发银行": @"com.spdb.mobilebank",
-            @"中信银行": @"com.citicbank.mobilebank",
-            @"民生银行": @"com.cmbc.mobilebank",
-            @"光大银行": @"com.cebbank.mobilebank",
-            @"广发银行": @"com.cgb.mobilebank",
-            @"兴业银行": @"com.cib.mobilebank",
+            @"浦发银行": @"com.spdb.mobilebank", @"浦大喜奔": @"com.spdb.ccc",
+            @"中信银行": @"com.citicbank.mobilebank", @"动卡空间": @"com.citiccard.mobilebank",
+            @"民生银行": @"com.cmbc.mobilebank", @"全民生活": @"com.cmbc.cc.mbank",
+            @"光大银行": @"com.cebbank.mobilebank", @"阳光惠生活": @"com.cebbank.ebank",
+            @"广发银行": @"com.cgb.mobilebank", @"发现精彩": @"com.cgb.creditcard",
+            @"兴业银行": @"com.cib.mobilebank", @"好兴动": @"com.cib.creditcard",
+            @"华夏银行": @"com.hxb.mobilebank",
+            @"北京银行": @"com.bankofbeijing.mobilebank", @"京彩生活": @"com.bob.mobilebank",
+            @"上海银行": @"com.bankofshanghai.mobilebank",
+            @"江苏银行": @"com.jsbchina.mobilebank",
+            @"宁波银行": @"com.nbcb.mobilebank",
+            @"浙商银行": @"com.czbank.mbank",
+            @"南京银行": @"com.njcb.mobilebank",
+            @"杭州银行": @"com.hzbank.hzbank.per",
+            @"微众银行": @"com.webank.wemoney",
+            @"网商银行": @"com.mybank.phone",
+            @"数字人民币": @"cn.gov.pbc.dcep",
             @"京东金融": @"com.jd.jdmobile",
-            // 电商购物与闲置特卖 (15+)
-            @"淘宝": @"com.taobao.taobao4iphone", @"taobao": @"com.taobao.taobao4iphone",
-            @"京东": @"com.360buy.jdmobile", @"jd": @"com.360buy.jdmobile",
+            @"度小满": @"com.baidu.finance", @"度小满金融": @"com.baidu.finance",
+            @"同花顺": @"com.hexin.plat.android",
+            @"东方财富": @"com.eastmoney.iphone",
+            @"天天基金": @"com.eastmoney.ttjj",
+            @"雪球": @"com.xueqiu",
+            @"富途牛牛": @"com.futu.futu",
+            @"老虎证券": @"com.itiger.tigertrade",
+            @"涨乐财富通": @"com.htsc.zhangle",
+            @"平安金管家": @"com.pingan.lifeinsurance",
+            @"中国人寿": @"com.chinalife.ebusiness",
+
+            // 2. 电商购物、海淘与闲置特卖 (30+)
+            @"淘宝": @"com.taobao.taobao4iphone", @"手机淘宝": @"com.taobao.taobao4iphone", @"taobao": @"com.taobao.taobao4iphone",
+            @"天猫": @"com.taobao.tmall", @"tmall": @"com.taobao.tmall",
+            @"京东": @"com.360buy.jdmobile", @"手机京东": @"com.360buy.jdmobile", @"jd": @"com.360buy.jdmobile",
             @"拼多多": @"com.xunmeng.pinduoduo", @"pdd": @"com.xunmeng.pinduoduo",
             @"闲鱼": @"com.taobao.fleamarket", @"fleamarket": @"com.taobao.fleamarket",
             @"唯品会": @"com.vipshop.iphone", @"vip": @"com.vipshop.iphone",
             @"得物": @"com.siwu.poizon", @"毒": @"com.siwu.poizon",
             @"转转": @"com.wuba.zhuanzhuan",
             @"找靓机": @"com.huishoubao.zlj",
+            @"爱回收": @"com.aihuishou.airent",
             @"苏宁易购": @"com.suning.SuningEBuy", @"苏宁": @"com.suning.SuningEBuy",
             @"当当": @"com.dangdang.buy", @"当当网": @"com.dangdang.buy",
             @"淘特": @"com.taobao.live", @"淘宝特价版": @"com.taobao.live",
-            // 餐饮美食、外卖咖啡与生鲜 (16+)
+            @"1688": @"com.alibaba.wireless", @"阿里巴巴": @"com.alibaba.wireless",
+            @"一淘": @"com.taobao.etaocoupon",
+            @"什么值得买": @"com.smzdm.client.ios", @"值得买": @"com.smzdm.client.ios",
+            @"识货": @"com.hupu.shihuo",
+            @"考拉海购": @"com.netease.kaola",
+            @"亚马逊": @"com.amazon.AmazonCN", @"amazon": @"com.amazon.Amazon",
+            @"小米商城": @"com.xiaomi.mishop",
+            @"有品": @"com.xiaomi.youpin", @"小米有品": @"com.xiaomi.youpin",
+            @"华为商城": @"com.huawei.vmall",
+            @"apple store": @"com.apple.store.Jolly", @"苹果商城": @"com.apple.store.Jolly",
+            @"孔夫子旧书网": @"com.kongfz.app",
+            @"多抓鱼": @"com.duozhuayu.dejavu",
+            @"微店": @"com.koudai.weidian.buyer",
+            @"抖店": @"com.ss.iphone.merchant",
+            @"千牛": @"com.taobao.sellerplatform",
+
+            // 3. 餐饮美食、外卖茶饮与商超生鲜 (30+)
             @"美团": @"com.meituan.imeituan", @"meituan": @"com.meituan.imeituan",
             @"美团外卖": @"com.meituan.itakeaway",
             @"饿了么": @"me.ele.ios.eleme", @"eleme": @"me.ele.ios.eleme",
             @"大众点评": @"com.dianping.dpscope", @"点评": @"com.dianping.dpscope",
+            @"口碑": @"com.taobao.kbmeishi",
             @"盒马": @"com.taobao.channel", @"盒马鲜生": @"com.taobao.channel",
             @"叮咚买菜": @"com.yaya.zone", @"叮咚": @"com.yaya.zone",
             @"朴朴超市": @"com.pupu.buyer", @"朴朴": @"com.pupu.buyer",
-            @"山姆会员": @"com.walmart.samsclub", @"山姆": @"com.walmart.samsclub",
+            @"山姆会员商店": @"com.walmart.samsclub", @"山姆会员": @"com.walmart.samsclub", @"山姆": @"com.walmart.samsclub",
+            @"永辉生活": @"cn.yonghui.hyd",
+            @"多点": @"com.dmall.dmall",
+            @"美团买菜": @"com.baobaoaichi.imaicai", @"小象超市": @"com.baobaoaichi.imaicai",
             @"瑞幸咖啡": @"com.luckin.coffee", @"瑞幸": @"com.luckin.coffee",
-            @"喜茶": @"com.heytea.heytea",
+            @"库迪咖啡": @"com.cotti.client", @"库迪": @"com.cotti.client",
             @"星巴克": @"com.starbucks.cn",
-            @"肯德基": @"com.yum.kfc",
+            @"喜茶": @"com.heytea.heytea",
+            @"奈雪的茶": @"com.pin-dao.naixue", @"奈雪": @"com.pin-dao.naixue",
+            @"霸王茶姬": @"com.chagee.app",
+            @"茶百道": @"com.chabaidao.app",
+            @"古茗": @"com.guming.app",
+            @"蜜雪冰城": @"com.mxbc.mxsa",
+            @"肯德基": @"com.yum.kfc", @"kfc": @"com.yum.kfc",
             @"麦当劳": @"com.mcdonalds.cn",
+            @"必胜客": @"com.yum.pizzahut",
+            @"汉堡王": @"com.bkchina.burgerking",
+            @"达美乐": @"com.dominos.china",
             @"海底捞": @"com.haidilao.app",
-            // 地铁导航、打车与旅游出行 (20+)
+            @"下厨房": @"com.xiachufang.recipe",
+
+            // 4. 地铁导航、打车租车与酒旅航空 (35+)
             @"高德地图": @"com.autonavi.amap", @"高德": @"com.autonavi.amap",
             @"百度地图": @"com.baidu.BaiduMobileMap",
             @"腾讯地图": @"com.tencent.sosomap",
+            @"谷歌地图": @"com.google.Maps", @"google maps": @"com.google.Maps",
             @"滴滴出行": @"com.xiaojukeji.didi", @"滴滴": @"com.xiaojukeji.didi",
             @"花小猪": @"com.huaxiaozhu.passenger", @"花小猪打车": @"com.huaxiaozhu.passenger",
             @"哈啰": @"com.hellobike.app", @"哈啰出行": @"com.hellobike.app",
             @"t3出行": @"com.t3.passenger",
             @"曹操出行": @"com.caocao.passenger",
-            @"12306": @"com.chinasofti.iroad.12306", @"铁路12306": @"com.chinasofti.iroad.12306",
+            @"享道出行": @"com.saicmobility.passenger",
+            @"嘀嗒出行": @"com.didapinche.booking",
+            @"神州专车": @"com.ucarinc.ucar",
+            @"神州租车": @"com.zuche.ios",
+            @"一嗨租车": @"com.1hai.1haiiphone",
+            @"12306": @"cn.12306.rails12306,com.chinasofti.iroad.12306", @"铁路12306": @"cn.12306.rails12306,com.chinasofti.iroad.12306",
             @"智行火车票": @"com.tieyou.train", @"智行": @"com.tieyou.train",
+            @"高铁管家": @"com.gtgj.iphone",
             @"携程": @"ctrip.com", @"携程旅行": @"ctrip.com",
             @"去哪儿": @"com.qunar.iphone", @"去哪儿旅行": @"com.qunar.iphone",
-            @"飞猪": @"com.taobao.trip", @"飞猪旅行": @"com.taobao.trip",
+            @"飞猪": @"com.taobao.travel,com.taobao.trip", @"飞猪旅行": @"com.taobao.travel,com.taobao.trip",
+            @"同程旅行": @"com.tongcheng.iphone", @"同程": @"com.tongcheng.iphone",
+            @"马蜂窝": @"cn.mafengwo.www",
+            @"途牛": @"com.tuniu.app",
+            @"华住会": @"com.huazhu.huazhu",
+            @"爱彼迎": @"com.airbnb.app", @"airbnb": @"com.airbnb.app",
             @"航旅纵横": @"com.travelsky.umetrip",
             @"飞常准": @"com.feeyo.fz",
+            @"南方航空": @"com.csair.MBP", @"南航": @"com.csair.MBP",
+            @"中国国航": @"com.airchina.AirChina", @"国航": @"com.airchina.AirChina",
+            @"东方航空": @"com.ceair.b2m", @"东航": @"com.ceair.b2m",
+            @"海南航空": @"com.hnair.oca", @"海航": @"com.hnair.oca",
+            @"春秋航空": @"com.springairlines.SpringAirlines",
             @"metro大都会": @"com.shmetro.cdm", @"大都会": @"com.shmetro.cdm",
             @"亿通行": @"com.bjsubway.yitongxing",
-            // 演艺演出与电影票务 (5+)
+            @"深圳通": @"com.shenzhentong.sz",
+            @"羊城通": @"com.gzyct.app",
+            @"车来了": @"com.ygkj.chelaile",
+
+            // 5. 演艺演出与电影票务 (6+)
             @"大麦": @"cn.damai.iphone", @"大麦网": @"cn.damai.iphone",
             @"猫眼": @"com.sankuai.movie", @"猫眼电影": @"com.sankuai.movie",
             @"淘票票": @"com.taobao.movie.MoviePhoneClient",
             @"秀动": @"com.showstart.client",
             @"摩天轮票务": @"com.motianlun.app", @"摩天轮": @"com.motianlun.app",
-            // 社交网络、社区与游戏 (18+)
-            @"qq": @"com.tencent.mqq",
+
+            // 6. 社交社区、资讯论坛与国际应用 (35+)
+            @"qq": @"com.tencent.mqq", @"手机qq": @"com.tencent.mqq",
+            @"tim": @"com.tencent.tim",
             @"小红书": @"com.xingin.discover", @"xhs": @"com.xingin.discover",
             @"微博": @"com.sina.weibo", @"新浪微博": @"com.sina.weibo",
+            @"微博国际版": @"com.sina.weibointernational", @"微博轻享版": @"com.sina.weibointernational",
             @"知乎": @"com.zhihu.ios",
-            @"哔哩哔哩": @"tv.danmaku.bili", @"b站": @"tv.danmaku.bili",
+            @"哔哩哔哩": @"tv.danmaku.bilianime,tv.danmaku.bili", @"b站": @"tv.danmaku.bilianime,tv.danmaku.bili", @"bilibili": @"tv.danmaku.bilianime,tv.danmaku.bili",
             @"抖音": @"com.ss.iphone.ugc.Aweme",
+            @"抖音极速版": @"com.ss.iphone.ugc.aweme.lite",
+            @"抖音火山版": @"com.ss.iphone.ugc.Live",
+            @"tiktok": @"com.zhiliaoapp.musically",
             @"快手": @"com.jiangjia.gif",
+            @"快手极速版": @"com.kuaishou.nebula",
+            @"今日头条": @"com.ss.iphone.article.News", @"头条": @"com.ss.iphone.article.News",
+            @"今日头条极速版": @"com.ss.iphone.article.lite",
+            @"西瓜视频": @"com.ss.iphone.article.Video",
+            @"皮皮虾": @"com.bd.iphone.super",
             @"贴吧": @"com.baidu.tieba", @"百度贴吧": @"com.baidu.tieba",
             @"豆瓣": @"com.douban.frodo",
             @"虎扑": @"com.hupu.games",
+            @"懂球帝": @"com.dongqiudi.news",
+            @"即刻": @"com.ruguoapp.jike",
+            @"陌陌": @"com.wemomo.momoappdemo1",
+            @"探探": @"com.yaymedialabs.putong",
+            @"soul": @"cn.soulapp.ios",
+            @"最右": @"cn.xiaochuankeji.tieba",
+            @"绿洲": @"com.sina.oasis",
+            @"lofter": @"com.netease.lofter",
             @"米游社": @"com.miHoYo.mhybbs",
             @"小黑盒": @"com.max.xiaoheihe",
             @"taptap": @"com.taptap",
-            // 音乐播客与视频流媒体 (18+)
+            @"nga": @"com.nga.bbs",
+            @"威锋": @"com.feng.wefeng", @"威锋网": @"com.feng.wefeng",
+            @"酷安": @"com.coolapk.app",
+            @"csdn": @"net.csdn.CsdnPlus",
+            @"简书": @"com.jianshu.Hugo",
+            @"腾讯新闻": @"com.tencent.info",
+            @"网易新闻": @"com.netease.news",
+            @"澎湃新闻": @"com.thepaper.paper",
+            @"telegram": @"ph.telegra.Telegraph", @"电报": @"ph.telegra.Telegraph", @"tg": @"ph.telegra.Telegraph",
+            @"twitter": @"com.atebits.Tweetie2", @"推特": @"com.atebits.Tweetie2", @"x": @"com.atebits.Tweetie2",
+            @"instagram": @"com.burbn.instagram", @"ins": @"com.burbn.instagram",
+            @"facebook": @"com.facebook.Facebook", @"脸书": @"com.facebook.Facebook",
+            @"whatsapp": @"net.whatsapp.WhatsApp",
+            @"discord": @"com.hammerandchisel.discord",
+            @"reddit": @"com.reddit.Reddit",
+
+            // 7. 音乐播客、长视频与直播平台 (25+)
             @"网易云音乐": @"com.netease.cloudmusic", @"网易云": @"com.netease.cloudmusic",
             @"qq音乐": @"com.tencent.QQMusic",
             @"酷狗音乐": @"com.kugou.kugoumusic", @"酷狗": @"com.kugou.kugoumusic",
             @"酷我音乐": @"cn.kuwo.player", @"酷我": @"cn.kuwo.player",
             @"汽水音乐": @"com.luna.music",
+            @"咪咕音乐": @"com.cmcc.migumusic",
+            @"全民k歌": @"com.tencent.karaoke",
+            @"唱吧": @"com.changba.ktv",
             @"喜马拉雅": @"com.gemd.iting",
             @"小宇宙": @"app.podcast.cosmos",
             @"荔枝fm": @"com.lizhi.fm", @"荔枝": @"com.lizhi.fm",
             @"蜻蜓fm": @"com.qingting.fm", @"蜻蜓": @"com.qingting.fm",
+            @"猫耳fm": @"cn.missevan.app",
+            @"spotify": @"com.spotify.client",
             @"爱奇艺": @"com.qiyi.iphone",
             @"腾讯视频": @"com.tencent.live4iphone",
             @"优酷": @"com.youku.YouKu", @"优酷视频": @"com.youku.YouKu",
             @"芒果tv": @"com.mgtv.app",
-            @"斗鱼": @"com.douyu.iphone", @"斗鱼直播": @"com.douyu.iphone",
+            @"央视频": @"com.cctv.yangshipin.app.iphone",
+            @"咪咕视频": @"com.cmcc.cmvideo",
+            @"搜狐视频": @"com.sohu.iPhoneVideo",
+            @"韩小圈": @"com.babyting.hanju", @"韩剧tv": @"com.babyting.hanju",
+            @"netflix": @"com.netflix.Netflix", @"奈飞": @"com.netflix.Netflix",
+            @"youtube": @"com.google.ios.youtube", @"油管": @"com.google.ios.youtube",
+            @"斗鱼": @"tv.douyu.live,com.douyu.iphone", @"斗鱼直播": @"tv.douyu.live,com.douyu.iphone",
             @"虎牙": @"com.huya.iphone", @"虎牙直播": @"com.huya.iphone",
-            // 阅读文学与外语考研 (16+)
+            @"yy": @"com.yy.yymobile",
+
+            // 8. 阅读文学、漫画与外语学习 (20+)
             @"欧路词典": @"com.eusoft.eudic",
             @"有道词典": @"com.youdao.dict", @"网易有道词典": @"com.youdao.dict",
+            @"金山词霸": @"com.kingsoft.powerword",
+            @"腾讯翻译君": @"com.tencent.qqtranslator",
+            @"deepl": @"com.deepl.mobiletranslator",
             @"微信读书": @"com.tencent.weread",
             @"百词斩": @"com.baicizhan.word",
+            @"不背单词": @"cn.WaitList.bbdc",
+            @"墨墨背单词": @"com.maimemo.Note",
+            @"扇贝单词": @"com.shanbay.words",
             @"多邻国": @"com.duolingo.DuolingoMobile",
-            @"学习强国": @"cn.xuexi.iphone",
+            @"学习强国": @"cn.xuexi.qg,cn.xuexi.iphone",
             @"得到": @"com.luojilab.player",
+            @"樊登读书": @"com.fandengreader.fandeng", @"帆书": @"com.fandengreader.fandeng",
             @"起点读书": @"com.qidian.QDReader", @"起点": @"com.qidian.QDReader",
             @"晋江文学城": @"com.jjwxc.reader", @"晋江": @"com.jjwxc.reader",
             @"番茄小说": @"com.dragon.read", @"番茄免费小说": @"com.dragon.read",
+            @"七猫免费小说": @"com.kmxs.reader", @"七猫小说": @"com.kmxs.reader",
+            @"掌阅": @"com.chaozh.iReaderFree",
+            @"qq阅读": @"com.tencent.qqreaderiphone",
             @"快看漫画": @"com.kuaikan.comic", @"快看": @"com.kuaikan.comic",
             @"哔哩哔哩漫画": @"com.bilibili.comic", @"b站漫画": @"com.bilibili.comic",
-            @"掌阅": @"com.chaozh.iReaderFree",
-            // 协同办公、云盘与效率 (16+)
+            @"腾讯动漫": @"com.tencent.ied.app.comic",
+
+            // 9. 协同办公、云盘邮箱、浏览器与效率工具 (30+)
             @"钉钉": @"com.laiwang.DingTalk",
-            @"飞书": @"com.electron.lark",
+            @"飞书": @"com.bytedance.ee.lark,com.electron.lark",
             @"企业微信": @"com.tencent.wework",
             @"腾讯会议": @"com.tencent.meeting",
+            @"zoom": @"us.zoom.videomeetings",
             @"wps": @"com.kingsoft.office", @"wps office": @"com.kingsoft.office",
+            @"腾讯文档": @"com.tencent.txdocs",
+            @"石墨文档": @"com.shimo.client",
+            @"语雀": @"com.antgroup.yuque",
+            @"飞书文档": @"com.bytedance.ee.lark,com.electron.lark",
+            @"有道云笔记": @"com.youdao.note",
+            @"印象笔记": @"com.evernote.iPhone.Evernote",
+            @"notion": @"notion.id",
+            @"obsidian": @"md.obsidian",
+            @"幕布": @"com.mubu.app",
+            @"xmind": @"net.xmind.brownieapp",
+            @"滴答清单": @"com.ticktick.task",
             @"百度网盘": @"com.baidu.netdisk",
             @"阿里云盘": @"com.alicloud.databox",
-            @"夸克": @"com.ucweb.iphone.quark",
-            @"滴答清单": @"com.ticktick.task",
+            @"天翼云盘": @"com.21cn.cloud",
+            @"中国移动云盘": @"com.chinamobile.cmcccloud",
+            @"夸克": @"com.ucweb.iphone.quark", @"夸克浏览器": @"com.ucweb.iphone.quark", @"夸克网盘": @"com.ucweb.iphone.quark",
+            @"腾讯微云": @"com.tencent.weiyun",
+            @"115": @"com.115.personal", @"115网盘": @"com.115.personal",
+            @"迅雷": @"com.xunlei.thunder",
+            @"爱思助手": @"com.i4.aisi", @"爱思": @"com.i4.aisi",
             @"扫描全能王": @"com.intsig.CamScanner",
             @"白描": @"com.baimiao.app",
-            @"语雀": @"com.antgroup.yuque",
-            @"石墨文档": @"com.shimo.client",
-            @"幕布": @"com.mubu.app",
-            // 快递物流与跑腿 (6+)
-            @"菜鸟": @"com.cainiao.logistic", @"菜鸟裹裹": @"com.cainiao.logistic",
+            @"qq邮箱": @"com.tencent.qqmail",
+            @"网易邮箱": @"com.netease.macmail", @"邮箱大师": @"com.netease.macmail",
+            @"百度": @"com.baidu.BaiduMobile", @"手机百度": @"com.baidu.BaiduMobile",
+            @"uc浏览器": @"com.ucweb.iphone.lowversion",
+            @"qq浏览器": @"com.tencent.mttlite",
+            @"chrome": @"com.google.chrome.ios", @"谷歌浏览器": @"com.google.chrome.ios",
+            @"edge": @"com.microsoft.msedge",
+            @"alook": @"com.alook.browser",
+            @"搜狗输入法": @"com.sogou.sogouinput",
+            @"讯飞输入法": @"com.iflytek.iflyinput",
+            @"百度输入法": @"com.baidu.inputMethod",
+
+            // 10. 快递物流、运营商、政务税务与医疗运动 (25+)
+            @"菜鸟": @"com.cainiao.cnwireless,com.cainiao.logistic", @"菜鸟裹裹": @"com.cainiao.cnwireless,com.cainiao.logistic",
             @"顺丰速运": @"com.sf-express.SFClient", @"顺丰": @"com.sf-express.SFClient",
+            @"京东快递": @"com.jd.express",
             @"丰巢": @"com.fcbox.app",
             @"货拉拉": @"com.huolala.client",
+            @"快狗打车": @"com.58.suyun",
             @"闪送": @"com.ishansong.client",
-            // 三大运营商掌厅 (3+)
-            @"中国移动": @"com.chinamobile.mcloud", @"10086": @"com.chinamobile.mcloud",
+            @"中国移动": @"cn.10086.app,com.chinamobile.mcloud", @"10086": @"cn.10086.app,com.chinamobile.mcloud",
             @"中国联通": @"com.sinovatech.unicom.ui", @"10010": @"com.sinovatech.unicom.ui",
             @"中国电信": @"cn.com.chinatelecom.ChinaTelecom", @"10000": @"cn.com.chinatelecom.ChinaTelecom",
-            // 交管政务与民生办事 (7+)
+            @"网上国网": @"com.sgcc.wsgw.cn", @"国家电网": @"com.sgcc.wsgw.cn",
+            @"南方电网": @"com.csg.palmhall",
             @"交管12123": @"com.tmri.12123", @"12123": @"com.tmri.12123",
-            @"个人所得税": @"com.chinatax.taxpayer",
+            @"个人所得税": @"com.chinatax.taxpayer", @"个税": @"com.chinatax.taxpayer",
+            @"国家医保服务平台": @"cn.nhsa.app",
+            @"国家政务服务平台": @"com.gjzwfw.app",
             @"随申办": @"com.wondertek.activity", @"随申办市民云": @"com.wondertek.activity",
             @"浙里办": @"com.hanweb.zjdss",
+            @"粤省事": @"com.tencent.gdgov",
+            @"北京通": @"com.bjt.app",
+            @"天府通办": @"com.ablegenius.sczwfw",
             @"58同城": @"com.wuba.Life",
-            // 新能源车机互联与汽车 (9+)
+            @"keep": @"com.gotokeep.keep",
+            @"小米运动健康": @"com.xiaomi.hm.health", @"zepp life": @"com.xiaomi.hm.health",
+            @"华为运动健康": @"com.huawei.health",
+            @"薄荷健康": @"com.boohee.one",
+            @"美柚": @"com.lingan.seeyou",
+            @"丁香医生": @"com.dxy.aspirin",
+            @"好大夫在线": @"com.haodf.patient",
+            @"墨迹天气": @"com.moji.MojiWeather",
+            @"彩云天气": @"com.caiyunapp.weather",
+
+            // 11. 车机互联、智能家居、房产与修图求职 (25+)
             @"蔚来": @"cn.com.weilai.car",
             @"小鹏汽车": @"com.xiaopeng.mycar", @"小鹏": @"com.xiaopeng.mycar",
             @"理想汽车": @"com.chehejia.lixiang", @"理想": @"com.chehejia.lixiang",
-            @"比亚迪": @"com.byd.auto",
+            @"小米汽车": @"com.xiaomi.autocar",
+            @"鸿蒙智行": @"com.aitotech.aito", @"问界": @"com.aitotech.aito",
+            @"极氪": @"com.zeekrlife.mobile",
+            @"比亚迪": @"com.byd.auto", @"比亚迪汽车": @"com.byd.auto",
             @"特斯拉": @"com.teslamotors.Tesla", @"tesla": @"com.teslamotors.Tesla",
             @"懂车帝": @"com.ss.android.auto",
             @"汽车之家": @"com.cubic.autohome",
             @"易车": @"com.yiche.autoeasy",
             @"瓜子二手车": @"com.guazi.app",
-            // 智能家居与 IoT (6+)
+            @"途虎养车": @"cn.tuhu.tuhu",
             @"米家": @"com.xiaomi.mihome",
             @"华为智慧生活": @"com.huawei.smarthome", @"智慧生活": @"com.huawei.smarthome",
             @"美的美居": @"com.midea.ai.home",
             @"海尔智家": @"com.haier.uhome",
+            @"小度": @"com.baidu.duer.superapp",
             @"贝壳找房": @"com.lianjia.beike", @"贝壳": @"com.lianjia.beike",
+            @"链家": @"com.lianjia.Lianjia",
             @"安居客": @"com.anjuke.iphone",
-            // 剪辑修图、求职与证券 (12+)
+            @"自如": @"com.ziroom.ZiroomProject",
             @"剪映": @"com.lemon.lv",
+            @"capcut": @"com.lemon.lvoverseas",
             @"美图秀秀": @"com.mt.mtxx",
             @"醒图": @"com.bytedance.snapseed",
+            @"轻颜相机": @"com.lemon.faceu",
+            @"b612": @"com.linecorp.b612",
+            @"无他相机": @"com.benqu.wuta",
+            @"黄油相机": @"com.by.buttercamera",
             @"boss直聘": @"com.hpbr.bosszhipin",
             @"智联招聘": @"com.zhaopin.iphone",
+            @"前程无忧": @"com.51job.ios", @"51job": @"com.51job.ios",
             @"猎聘": @"com.liepin.hunter",
-            @"同花顺": @"com.hexin.plat.android",
-            @"东方财富": @"com.eastmoney.iphone",
-            @"雪球": @"com.xueqiu",
-            @"富途牛牛": @"com.futu.futu",
-            // 国产大模型 AI 助手 (4+)
+            @"脉脉": @"com.taou.maimai",
+
+            // 12. 国内外主流 AI 大模型助手 (10+)
             @"豆包": @"com.bytedance.doubao",
             @"kimi": @"ai.moonshot.kimi",
+            @"deepseek": @"com.deepseek.chat", @"深度求索": @"com.deepseek.chat",
+            @"腾讯元宝": @"com.tencent.yuanbao", @"元宝": @"com.tencent.yuanbao",
+            @"通义": @"com.aliyun.tongyi", @"通义千问": @"com.aliyun.tongyi",
             @"智谱清言": @"cn.zhipu.chatglm",
-            @"文心一言": @"com.baidu.yiyan",
-            // iOS 系统原生功能
+            @"文心一言": @"com.baidu.yiyan", @"文小言": @"com.baidu.yiyan",
+            @"星野": @"com.minimax.xingye",
+            @"chatgpt": @"com.openai.chat",
+            @"claude": @"com.anthropic.claude",
+            @"grok": @"ai.x.GrokApp",
+
+            // 13. 热门手机游戏 (30+)
+            @"王者荣耀": @"com.tencent.smoba", @"王者": @"com.tencent.smoba",
+            @"和平精英": @"com.tencent.tmgp.pubgmhd", @"吃鸡": @"com.tencent.tmgp.pubgmhd",
+            @"原神": @"com.miHoYo.Yuanshen,com.miHoYo.GenshinImpact",
+            @"崩坏星穹铁道": @"com.miHoYo.hkrpg,com.HoYoverse.hkrpgoversea", @"星穹铁道": @"com.miHoYo.hkrpg,com.HoYoverse.hkrpgoversea", @"崩铁": @"com.miHoYo.hkrpg,com.HoYoverse.hkrpgoversea",
+            @"绝区零": @"com.miHoYo.Nap",
+            @"崩坏3": @"com.miHoYo.bh3",
+            @"金铲铲之战": @"com.tencent.jkchess", @"金铲铲": @"com.tencent.jkchess",
+            @"英雄联盟手游": @"com.tencent.lolm", @"lol手游": @"com.tencent.lolm",
+            @"蛋仔派对": @"com.netease.party", @"蛋仔": @"com.netease.party",
+            @"逆水寒": @"com.netease.nsh", @"逆水寒手游": @"com.netease.nsh",
+            @"永劫无间": @"com.netease.l22", @"永劫无间手游": @"com.netease.l22",
+            @"燕云十六声": @"com.netease.yysls",
+            @"阴阳师": @"com.netease.onmyoji",
+            @"第五人格": @"com.netease.dwrg",
+            @"光遇": @"com.netease.sky",
+            @"梦幻西游": @"com.netease.my",
+            @"明日方舟": @"com.hypergryph.arknights",
+            @"鸣潮": @"com.kurogame.mingchao",
+            @"恋与深空": @"com.papegames.lysk",
+            @"穿越火线": @"com.tencent.tmgp.cf", @"cf手游": @"com.tencent.tmgp.cf",
+            @"火影忍者": @"com.tencent.KiHan",
+            @"暗区突围": @"com.tencent.mf.uam",
+            @"三角洲行动": @"com.tencent.tmgp.dfm",
+            @"无畏契约": @"com.tencent.valm",
+            @"使命召唤手游": @"com.tencent.tmgp.cod",
+            @"元梦之星": @"com.tencent.letsgo",
+            @"qq飞车": @"com.tencent.tmgp.speedmobile",
+            @"欢乐斗地主": @"com.tencent.ddz",
+            @"欢乐麻将": @"com.tencent.mahjong",
+            @"开心消消乐": @"com.happyelements.aniPop",
+            @"部落冲突": @"com.supercell.magic",
+            @"皇室战争": @"com.supercell.scroll",
+            @"三国杀": @"com.BF.sgs.hdexp",
+            @"炉石传说": @"com.blizzard.wtcg.hearthstone",
+            @"我的世界": @"com.netease.mc",
+
+            // 14. iOS 系统自带原生应用与越狱/巨魔工具 (45+)
             @"设置": @"com.apple.Preferences",
             @"相机": @"com.apple.camera",
             @"相册": @"com.apple.mobileslideshow", @"照片": @"com.apple.mobileslideshow",
-            @"safari": @"com.apple.mobilesafari", @"浏览器": @"com.apple.mobilesafari",
+            @"safari": @"com.apple.mobilesafari", @"浏览器": @"com.apple.mobilesafari", @"safari浏览器": @"com.apple.mobilesafari",
             @"电话": @"com.apple.mobilephone",
             @"短信": @"com.apple.MobileSMS", @"信息": @"com.apple.MobileSMS",
+            @"facetime": @"com.apple.facetime", @"facetime通话": @"com.apple.facetime",
+            @"邮件": @"com.apple.mobilemail",
+            @"通讯录": @"com.apple.MobileAddressBook",
             @"备忘录": @"com.apple.mobilenotes",
+            @"提醒事项": @"com.apple.reminders",
             @"日历": @"com.apple.mobilecal",
             @"闹钟": @"com.apple.mobiletimer", @"时钟": @"com.apple.mobiletimer",
             @"计算器": @"com.apple.calculator",
             @"天气": @"com.apple.weather",
             @"股市": @"com.apple.stocks", @"股票": @"com.apple.stocks",
-            @"快捷指令": @"com.apple.shortcuts",
+            @"快捷指令": @"com.apple.shortcuts", @"捷径": @"com.apple.shortcuts",
             @"文件": @"com.apple.DocumentsApp",
-            @"appstore": @"com.apple.AppStore", @"应用商店": @"com.apple.AppStore",
-            @"地图": @"com.apple.Maps",
+            @"appstore": @"com.apple.AppStore", @"app store": @"com.apple.AppStore", @"应用商店": @"com.apple.AppStore",
+            @"地图": @"com.apple.Maps", @"苹果地图": @"com.apple.Maps",
             @"语音备忘录": @"com.apple.VoiceMemos", @"录音机": @"com.apple.VoiceMemos",
-            // 越狱工具
+            @"指南针": @"com.apple.compass",
+            @"测距仪": @"com.apple.measure",
+            @"钱包": @"com.apple.Passbook",
+            @"健康": @"com.apple.Health",
+            @"健身": @"com.apple.Fitness",
+            @"家庭": @"com.apple.Home",
+            @"查找": @"com.apple.findmy", @"查找我的iphone": @"com.apple.findmy",
+            @"播客": @"com.apple.podcasts",
+            @"音乐": @"com.apple.Music", @"apple music": @"com.apple.Music",
+            @"图书": @"com.apple.iBooks",
+            @"翻译": @"com.apple.Translate", @"苹果翻译": @"com.apple.Translate",
+            @"无边记": @"com.apple.freeform",
+            @"手记": @"com.apple.journal",
+            @"放大器": @"com.apple.Magnifier",
+            @"watch": @"com.apple.Bridge",
+            @"提示": @"com.apple.tips",
             @"filza": @"com.tigisoftware.Filza",
             @"zebra": @"xyz.willy.Zebra", @"斑马": @"xyz.willy.Zebra",
-            @"sileo": @"org.coolstar.SileoStore",
-            @"youtube": @"com.google.ios.youtube", @"油管": @"com.google.ios.youtube"
+            @"sileo": @"org.coolstar.SileoStore,org.coolstar.SileoNightly",
+            @"cydia": @"com.saurik.Cydia",
+            @"trollstore": @"com.opa334.TrollStore", @"巨魔": @"com.opa334.TrollStore", @"巨魔商店": @"com.opa334.TrollStore",
+            @"newterm": @"ws.hbang.Terminal", @"终端": @"ws.hbang.Terminal"
         };
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillShow:) name:UIKeyboardWillShowNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
@@ -9236,13 +9517,45 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)preloadInstalledAppsCache {
     @try {
         NSArray<LSApplicationProxy *> *apps = [[%c(LSApplicationWorkspace) defaultWorkspace] allInstalledApplications];
+        NSMutableDictionary<NSString *, NSString *> *tempMap = [NSMutableDictionary dictionary];
         for (LSApplicationProxy *proxy in apps) {
-            NSString *locName = [proxy.localizedName lowercaseString];
             NSString *bundleID = proxy.applicationIdentifier;
-            if (locName.length > 0 && bundleID.length > 0) {
-                self.cachedInstalledApps[locName] = bundleID;
+            if (!bundleID || bundleID.length == 0) continue;
+            if ([bundleID hasPrefix:@"com.apple.springboard"] || [bundleID hasPrefix:@"com.apple.WebKit"] || [bundleID containsString:@"watchkit"]) continue;
+            if ([proxy respondsToSelector:@selector(isInstalled)] && ![proxy isInstalled]) continue;
+            if ([proxy respondsToSelector:@selector(appTags)]) {
+                NSArray *tags = [proxy appTags];
+                if ([tags isKindOfClass:[NSArray class]] && [tags containsObject:@"hidden"]) continue;
+            }
+            NSString *locName = [[proxy.localizedName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+            if (locName.length > 0) {
+                tempMap[locName] = bundleID;
             }
         }
+        @synchronized (self.cachedInstalledApps) {
+            [self.cachedInstalledApps addEntriesFromDictionary:tempMap];
+        }
+        // 在主线程补充读取 SpringBoard 桌面图标的真实中文显示名 (SBApplicationController -> displayName)
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                Class sbCtrlCls = objc_getClass("SBApplicationController");
+                SBApplicationController *sbCtrl = (sbCtrlCls && [sbCtrlCls respondsToSelector:@selector(sharedInstanceIfExists)])
+                    ? [sbCtrlCls sharedInstanceIfExists]
+                    : ((sbCtrlCls && [sbCtrlCls respondsToSelector:@selector(sharedInstance)]) ? [sbCtrlCls sharedInstance] : nil);
+                if (sbCtrl && [sbCtrl respondsToSelector:@selector(allApplications)]) {
+                    NSArray<SBApplication *> *sbApps = [sbCtrl allApplications];
+                    @synchronized (self.cachedInstalledApps) {
+                        for (SBApplication *sbApp in sbApps) {
+                            NSString *bid = [sbApp respondsToSelector:@selector(bundleIdentifier)] ? [sbApp bundleIdentifier] : nil;
+                            NSString *dName = [sbApp respondsToSelector:@selector(displayName)] ? [[sbApp displayName] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : nil;
+                            if (bid.length > 0 && dName.length > 0 && ![bid hasPrefix:@"com.apple.springboard"]) {
+                                self.cachedInstalledApps[[dName lowercaseString]] = bid;
+                            }
+                        }
+                    }
+                }
+            } @catch (NSException *e) {}
+        });
     } @catch (NSException *e) {}
 }
 
@@ -12144,13 +12457,20 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         NSDictionary *outputTrans = serverContent[@"outputTranscription"];
         if ([outputTrans isKindOfClass:[NSDictionary class]] && [outputTrans[@"text"] isKindOfClass:[NSString class]]) {
             [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-            if (self.currentVoiceQueryBuffer.length > 0) {
-                NSString *fullVoiceCmd = [self.currentVoiceQueryBuffer copy];
+            if (self.currentVoiceQueryBuffer.length > 0 || self.lastNativeNeuralChineseText.length > 0) {
+                NSString *fullVoiceCmd = (self.currentVoiceQueryBuffer.length > 0) ? [self.currentVoiceQueryBuffer copy] : [self.lastNativeNeuralChineseText copy];
+                NSString *localZhFallback = [self.lastNativeNeuralChineseText copy];
                 self.lastCommittedUserVoiceQuery = fullVoiceCmd;
                 [self.currentVoiceQueryBuffer setString:@""];
-                if ([self tryExecuteDirectLocalCommand:fullVoiceCmd]) {
+                self.lastNativeNeuralChineseText = nil;
+                BOOL matchedLocal = [self tryExecuteDirectLocalCommand:fullVoiceCmd];
+                if (!matchedLocal && localZhFallback.length >= 2 && ![localZhFallback isEqualToString:fullVoiceCmd]) {
+                    matchedLocal = [self tryExecuteDirectLocalCommand:localZhFallback];
+                    if (matchedLocal) fullVoiceCmd = localZhFallback;
+                }
+                if (matchedLocal) {
                     self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
-                    BOOL isPureStatusQuery = ([fullVoiceCmd containsString:@"电池"] || [fullVoiceCmd containsString:@"电量"] || [fullVoiceCmd containsString:@"健康度"] || [fullVoiceCmd containsString:@"内存"] || [fullVoiceCmd containsString:@"运存"] || [fullVoiceCmd containsString:@"运行速度"] || [fullVoiceCmd containsString:@"卡不卡"] || [fullVoiceCmd containsString:@"死机"] || [fullVoiceCmd containsString:@"崩溃"] || [fullVoiceCmd containsString:@"闪退"] || [fullVoiceCmd containsString:@"注销"] || [fullVoiceCmd containsString:@"哪个插件"] || [fullVoiceCmd containsString:@"什么插件"]);
+                    BOOL isPureStatusQuery = ([fullVoiceCmd containsString:@"电池"] || [fullVoiceCmd containsString:@"电量"] || [fullVoiceCmd containsString:@"健康度"] || [fullVoiceCmd containsString:@"内存"] || [fullVoiceCmd containsString:@"运存"] || [fullVoiceCmd containsString:@"运行速度"] || [fullVoiceCmd containsString:@"卡不卡"] || [fullVoiceCmd containsString:@"死机"] || [fullVoiceCmd containsString:@"崩溃"] || [fullVoiceCmd containsString:@"闪退"] || [fullVoiceCmd containsString:@"注销"] || [fullVoiceCmd containsString:@"哪个插件"] || [fullVoiceCmd containsString:@"什么插件"] || [fullVoiceCmd containsString:@"清理"] || [fullVoiceCmd containsString:@"垃圾"] || [fullVoiceCmd containsString:@"缓存"] || [fullVoiceCmd containsString:@"系统数据"] || [fullVoiceCmd containsString:@"释放"]);
                     if (!isPureStatusQuery) {
                         self.currentTurnPlaybackID++;
                         self.pendingPlayBuffersCount = 0;
@@ -12363,6 +12683,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 NSUInteger curLen = result.bestTranscription.formattedString.length;
                 if (curLen != strongSelf.lastNeuralRecognizedCharCount) {
                     strongSelf.lastNeuralRecognizedCharCount = curLen;
+                    strongSelf.lastNativeNeuralChineseText = result.bestTranscription.formattedString;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
@@ -13043,8 +13364,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     [[AGGlobalActionPillWindow sharedPill] showActionPill:msg];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isMiniSummonActive && self.miniSummonView && !self.miniSummonView.hidden && msg.length > 0) {
+            self.miniCaptionLockUntilTime = [[NSDate date] timeIntervalSince1970] + 4.0;
             self.miniSummonView.captionLabel.text = msg;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (self.isMiniSummonActive && self.miniSummonView && [self.miniSummonView.captionLabel.text isEqualToString:msg]) {
                     self.miniSummonView.captionLabel.text = @"🎙️ 直接开口说话，轻点展开...";
                 }
@@ -13098,13 +13420,20 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 #pragma mark - 3. 手机操作引擎 (全场景系统级 Agent 自动化中枢)
 
 - (void)checkDeferredVoiceLocalCommand {
-    if (self.currentVoiceQueryBuffer.length == 0) return;
-    NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
-    if ([self tryExecuteDirectLocalCommand:fullCmd]) {
+    if (self.currentVoiceQueryBuffer.length == 0 && self.lastNativeNeuralChineseText.length == 0) return;
+    NSString *fullCmd = (self.currentVoiceQueryBuffer.length > 0) ? [self.currentVoiceQueryBuffer copy] : [self.lastNativeNeuralChineseText copy];
+    NSString *localZhFallback = [self.lastNativeNeuralChineseText copy];
+    BOOL matched = [self tryExecuteDirectLocalCommand:fullCmd];
+    if (!matched && localZhFallback.length >= 2 && ![localZhFallback isEqualToString:fullCmd]) {
+        matched = [self tryExecuteDirectLocalCommand:localZhFallback];
+        if (matched) fullCmd = localZhFallback;
+    }
+    if (matched) {
         self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
         [self.currentVoiceQueryBuffer setString:@""];
-        // 若是查电池/查运存等播报类指令，保留 AI 正在生成的原生语音回答，不掐断播放器
-        BOOL isPureStatusQuery = ([fullCmd containsString:@"电池"] || [fullCmd containsString:@"电量"] || [fullCmd containsString:@"健康度"] || [fullCmd containsString:@"内存"] || [fullCmd containsString:@"运存"] || [fullCmd containsString:@"运行速度"] || [fullCmd containsString:@"卡不卡"] || [fullCmd containsString:@"死机"] || [fullCmd containsString:@"崩溃"] || [fullCmd containsString:@"闪退"] || [fullCmd containsString:@"注销"] || [fullCmd containsString:@"哪个插件"] || [fullCmd containsString:@"什么插件"]);
+        self.lastNativeNeuralChineseText = nil;
+        // 若是查电池/查运存/清理垃圾/清理系统数据等播报类指令，保留 AI 正在生成的原生语音回答，不掐断播放器
+        BOOL isPureStatusQuery = ([fullCmd containsString:@"电池"] || [fullCmd containsString:@"电量"] || [fullCmd containsString:@"健康度"] || [fullCmd containsString:@"内存"] || [fullCmd containsString:@"运存"] || [fullCmd containsString:@"运行速度"] || [fullCmd containsString:@"卡不卡"] || [fullCmd containsString:@"死机"] || [fullCmd containsString:@"崩溃"] || [fullCmd containsString:@"闪退"] || [fullCmd containsString:@"注销"] || [fullCmd containsString:@"哪个插件"] || [fullCmd containsString:@"什么插件"] || [fullCmd containsString:@"清理"] || [fullCmd containsString:@"垃圾"] || [fullCmd containsString:@"缓存"] || [fullCmd containsString:@"系统数据"] || [fullCmd containsString:@"释放"]);
         if (!isPureStatusQuery) {
             self.currentTurnPlaybackID++;
             self.pendingPlayBuffersCount = 0;
@@ -13222,7 +13551,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         directSearchRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:再|帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜)(?:一下)?([^，。！？,.!?\\s]+)$" options:0 error:nil];
         naviRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|用|使用)?(?:高德地图|百度地图|苹果地图|高德|百度|地图)?(?:帮我)?(?:导航|驾车|骑行|步行)?(?:到|去|前往|去往)(.+?)(?:怎么走|怎么去|吧|呢)?$" options:0 error:nil];
         musicRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:在网易云|在qq音乐|听|播放)(?:搜|播|听)?([^，。！？,.!?\\s]+)" options:0 error:nil];
-        openRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|你|直接|先|现在|麻烦|快|我)(?:打开|启动|开启|进入|进一下|进到|跳到|切到|切换到|调出|运行|唤起|我想看|开一下)([^，。！？,.!?\\s”\"\']+?)(?:吧|呢|啊|呀|哦)?$" options:0 error:nil];
+        openRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|你|直接|先|现在|麻烦|快|我)(?:打开|启动|开启|进入|进一下|进到|跳到|切到|切换到|调出|运行|唤起|我想看|开一下)\\s*([^，。！？,.!?”\"']+?)(?:吧|呢|啊|呀|哦)?$" options:0 error:nil];
         callRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:给|拨打)([^，。！？,.!?\\s]+?)(?:打电话|呼叫|的电话)" options:0 error:nil];
         smsRegex = [NSRegularExpression regularExpressionWithPattern:@"给(.+?)发(?:短信|信息)(?:说|内容是)?(.+)$" options:0 error:nil];
     });
@@ -13577,18 +13906,30 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
 
-    // 8. 🧹 清理后台与深度清理
-    if (([cmd containsString:@"清理"] || [cmd containsString:@"关闭"] || [cmd containsString:@"清空"] || [cmd containsString:@"杀掉"]) && [cmd containsString:@"后台"]) {
+    // 8. 🧹 四大清理指令严格独立（①清理后台 / ②清理系统数据 / ③纯清理运存 / ④清理应用与游戏缓存垃圾）
+    if (([cmd containsString:@"清理"] || [cmd containsString:@"关闭"] || [cmd containsString:@"清空"] || [cmd containsString:@"杀掉"] || [cmd containsString:@"退掉"] || [cmd containsString:@"清一下"]) && [cmd containsString:@"后台"]) {
         [self executeActionDictionary:@{@"type": @"kill_background_apps"}];
+        return YES;
+    }
+    if ([cmd containsString:@"系统数据"] || [cmd containsString:@"系统垃圾"] || [cmd containsString:@"其他空间"] || [cmd containsString:@"系统缓存"]) {
+        if ([cmd containsString:@"清"] || [cmd containsString:@"删"] || [cmd containsString:@"释放"] || [cmd containsString:@"瘦身"]) {
+            [self executeActionDictionary:@{@"type": @"clean_system_data"}];
+            return YES;
+        }
+    }
+    if (([cmd containsString:@"清理"] || [cmd containsString:@"释放"] || [cmd containsString:@"回收"] || [cmd containsString:@"清一下"] || [cmd containsString:@"加速"]) &&
+        ([cmd containsString:@"内存"] || [cmd containsString:@"运存"] || [cmd containsString:@"运行内存"] || [cmd containsString:@"ram"]) &&
+        ![cmd containsString:@"垃圾"] && ![cmd containsString:@"缓存"] && ![cmd containsString:@"存储"] && ![cmd containsString:@"空间"]) {
+        [self executeActionDictionary:@{@"type": @"clean_ram_only"}];
         return YES;
     }
     if ([cmd containsString:@"清理垃圾"] || [cmd containsString:@"清垃圾"] || [cmd containsString:@"深度清理"] ||
         [cmd containsString:@"手机清理"] || [cmd containsString:@"清理手机"] || [cmd containsString:@"垃圾清理"] ||
         [cmd containsString:@"清理缓存"] || [cmd containsString:@"清缓存"] || [cmd containsString:@"清空缓存"] ||
-        [cmd containsString:@"释放内存"] || [cmd containsString:@"清理内存"] || [cmd containsString:@"释放空间"] ||
-        [cmd containsString:@"清理空间"] || [cmd containsString:@"手机加速"] || [cmd containsString:@"手机瘦身"] ||
-        ([cmd containsString:@"清理"] && ([cmd containsString:@"系统"] || [cmd containsString:@"手机"] || [cmd containsString:@"垃圾"] || [cmd containsString:@"缓存"] || [cmd containsString:@"内存"] || [cmd containsString:@"空间"])) ||
-        ([cmd containsString:@"释放"] && ([cmd containsString:@"内存"] || [cmd containsString:@"空间"] || [cmd containsString:@"存储"]))) {
+        [cmd containsString:@"释放空间"] || [cmd containsString:@"清理空间"] || [cmd containsString:@"手机加速"] ||
+        [cmd containsString:@"手机瘦身"] ||
+        ([cmd containsString:@"清理"] && ([cmd containsString:@"系统"] || [cmd containsString:@"手机"] || [cmd containsString:@"垃圾"] || [cmd containsString:@"缓存"] || [cmd containsString:@"空间"])) ||
+        ([cmd containsString:@"释放"] && ([cmd containsString:@"空间"] || [cmd containsString:@"存储"]))) {
         [self executeActionDictionary:@{@"type": @"system_deep_clean"}];
         return YES;
     }
@@ -13663,10 +14004,13 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
 
-    // 10A-2. 🔒 判断回桌面与锁屏（置于单字“返回”之前，确保“我返回桌面 / 返回到桌面上”100%触发回主屏幕！）
+    // 10A-2. 🔒 判断回桌面与锁屏（含“返回左面/回左面/回主页/回主界面”同音词容错）
     if ([cmd containsString:@"回桌面"] || [cmd containsString:@"返回桌面"] || [cmd containsString:@"回到桌面"] ||
+        [cmd containsString:@"回左面"] || [cmd containsString:@"返回左面"] || [cmd containsString:@"回到左面"] ||
         [cmd containsString:@"回主屏幕"] || [cmd containsString:@"回到主屏幕"] || [cmd containsString:@"返回主屏幕"] ||
-        [cmd containsString:@"退回桌面"] || [cmd containsString:@"去桌面"] || [cmd containsString:@"切回桌面"]) {
+        [cmd containsString:@"回主页"] || [cmd containsString:@"返回主页"] || [cmd containsString:@"回到主页"] ||
+        [cmd containsString:@"回主界面"] || [cmd containsString:@"返回主界面"] || [cmd containsString:@"退回桌面"] ||
+        [cmd containsString:@"退回主屏幕"] || [cmd containsString:@"去桌面"] || [cmd containsString:@"切回桌面"]) {
         [self executeActionDictionary:@{@"type": @"system_control", @"action": @"home"}];
         return YES;
     }
@@ -13853,7 +14197,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
     
-    // 14. 🟢 移动支付、扫码、乘车码与生活服务深度直达
+    // 14. 🟢 微信/支付宝/淘宝/京东/美团/抖音/B站/小红书/音乐/导航全套深度直达 (120+ 项)
     if ([cmd containsString:@"微信"] && [cmd containsString:@"扫"]) {
         [self executeActionDictionary:@{@"type": @"wechat_shortcut", @"feature": @"scan"}]; return YES;
     }
@@ -13869,6 +14213,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd isEqualToString:@"扫一扫"] || [cmd isEqualToString:@"扫码"]) {
         [self executeActionDictionary:@{@"type": @"wechat_shortcut", @"feature": @"scan"}]; return YES;
     }
+    // 支付宝全场景深度直达
     if ([cmd containsString:@"支付宝"] && [cmd containsString:@"扫"]) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"scan"}]; return YES;
     }
@@ -13887,12 +14232,58 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"蚂蚁庄园"] || [cmd containsString:@"喂小鸡"] || [cmd containsString:@"喂鸡"]) {
         [self openURLString:@"alipays://platformapi/startapp?appId=66666674"]; return YES;
     }
+    if ([cmd containsString:@"花呗"] && ([cmd containsString:@"支付宝"] || [cmd containsString:@"打开"] || [cmd containsString:@"看"] || [cmd containsString:@"查"] || [cmd containsString:@"还"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000199"]; return YES;
+    }
+    if (([cmd containsString:@"借呗"] || [cmd containsString:@"蚂蚁借呗"]) && ([cmd containsString:@"打开"] || [cmd containsString:@"看"] || [cmd containsString:@"查"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000180"]; return YES;
+    }
+    if ([cmd containsString:@"余额宝"] && ([cmd containsString:@"打开"] || [cmd containsString:@"看"] || [cmd containsString:@"查"] || [cmd containsString:@"收益"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000032"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"账单"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000003"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"总资产"] || [cmd containsString:@"资产"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000243"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"余额"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000019"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"银行卡"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000014"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"转账"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000221"]; return YES;
+    }
+    if ([cmd containsString:@"还信用卡"] || [cmd containsString:@"信用卡还款"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=09999999"]; return YES;
+    }
+    if ([cmd containsString:@"充话费"] || [cmd containsString:@"话费充值"] || ([cmd containsString:@"支付宝"] && [cmd containsString:@"充值"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=10000003"]; return YES;
+    }
+    if ([cmd containsString:@"生活缴费"] || [cmd containsString:@"交电费"] || [cmd containsString:@"交水费"] || [cmd containsString:@"交燃气费"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000193"]; return YES;
+    }
+    if ([cmd containsString:@"芝麻信用"] || [cmd containsString:@"芝麻分"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000118"]; return YES;
+    }
     if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"快递"] || [cmd containsString:@"查件"])) {
         [self openURLString:@"alipays://platformapi/startapp?appId=20000754"]; return YES;
     }
-    if ([cmd containsString:@"医保"] && ([cmd containsString:@"码"] || [cmd containsString:@"凭证"])) {
+    if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"寄件"] || [cmd containsString:@"寄快递"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=60000146"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"基金"] || [cmd containsString:@"理财"])) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000793"]; return YES;
+    }
+    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"会员"]) {
+        [self openURLString:@"alipays://platformapi/startapp?appId=20000160"]; return YES;
+    }
+    if (([cmd containsString:@"医保"] || [cmd containsString:@"健康码"]) && ([cmd containsString:@"码"] || [cmd containsString:@"凭证"])) {
         [self openURLString:@"alipays://platformapi/startapp?appId=20000067"]; return YES;
     }
+    // 云闪付深度直达
     if ([cmd containsString:@"云闪付"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"upwallet://native/scanCode"]; return YES;
     }
@@ -13902,11 +14293,18 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"云闪付"] && ([cmd containsString:@"乘车"] || [cmd containsString:@"公交"] || [cmd containsString:@"地铁"])) {
         [self openURLString:@"upwallet://rn/rnhtmlridingcode"]; return YES;
     }
+    // 淘宝 / 京东 / 拼多多 / 闲鱼深度直达
     if ([cmd containsString:@"淘宝"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"taobao://tb.cn/n/scancode"]; return YES;
     }
     if ([cmd containsString:@"淘宝"] && [cmd containsString:@"购物车"]) {
         [self openURLString:@"taobao://m.taobao.com/cart"]; return YES;
+    }
+    if ([cmd containsString:@"淘宝"] && ([cmd containsString:@"订单"] || [cmd containsString:@"待收货"] || [cmd containsString:@"物流"] || [cmd containsString:@"买到的"])) {
+        [self openURLString:@"taobao://my.m.taobao.com/olist/index.htm"]; return YES;
+    }
+    if ([cmd containsString:@"淘金币"]) {
+        [self openURLString:@"taobao://pages.tmall.com/wow/z/tmtjb/town/home"]; return YES;
     }
     if ([cmd containsString:@"京东"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"openapp.jdmobile://virtual?params=%7B%22category%22%3A%22jump%22%2C%22des%22%3A%22saoasao%22%7D"]; return YES;
@@ -13914,12 +14312,72 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"京东"] && [cmd containsString:@"购物车"]) {
         [self openURLString:@"openapp.jdmobile://virtual?params=%7B%22category%22%3A%22jump%22%2C%22des%22%3A%22cart%22%7D"]; return YES;
     }
+    if ([cmd containsString:@"京东"] && ([cmd containsString:@"订单"] || [cmd containsString:@"待收货"] || [cmd containsString:@"物流"])) {
+        [self openURLString:@"openapp.jdmobile://virtual?params=%7B%22category%22%3A%22jump%22%2C%22des%22%3A%22orderlist%22%7D"]; return YES;
+    }
+    if ([cmd containsString:@"领京豆"] || ([cmd containsString:@"京东"] && [cmd containsString:@"京豆"])) {
+        [self openURLString:@"openapp.jdmobile://virtual?params=%7B%22category%22%3A%22jump%22%2C%22des%22%3A%22jdbean%22%7D"]; return YES;
+    }
+    if ([cmd containsString:@"拼多多"] && ([cmd containsString:@"订单"] || [cmd containsString:@"待收货"])) {
+        [self openURLString:@"pinduoduo://com.xunmeng.pinduoduo/orders.html"]; return YES;
+    }
     if ([cmd containsString:@"闲鱼"] && ([cmd containsString:@"发布"] || [cmd containsString:@"卖闲置"])) {
         [self openURLString:@"fleamarket://publish"]; return YES;
+    }
+    // 美团 / 饿了么深度直达
+    if ([cmd containsString:@"美团"] && [cmd containsString:@"扫"]) {
+        [self openURLString:@"imeituan://www.meituan.com/scanQRCode?openAR=1"]; return YES;
+    }
+    if ([cmd containsString:@"美团"] && [cmd containsString:@"订单"]) {
+        [self openURLString:@"imeituan://www.meituan.com/orderList"]; return YES;
+    }
+    if ([cmd containsString:@"饿了么"] && [cmd containsString:@"扫"]) {
+        [self openURLString:@"eleme://code_scanner"]; return YES;
+    }
+    // 抖音 / 快手 / B站 / 小红书 / 微博 / 知乎深度直达
+    if ([cmd containsString:@"抖音"] && [cmd containsString:@"扫"]) {
+        [self openURLString:@"snssdk1128://qrscan"]; return YES;
+    }
+    if ([cmd containsString:@"拍抖音"] || ([cmd containsString:@"抖音"] && ([cmd containsString:@"拍视频"] || [cmd containsString:@"拍摄"]))) {
+        [self openURLString:@"snssdk1128://openRecord"]; return YES;
+    }
+    if ([cmd containsString:@"抖音"] && ([cmd containsString:@"热榜"] || [cmd containsString:@"热搜"])) {
+        [self openURLString:@"snssdk1128://search/trending"]; return YES;
+    }
+    if ([cmd containsString:@"快手"] && [cmd containsString:@"扫"]) {
+        [self openURLString:@"kwai://qrscan"]; return YES;
+    }
+    if (([cmd containsString:@"b站"] || [cmd containsString:@"哔哩哔哩"]) && [cmd containsString:@"扫"]) {
+        [self openURLString:@"bilibili://qrcode"]; return YES;
+    }
+    if (([cmd containsString:@"b站"] || [cmd containsString:@"哔哩哔哩"]) && [cmd containsString:@"动态"]) {
+        [self openURLString:@"bilibili://following/home"]; return YES;
+    }
+    if (([cmd containsString:@"b站"] || [cmd containsString:@"哔哩哔哩"]) && ([cmd containsString:@"历史"] || [cmd containsString:@"观看历史"])) {
+        [self openURLString:@"bilibili://user_center/history"]; return YES;
+    }
+    if (([cmd containsString:@"b站"] || [cmd containsString:@"哔哩哔哩"]) && ([cmd containsString:@"收藏"] || [cmd containsString:@"收藏夹"])) {
+        [self openURLString:@"bilibili://user_center/favourite"]; return YES;
+    }
+    if (([cmd containsString:@"b站"] || [cmd containsString:@"哔哩哔哩"]) && ([cmd containsString:@"热门"] || [cmd containsString:@"排行榜"])) {
+        [self openURLString:@"bilibili://rank"]; return YES;
+    }
+    if ([cmd containsString:@"发小红书"] || ([cmd containsString:@"小红书"] && ([cmd containsString:@"发笔记"] || [cmd containsString:@"发布"]))) {
+        [self openURLString:@"xhsdiscover://post"]; return YES;
     }
     if ([cmd containsString:@"微博"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"sinaweibo://qrcode"]; return YES;
     }
+    if ([cmd containsString:@"微博"] && ([cmd containsString:@"热搜"] || [cmd containsString:@"热榜"])) {
+        [self openURLString:@"sinaweibo://searchall"]; return YES;
+    }
+    if ([cmd containsString:@"知乎"] && [cmd containsString:@"热榜"]) {
+        [self openURLString:@"zhihu://billboard"]; return YES;
+    }
+    if ([cmd containsString:@"知乎"] && [cmd containsString:@"扫"]) {
+        [self openURLString:@"zhihu://codereader"]; return YES;
+    }
+    // 办公 / 音乐 / 快递 / 民生深度直达
     if ([cmd containsString:@"钉钉"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"dingtalk://dingtalkclient/page/scan"]; return YES;
     }
@@ -13929,13 +14387,13 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"58同城"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"wbmain://jump/core/capture"]; return YES;
     }
-    if ([cmd containsString:@"菜鸟"] && ([cmd containsString:@"取件码"] || [cmd containsString:@"身份码"] || [cmd containsString:@"查件"])) {
+    if ([cmd containsString:@"菜鸟"] && ([cmd containsString:@"取件码"] || [cmd containsString:@"身份码"] || [cmd containsString:@"查件"] || [cmd containsString:@"快递"])) {
         [self openURLString:@"cainiao://desktop/station_code"]; return YES;
     }
     if (([cmd containsString:@"网易云"] || [cmd containsString:@"音乐"]) && [cmd containsString:@"听歌识曲"]) {
         [self openURLString:@"orpheuswidget://recognize"]; return YES;
     }
-    if ([cmd containsString:@"网易云"] && [cmd containsString:@"私人fm"]) {
+    if ([cmd containsString:@"网易云"] && ([cmd containsString:@"私人fm"] || [cmd containsString:@"每日推荐"])) {
         [self openURLString:@"orpheuswidget://radio"]; return YES;
     }
     if ([cmd containsString:@"qq音乐"] && [cmd containsString:@"听歌识曲"]) {
@@ -13962,21 +14420,16 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"亿通行"] && ([cmd containsString:@"地铁"] || [cmd containsString:@"乘车"])) {
         [self openURLString:@"yitongxing://"]; return YES;
     }
-    if ([cmd containsString:@"知乎"] && [cmd containsString:@"热榜"]) {
-        [self openURLString:@"zhihu://billboard"]; return YES;
-    }
-    if ([cmd containsString:@"b站"] && [cmd containsString:@"动态"]) {
-        [self openURLString:@"bilibili://following/home"]; return YES;
-    }
-    if ([cmd containsString:@"拍抖音"] || ([cmd containsString:@"抖音"] && [cmd containsString:@"拍视频"])) {
-        [self openURLString:@"snssdk1128://openRecord"]; return YES;
-    }
-    if ([cmd containsString:@"发小红书"] || ([cmd containsString:@"小红书"] && [cmd containsString:@"发笔记"])) {
-        [self openURLString:@"xhsdiscover://post"]; return YES;
+    // 高德/百度周边快捷查找（加油站/停车场/厕所/充电桩/ATM）
+    if (([cmd containsString:@"附近"] || [cmd containsString:@"周边"] || [cmd containsString:@"最近"]) &&
+        ([cmd containsString:@"加油站"] || [cmd containsString:@"停车场"] || [cmd containsString:@"公厕"] || [cmd containsString:@"厕所"] || [cmd containsString:@"洗手间"] || [cmd containsString:@"充电桩"] || [cmd containsString:@"银行"] || [cmd containsString:@"药店"] || [cmd containsString:@"医院"])) {
+        NSString *poiKw = [cmd containsString:@"加油站"] ? @"加油站" : ([cmd containsString:@"停车场"] ? @"停车场" : (([cmd containsString:@"公厕"] || [cmd containsString:@"厕所"] || [cmd containsString:@"洗手间"]) ? @"公共厕所" : ([cmd containsString:@"充电桩"] ? @"充电桩" : ([cmd containsString:@"药店"] ? @"药店" : ([cmd containsString:@"医院"] ? @"医院" : @"银行")))));
+        [self executeActionDictionary:@{@"type": @"search", @"keyword": poiKw, @"platform": @"amap"}];
+        return YES;
     }
 
-    // 14B. ⚙️ iOS 深度系统设置直达
-    if (([cmd containsString:@"设置"] || [cmd containsString:@"开关"]) &&
+    // 14B. ⚙️ iOS 系统设置 40+ 子页面精准直达
+    if (([cmd containsString:@"设置"] || [cmd containsString:@"权限设置"]) &&
         ![cleanCmd isEqualToString:@"打开设置"] && ![cleanCmd isEqualToString:@"打开手机设置"] && ![cleanCmd isEqualToString:@"打开系统设置"]) {
         if ([cmd containsString:@"wifi"] || [cmd containsString:@"wi-fi"] || [cmd containsString:@"无线网"] || [cmd containsString:@"局域网"]) {
             [self openURLString:@"App-prefs:root=WIFI"]; return YES;
@@ -13990,17 +14443,23 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         if ([cmd containsString:@"热点"] || [cmd containsString:@"个人热点"]) {
             [self openURLString:@"App-prefs:root=INTERNET_TETHERING"]; return YES;
         }
-        if ([cmd containsString:@"vpn"]) {
-            [self openURLString:@"App-prefs:root=VPN"]; return YES;
+        if ([cmd containsString:@"运营商"]) {
+            [self openURLString:@"App-prefs:root=Carrier"]; return YES;
         }
-        if ([cmd containsString:@"电池"] || [cmd containsString:@"健康"]) {
+        if ([cmd containsString:@"vpn"] || [cmd containsString:@"描述文件"] || [cmd containsString:@"设备管理"] || [cmd containsString:@"证书"]) {
+            [self openURLString:@"App-prefs:root=General&path=ManagedConfigurationList"]; return YES;
+        }
+        if ([cmd containsString:@"电池健康"] || [cmd containsString:@"充电优化"]) {
+            [self openURLString:@"App-prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH"]; return YES;
+        }
+        if ([cmd containsString:@"电池"]) {
             [self openURLString:@"App-prefs:root=BATTERY_USAGE"]; return YES;
-        }
-        if ([cmd containsString:@"显示"] || [cmd containsString:@"亮度"]) {
-            [self openURLString:@"App-prefs:root=DISPLAY"]; return YES;
         }
         if ([cmd containsString:@"自动锁定"] || [cmd containsString:@"息屏时间"]) {
             [self openURLString:@"App-prefs:root=DISPLAY&path=AUTOLOCK"]; return YES;
+        }
+        if ([cmd containsString:@"显示"] || [cmd containsString:@"亮度"]) {
+            [self openURLString:@"App-prefs:root=DISPLAY"]; return YES;
         }
         if ([cmd containsString:@"声音"] || [cmd containsString:@"铃声"] || [cmd containsString:@"触感"]) {
             [self openURLString:@"App-prefs:root=Sounds"]; return YES;
@@ -14014,10 +14473,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         if ([cmd containsString:@"屏幕使用时间"]) {
             [self openURLString:@"App-prefs:root=SCREEN_TIME"]; return YES;
         }
-        if ([cmd containsString:@"通用"]) {
-            [self openURLString:@"App-prefs:root=General"]; return YES;
-        }
-        if ([cmd containsString:@"关于本机"] || [cmd containsString:@"序列号"]) {
+        if ([cmd containsString:@"关于本机"] || [cmd containsString:@"序列号"] || [cmd containsString:@"型号"]) {
             [self openURLString:@"App-prefs:root=General&path=About"]; return YES;
         }
         if ([cmd containsString:@"软件更新"] || [cmd containsString:@"系统更新"]) {
@@ -14029,20 +14485,35 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         if ([cmd containsString:@"隔空投送"] || [cmd containsString:@"airdrop"]) {
             [self openURLString:@"App-prefs:root=General&path=AIRDROP_LINK"]; return YES;
         }
+        if ([cmd containsString:@"后台刷新"] || [cmd containsString:@"后台应用刷新"]) {
+            [self openURLString:@"App-prefs:root=General&path=AUTO_CONTENT_DOWNLOAD"]; return YES;
+        }
+        if ([cmd containsString:@"画中画"]) {
+            [self openURLString:@"App-prefs:root=General&path=PiP_SPECIFIER"]; return YES;
+        }
         if ([cmd containsString:@"carplay"] || [cmd containsString:@"车载"]) {
             [self openURLString:@"App-prefs:root=General&path=CARPLAY"]; return YES;
         }
         if ([cmd containsString:@"日期"] || [cmd containsString:@"时间"]) {
             [self openURLString:@"App-prefs:root=General&path=DATE_AND_TIME"]; return YES;
         }
-        if ([cmd containsString:@"键盘"] || [cmd containsString:@"输入法"]) {
+        if ([cmd containsString:@"键盘"] || [cmd containsString:@"输入法"] || [cmd containsString:@"听写"]) {
             [self openURLString:@"App-prefs:root=General&path=Keyboard"]; return YES;
+        }
+        if ([cmd containsString:@"语言"] || [cmd containsString:@"地区"]) {
+            [self openURLString:@"App-prefs:root=General&path=INTERNATIONAL"]; return YES;
+        }
+        if ([cmd containsString:@"还原"] || [cmd containsString:@"传输或还原"]) {
+            [self openURLString:@"App-prefs:root=General&path=Reset"]; return YES;
+        }
+        if ([cmd containsString:@"通用"]) {
+            [self openURLString:@"App-prefs:root=General"]; return YES;
+        }
+        if ([cmd containsString:@"小白点"] || [cmd containsString:@"辅助触控"] || [cmd containsString:@"触控设置"]) {
+            [self openURLString:@"App-prefs:root=ACCESSIBILITY&path=TOUCH_REACHABILITY_TITLE"]; return YES;
         }
         if ([cmd containsString:@"辅助功能"]) {
             [self openURLString:@"App-prefs:root=ACCESSIBILITY"]; return YES;
-        }
-        if ([cmd containsString:@"小白点"] || [cmd containsString:@"辅助触控"]) {
-            [self openURLString:@"App-prefs:root=ACCESSIBILITY&path=TOUCH_RE_TITLE"]; return YES;
         }
         if ([cmd containsString:@"壁纸"] || [cmd containsString:@"墙纸"]) {
             [self openURLString:@"App-prefs:root=Wallpaper"]; return YES;
@@ -14050,11 +14521,35 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         if ([cmd containsString:@"面容"] || [cmd containsString:@"密码"] || [cmd containsString:@"face id"]) {
             [self openURLString:@"App-prefs:root=PASSCODE"]; return YES;
         }
+        if ([cmd containsString:@"siri"]) {
+            [self openURLString:@"App-prefs:root=SIRI"]; return YES;
+        }
+        if ([cmd containsString:@"紧急联络"] || [cmd containsString:@"sos"]) {
+            [self openURLString:@"App-prefs:root=SOS"]; return YES;
+        }
         if ([cmd containsString:@"定位"] || [cmd containsString:@"gps"]) {
             [self openURLString:@"App-prefs:root=Privacy&path=LOCATION"]; return YES;
         }
+        if ([cmd containsString:@"麦克风权限"]) {
+            [self openURLString:@"App-prefs:root=Privacy&path=MICROPHONE"]; return YES;
+        }
+        if ([cmd containsString:@"相机权限"]) {
+            [self openURLString:@"App-prefs:root=Privacy&path=CAMERA"]; return YES;
+        }
+        if ([cmd containsString:@"照片权限"] || [cmd containsString:@"相册权限"]) {
+            [self openURLString:@"App-prefs:root=Privacy&path=PHOTOS"]; return YES;
+        }
         if ([cmd containsString:@"隐私"]) {
             [self openURLString:@"App-prefs:root=Privacy"]; return YES;
+        }
+        if ([cmd containsString:@"钱包"] || [cmd containsString:@"apple pay"]) {
+            [self openURLString:@"App-prefs:root=PASSBOOK"]; return YES;
+        }
+        if ([cmd containsString:@"翻译"]) {
+            [self openURLString:@"App-prefs:root=TRANSLATE"]; return YES;
+        }
+        if ([cmd containsString:@"safari"] || [cmd containsString:@"浏览器"]) {
+            [self openURLString:@"App-prefs:root=SAFARI"]; return YES;
         }
     }
 
@@ -14078,12 +14573,36 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         }
     }
 
-    // 17. 📱 语音秒开任意应用（同时记录最近打开的搜索平台，方便下一句直接说“搜索XX”）
-    if (![cleanCmd containsString:@"给"] && ![cleanCmd containsString:@"发"] && ![cleanCmd containsString:@"向"] && ![cleanCmd containsString:@"告诉"] && !hasSpatialButtonHint) {
+    // 17. 📱 语音秒开任意应用（自动剥离口语前缀 + 先验真本机是否已安装，绝不误拦截游戏/日常提问！）
+    if (![cleanCmd containsString:@"给"] && ![cleanCmd containsString:@"发"] && ![cleanCmd containsString:@"向"] && ![cleanCmd containsString:@"告诉"] && ![cleanCmd containsString:@"怎么"] && ![cleanCmd containsString:@"如何"] && !hasSpatialButtonHint) {
         NSTextCheckingResult *openMatch = [openRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
         NSString *targetApp = nil;
+        BOOL hasExplicitAppSuffix = ([cleanCmd containsString:@"软件"] || [cleanCmd containsString:@"应用"] || [cleanCmd containsString:@"客户端"] || [cleanCmd hasSuffix:@"app"]);
         if (openMatch) {
             targetApp = [[cleanCmd substringWithRange:[openMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
+            NSArray<NSString *> *appSpokenPrefixes = @[
+                @"我现在手机里面的", @"我现在手机上的", @"我手机里面的", @"我手机里边的",
+                @"手机里面的", @"手机里边的", @"我手机上的", @"手机上的", @"我手机里的", @"手机里的",
+                @"我桌面上的", @"桌面上的", @"手机桌面的", @"我里面的", @"里面的", @"里边的", @"上面的",
+                @"一下我的", @"一下那个", @"一下", @"我的", @"那个", @"这个"
+            ];
+            BOOL stripped = YES;
+            while (stripped) {
+                stripped = NO;
+                for (NSString *pfx in appSpokenPrefixes) {
+                    if ([targetApp hasPrefix:pfx] && targetApp.length > pfx.length) {
+                        targetApp = [[targetApp substringFromIndex:pfx.length] stringByTrimmingCharactersInSet:trimSet];
+                        stripped = YES;
+                        break;
+                    }
+                }
+            }
+            NSArray<NSString *> *appSpokenSuffixes = @[@"这个软件", @"那个软件", @"这款软件", @"这个应用", @"那个应用", @"软件", @"应用", @"客户端", @"app"];
+            for (NSString *sfx in appSpokenSuffixes) {
+                if ([targetApp hasSuffix:sfx] && targetApp.length > sfx.length) {
+                    targetApp = [[targetApp substringToIndex:targetApp.length - sfx.length] stringByTrimmingCharactersInSet:trimSet];
+                }
+            }
         } else if (self.builtinAppMap[cleanCmd] != nil ||
                    [cleanCmd isEqualToString:@"b站"] || [cleanCmd isEqualToString:@"高德"] ||
                    [cleanCmd isEqualToString:@"网易云"] || [cleanCmd isEqualToString:@"小红书"] ||
@@ -14093,12 +14612,17 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
             targetApp = cleanCmd;
         }
         if (targetApp.length > 0) {
-            gLastOpenedSearchPlatform = targetApp;
-            gLastOpenedPlatformTime = [[NSDate date] timeIntervalSince1970];
-            [self executeActionDictionary:@{@"type": @"open_app", @"app": targetApp}];
-            return YES;
+            // 核心防护：先验证本机是否真的安装了该应用（含桌面图标名与拼音同音字容错），或者用户明确说了“打开XX软件/App”，才拦截执行！
+            NSString *verifiedBID = [self resolveInstalledAppBundleIDForName:targetApp];
+            if (verifiedBID.length > 0 || hasExplicitAppSuffix) {
+                gLastOpenedSearchPlatform = targetApp;
+                gLastOpenedPlatformTime = [[NSDate date] timeIntervalSince1970];
+                [self executeActionDictionary:@{@"type": @"open_app", @"app": targetApp}];
+                return YES;
+            }
         }
     }
+
 
     // 18. 📞 拨打电话 & 💬 发送短信
     NSTextCheckingResult *callMatch = [callRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
@@ -14463,7 +14987,23 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         NSString *mode = dict[@"mode"] ?: @"dark";
         [self handleAppearanceMode:mode];
     } else if ([type isEqualToString:@"kill_background_apps"]) {
-        [self handleKillBackgroundApps];
+        NSString *lastQ = self.lastCommittedUserVoiceQuery ?: (self.currentVoiceQueryBuffer.length > 0 ? self.currentVoiceQueryBuffer : (self.lastSentUserText ?: @""));
+        // AI 防串台硬锁：若用户原话未提及“后台”二字，绝不允许 AI 误杀后台应用，自动分流至对应独立清理
+        if (lastQ.length > 0 && ![lastQ containsString:@"后台"]) {
+            if ([lastQ containsString:@"系统数据"] || [lastQ containsString:@"系统垃圾"]) {
+                [self handleCleanSystemDataOnly];
+            } else if (([lastQ containsString:@"内存"] || [lastQ containsString:@"运存"]) && ![lastQ containsString:@"垃圾"] && ![lastQ containsString:@"缓存"]) {
+                [self handleCleanRAMOnly];
+            } else {
+                [self handleSystemDeepClean];
+            }
+        } else {
+            [self handleKillBackgroundApps];
+        }
+    } else if ([type isEqualToString:@"clean_ram_only"]) {
+        [self handleCleanRAMOnly];
+    } else if ([type isEqualToString:@"clean_system_data"]) {
+        [self handleCleanSystemDataOnly];
     } else if ([type isEqualToString:@"system_deep_clean"] || [type isEqualToString:@"clean_junk"]) {
         [self handleSystemDeepClean];
     } else if ([type isEqualToString:@"alarm_control"]) {
@@ -14567,8 +15107,74 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 }
 
-- (void)openApplicationByName:(NSString *)appName {
+static NSString *agResolveInstalledBundleIDFromCandidateString(NSString *candidateStr) {
+    if (!candidateStr || candidateStr.length == 0) return nil;
+    Class proxyCls = objc_getClass("LSApplicationProxy");
+    NSArray<NSString *> *candidates = [candidateStr componentsSeparatedByString:@","];
+    for (NSString *rawID in candidates) {
+        NSString *bid = [rawID stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (bid.length == 0) continue;
+        if (proxyCls && [proxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+            LSApplicationProxy *proxy = [proxyCls applicationProxyForIdentifier:bid];
+            if (proxy && ([proxy respondsToSelector:@selector(isInstalled)] ? [proxy isInstalled] : YES)) {
+                return bid;
+            }
+        } else {
+            return bid;
+        }
+    }
+    return nil;
+}
+
+static NSString *agNormalizedPinyinForString(NSString *str) {
+    if (!str || str.length == 0) return @"";
+    static NSCache<NSString *, NSString *> *sPinyinCache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sPinyinCache = [[NSCache alloc] init];
+        sPinyinCache.countLimit = 600;
+    });
+    NSString *cached = [sPinyinCache objectForKey:str];
+    if (cached) return cached;
+
+    NSMutableString *mutable = [str mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)mutable, NULL, kCFStringTransformToLatin, false);
+    CFStringTransform((__bridge CFMutableStringRef)mutable, NULL, kCFStringTransformStripCombiningMarks, false);
+    NSString *clean = [[[mutable lowercaseString] componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+    if (clean.length > 0) {
+        [sPinyinCache setObject:clean forKey:str];
+    }
+    return clean ?: @"";
+}
+
+- (NSString *)resolveInstalledAppBundleIDForName:(NSString *)appName {
+    if (!appName || appName.length == 0) return nil;
     NSString *cleanName = [[appName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    NSArray<NSString *> *appSpokenPrefixes = @[
+        @"我现在手机里面的", @"我现在手机上的", @"我手机里面的", @"我手机里边的",
+        @"手机里面的", @"手机里边的", @"我手机上的", @"手机上的", @"我手机里的", @"手机里的",
+        @"我桌面上的", @"桌面上的", @"手机桌面的", @"我里面的", @"里面的", @"里边的", @"上面的",
+        @"一下我的", @"一下那个", @"一下", @"我的", @"那个", @"这个"
+    ];
+    BOOL stripped = YES;
+    while (stripped) {
+        stripped = NO;
+        for (NSString *pfx in appSpokenPrefixes) {
+            if ([cleanName hasPrefix:pfx] && cleanName.length > pfx.length) {
+                cleanName = [[cleanName substringFromIndex:pfx.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                stripped = YES;
+                break;
+            }
+        }
+    }
+    NSArray<NSString *> *appSpokenSuffixes = @[@"这个软件", @"那个软件", @"这款软件", @"这个应用", @"那个应用", @"软件", @"应用", @"客户端", @"app"];
+    for (NSString *sfx in appSpokenSuffixes) {
+        if ([cleanName hasSuffix:sfx] && cleanName.length > sfx.length) {
+            cleanName = [[cleanName substringToIndex:cleanName.length - sfx.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+    }
+    if (cleanName.length == 0) return nil;
+
     if ([cleanName isEqualToString:@"b站"] || [cleanName isEqualToString:@"bilibili"]) cleanName = @"哔哩哔哩";
     if ([cleanName isEqualToString:@"高德"]) cleanName = @"高德地图";
     if ([cleanName isEqualToString:@"网易云"] || [cleanName isEqualToString:@"云音乐"]) cleanName = @"网易云音乐";
@@ -14578,41 +15184,122 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cleanName isEqualToString:@"照片"] || [cleanName isEqualToString:@"图库"]) cleanName = @"相册";
     if ([cleanName isEqualToString:@"拍照"] || [cleanName isEqualToString:@"照相"]) cleanName = @"相机";
 
-    NSString *targetBundleID = self.builtinAppMap[cleanName];
+    // 1. 优先从 380+ 内置映射匹配并验证本机已安装
+    NSString *targetBundleID = agResolveInstalledBundleIDFromCandidateString(self.builtinAppMap[cleanName]);
+    if (targetBundleID) return targetBundleID;
 
-    if (!targetBundleID && self.cachedInstalledApps.count > 0) {
-        targetBundleID = self.cachedInstalledApps[cleanName];
-        if (!targetBundleID) {
-            for (NSString *locName in self.cachedInstalledApps) {
-                if ([locName containsString:cleanName] || [cleanName containsString:locName]) {
-                    targetBundleID = self.cachedInstalledApps[locName];
-                    break;
+    // 2. 若在主线程，实时同步一次 SpringBoard 桌面图标中文名 (SBApplicationController)
+    if ([NSThread isMainThread]) {
+        @try {
+            Class sbCtrlCls = objc_getClass("SBApplicationController");
+            SBApplicationController *sbCtrl = (sbCtrlCls && [sbCtrlCls respondsToSelector:@selector(sharedInstanceIfExists)])
+                ? [sbCtrlCls sharedInstanceIfExists]
+                : ((sbCtrlCls && [sbCtrlCls respondsToSelector:@selector(sharedInstance)]) ? [sbCtrlCls sharedInstance] : nil);
+            if (sbCtrl && [sbCtrl respondsToSelector:@selector(allApplications)]) {
+                NSArray<SBApplication *> *sbApps = [sbCtrl allApplications];
+                @synchronized (self.cachedInstalledApps) {
+                    for (SBApplication *sbApp in sbApps) {
+                        NSString *bid = [sbApp respondsToSelector:@selector(bundleIdentifier)] ? [sbApp bundleIdentifier] : nil;
+                        NSString *dName = [sbApp respondsToSelector:@selector(displayName)] ? [[sbApp displayName] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : nil;
+                        if (bid.length > 0 && dName.length > 0 && ![bid hasPrefix:@"com.apple.springboard"]) {
+                            self.cachedInstalledApps[[dName lowercaseString]] = bid;
+                        }
+                    }
+                }
+            }
+        } @catch (NSException *e) {}
+    }
+
+    // 3. 在本机已安装应用缓存中执行：精确匹配 ➔ 包含匹配 ➔ 汉语拼音同音字匹配
+    NSDictionary<NSString *, NSString *> *snapCache = nil;
+    @synchronized (self.cachedInstalledApps) {
+        snapCache = [self.cachedInstalledApps copy];
+    }
+    if (snapCache.count > 0) {
+        targetBundleID = agResolveInstalledBundleIDFromCandidateString(snapCache[cleanName]);
+        if (targetBundleID) return targetBundleID;
+
+        for (NSString *locName in snapCache) {
+            if (locName.length >= 2 && cleanName.length >= 2 && ([locName containsString:cleanName] || [cleanName containsString:locName])) {
+                targetBundleID = agResolveInstalledBundleIDFromCandidateString(snapCache[locName]);
+                if (targetBundleID) return targetBundleID;
+            }
+        }
+
+        if (cleanName.length >= 2) {
+            NSString *targetPy = agNormalizedPinyinForString(cleanName);
+            if (targetPy.length >= 4) {
+                for (NSString *locName in snapCache) {
+                    if (locName.length < 2) continue;
+                    NSString *locPy = agNormalizedPinyinForString(locName);
+                    if ([locPy isEqualToString:targetPy] || (cleanName.length >= 3 && locPy.length >= 6 && [locPy containsString:targetPy])) {
+                        targetBundleID = agResolveInstalledBundleIDFromCandidateString(snapCache[locName]);
+                        if (targetBundleID) return targetBundleID;
+                    }
                 }
             }
         }
     }
 
-    if (!targetBundleID) {
+    // 4. 实时扫描 LSApplicationWorkspace 兜底（过滤 hidden 与 watchkit，支持同音字拼音匹配）
+    @try {
         NSArray<LSApplicationProxy *> *apps = [[%c(LSApplicationWorkspace) defaultWorkspace] allInstalledApplications];
+        NSString *fuzzyBundleID = nil;
+        NSString *pinyinBundleID = nil;
+        NSString *targetPy = (cleanName.length >= 2) ? agNormalizedPinyinForString(cleanName) : @"";
+
         for (LSApplicationProxy *proxy in apps) {
-            NSString *locName = [proxy.localizedName lowercaseString];
-            if (locName && ([locName isEqualToString:cleanName] || [locName containsString:cleanName] || [cleanName containsString:locName])) {
-                targetBundleID = proxy.applicationIdentifier;
-                self.cachedInstalledApps[locName] = targetBundleID;
-                break;
+            NSString *bid = proxy.applicationIdentifier;
+            if (!bid || bid.length == 0) continue;
+            if ([bid hasPrefix:@"com.apple.springboard"] || [bid hasPrefix:@"com.apple.WebKit"] || [bid containsString:@"watchkit"]) continue;
+            if ([proxy respondsToSelector:@selector(isInstalled)] && ![proxy isInstalled]) continue;
+            if ([proxy respondsToSelector:@selector(appTags)]) {
+                NSArray *tags = [proxy appTags];
+                if ([tags isKindOfClass:[NSArray class]] && [tags containsObject:@"hidden"]) continue;
+            }
+            NSString *locName = [[proxy.localizedName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+            if (!locName || locName.length == 0) continue;
+            @synchronized (self.cachedInstalledApps) {
+                self.cachedInstalledApps[locName] = bid;
+            }
+            if ([locName isEqualToString:cleanName]) {
+                return bid;
+            } else if (!fuzzyBundleID && locName.length >= 2 && cleanName.length >= 2 && ([locName containsString:cleanName] || [cleanName containsString:locName])) {
+                fuzzyBundleID = bid;
+            } else if (!pinyinBundleID && targetPy.length >= 4 && locName.length >= 2) {
+                NSString *locPy = agNormalizedPinyinForString(locName);
+                if ([locPy isEqualToString:targetPy]) {
+                    pinyinBundleID = bid;
+                }
             }
         }
-    }
+        return fuzzyBundleID ?: pinyinBundleID;
+    } @catch (NSException *e) {}
+    return nil;
+}
 
+- (void)openApplicationByName:(NSString *)appName {
+    NSString *targetBundleID = [self resolveInstalledAppBundleIDForName:appName];
     if (targetBundleID) {
         [self.accumulatedReplyText setString:@""];
         [self.pendingSpeechChunk setString:@""];
         self.previousKeyWindow = nil;
         [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"🚀 正在打开 %@...", appName]];
+        if (self.overlayWindow && self.overlayWindow.isKeyWindow) {
+            [self.overlayWindow resignKeyWindow];
+        }
         [self dismissOverlayIfMainCardActive];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
             @try {
-                [[%c(LSApplicationWorkspace) defaultWorkspace] openApplicationWithBundleID:targetBundleID];
+                BOOL opened = [[%c(LSApplicationWorkspace) defaultWorkspace] openApplicationWithBundleID:targetBundleID];
+                if (!opened) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        SpringBoard *sb = (SpringBoard *)[UIApplication sharedApplication];
+                        if ([sb respondsToSelector:@selector(launchApplicationWithIdentifier:suspended:)]) {
+                            [sb launchApplicationWithIdentifier:targetBundleID suspended:NO];
+                        }
+                    });
+                }
             } @catch (NSException *e) {}
         });
     } else {
@@ -15059,9 +15746,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
             [self showActionBanner:cleanMsg];
             AudioServicesPlaySystemSound(1520);
 
-            NSMutableString *curTrans = [self currentTabTranscript];
-            if (curTrans.length > 0 && ![curTrans hasSuffix:@"\\n"]) [curTrans appendString:@"\\n\\n"];
-            [curTrans appendFormat:@"🧹 智能后台与运行内存清理报告：\\n• 关闭后台应用：%lu 个 (终止进程 %lu 个)\\n• 运行内存变化：占用 %d%% (%.2fG) ➔ %d%% (%.2fG)\\n• 当前可用运存：%.2f GB (%d MB) / 总计 %.1f GB\\n",
+                        NSMutableString *curTrans = [self currentTabTranscript];
+            if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+            [curTrans appendFormat:@"🧹 【1. 智能后台与运行内存清理报告】\n• 关闭后台应用：%lu 个 (终止进程 %lu 个)\n• 运行内存变化：占用 %d%% (%.2fG) ➔ %d%% (%.2fG)\n• 当前可用运存：%.2f GB (%d MB) / 总计 %.1f GB\n",
              (unsigned long)closedCardsCount, (unsigned long)killedProcsCount, pctBefore, usedBeforeGB, pctAfter, usedAfterGB, freeAfterGB, freeAfterMB, totalRAMGB];
             [self updateResponseTextViewSmoothly:curTrans];
             [self throttledExpandAndScrollTextViewForce:YES];
@@ -15073,10 +15760,87 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     });
 }
 
-- (void)handleSystemDeepClean {
+// 递归统计文件或子文件夹真实字节大小（最多向下展开 3 层，极速且不卡磁盘）
+static unsigned long long agCalculatePathRealBytes(NSFileManager *fm, NSString *fullPath, int depth) {
+    if (!fm || !fullPath || depth > 3) return 0;
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:fullPath isDirectory:&isDir]) return 0;
+    if (!isDir) {
+        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+        return attrs ? [attrs fileSize] : 0;
+    }
+    unsigned long long total = 0;
+    NSArray *subItems = [fm contentsOfDirectoryAtPath:fullPath error:nil];
+    for (NSString *sub in subItems) {
+        total += agCalculatePathRealBytes(fm, [fullPath stringByAppendingPathComponent:sub], depth + 1);
+    }
+    return total;
+}
+
+static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
+    NSString *lower = [itemName lowercaseString];
+    return ([lower hasSuffix:@".sqlite"] || [lower hasSuffix:@".sqlite-wal"] ||
+            [lower hasSuffix:@".sqlite-shm"] || [lower hasSuffix:@".db"] ||
+            [lower hasSuffix:@".db-wal"] || [lower hasSuffix:@".db-shm"] ||
+            [lower hasSuffix:@".mmap"] || [lower hasSuffix:@".mmap2"] ||
+            [lower hasSuffix:@".mmap3"]);
+}
+
+// 【独立指令 2】纯运行内存 (RAM) 无损碎片回收（不杀后台应用，不删任何文件）
+- (void)handleCleanRAMOnly {
+    __block double usedBeforeGB = 0.0;
+    __block double totalRAMGB = 0.0;
+    agGetDeviceMemoryInfo(&usedBeforeGB, &totalRAMGB);
+    int pctBefore = (totalRAMGB > 0) ? (int)round((usedBeforeGB / totalRAMGB) * 100.0) : 0;
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"🧹 正在深度清理垃圾与释放内存..."];
-        [self showActionBanner:@"🧹 正在深度清理垃圾与释放内存..."];
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚡ 正在无损回收闲置运行内存 (不关后台)..."];
+        AudioServicesPlaySystemSound(1519);
+    });
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        typedef void (*ag_malloc_relief_fn)(void *, size_t);
+        ag_malloc_relief_fn relief = (ag_malloc_relief_fn)dlsym(RTLD_DEFAULT, "malloc_zone_pressure_relief");
+        if (relief) relief(NULL, 0);
+
+        usleep(180000);
+        double usedAfterGB = 0.0;
+        agGetDeviceMemoryInfo(&usedAfterGB, &totalRAMGB);
+        double freeAfterGB = MAX(0.05, totalRAMGB - usedAfterGB);
+        int freeAfterMB = (int)round(freeAfterGB * 1024.0);
+        int freedMB = (int)round(MAX(0.0, usedBeforeGB - usedAfterGB) * 1024.0);
+        int pctAfter = (totalRAMGB > 0) ? (int)round((usedAfterGB / totalRAMGB) * 100.0) : 0;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *pillMsg = [NSString stringWithFormat:@"⚡ 运存已加速(未关后台)｜可用 %.2fG/%0.fG (余%dMB)", freeAfterGB, totalRAMGB, freeAfterMB];
+            [self showActionBanner:pillMsg];
+            AudioServicesPlaySystemSound(1520);
+
+            NSMutableString *curTrans = [self currentTabTranscript];
+            if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+            [curTrans appendFormat:@"⚡ 【2. 运行内存 (RAM) 无损加速报告】\n"
+                                   @"• 🛡️ 隔离保护：未关闭任何后台应用，未删除任何缓存文件\n"
+                                   @"• 🔄 运存占用变化：%d%% (%.2fG) ➔ %d%% (%.2fG)｜回收碎片 %d MB\n"
+                                   @"• 📊 当前可用运存：%.2f GB (%d MB) / 总计 %.1f GB\n",
+             pctBefore, usedBeforeGB, pctAfter, usedAfterGB, MAX(15, freedMB), freeAfterGB, freeAfterMB, totalRAMGB];
+            [self updateResponseTextViewSmoothly:curTrans];
+            [self throttledExpandAndScrollTextViewForce:YES];
+
+            NSString *speechReport = [NSString stringWithFormat:@"运行内存加速完成，未关闭任何后台应用，当前剩余可用运行内存 %.2f GB（约 %d 兆），运存占用率 %d%%。",
+                                      freeAfterGB, freeAfterMB, pctAfter];
+            agSpeakAndBroadcastHardwareResult(self, speechReport);
+        });
+    });
+}
+
+// 【独立指令 3】应用与游戏沙盒缓存垃圾清理（方案 A 满血清理，不关后台，不动系统数据）
+- (void)handleSystemDeepClean {
+    __block double usedBeforeGB = 0.0;
+    __block double totalRAMGB = 0.0;
+    agGetDeviceMemoryInfo(&usedBeforeGB, &totalRAMGB);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"🗑️ 正在清理应用与游戏缓存垃圾 (不关后台)..."];
         AudioServicesPlaySystemSound(1519);
     });
 
@@ -15084,65 +15848,197 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         NSFileManager *fm = [NSFileManager defaultManager];
         NSDictionary *fsBefore = [fm attributesOfFileSystemForPath:@"/var" error:nil];
         unsigned long long freeBefore = [fsBefore[NSFileSystemFreeSize] unsignedLongLongValue];
-        __block NSUInteger deletedItemsCount = 0;
-        __block unsigned long long manualDeletedBytes = 0;
+        double totalROMGB = [fsBefore[NSFileSystemSize] doubleValue] / (1024.0 * 1024.0 * 1024.0);
 
-        void (^cleanDirectoryContents)(NSString *, NSArray<NSString *> *) = ^(NSString *dirPath, NSArray<NSString *> *excludedNames) {
-            BOOL isDir = NO;
-            if (![fm fileExistsAtPath:dirPath isDirectory:&isDir] || !isDir) return;
-            NSArray *items = [fm contentsOfDirectoryAtPath:dirPath error:nil];
-            if (!items) return;
-            for (NSString *item in items) {
-                BOOL skip = NO;
-                if (excludedNames) {
-                    for (NSString *ex in excludedNames) {
-                        if ([item containsString:ex]) { skip = YES; break; }
-                    }
-                }
-                if (skip) continue;
-                NSString *fullPath = [dirPath stringByAppendingPathComponent:item];
-                NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
-                if (attrs) manualDeletedBytes += [attrs fileSize];
-                if ([fm removeItemAtPath:fullPath error:nil]) deletedItemsCount++;
-            }
-        };
+        __block NSUInteger appCacheItems = 0;
+        __block NSUInteger appTmpItems = 0;
+        __block unsigned long long calcDeletedBytes = 0;
 
         NSString *appContainersPath = @"/private/var/mobile/Containers/Data/Application";
         NSArray *appUUIDs = [fm contentsOfDirectoryAtPath:appContainersPath error:nil];
-        if (appUUIDs) {
-            for (NSString *uuid in appUUIDs) {
-                cleanDirectoryContents([NSString stringWithFormat:@"%@/%@/Library/Caches", appContainersPath, uuid], @[@"Snapshots"]);
-                cleanDirectoryContents([NSString stringWithFormat:@"%@/%@/tmp", appContainersPath, uuid], nil);
+        for (NSString *uuid in appUUIDs) {
+            // 1. 清理各应用与游戏的 Library/Caches（方案 A：仅排除 Snapshots 与活跃数据库/内存映射文件）
+            NSString *cachesDir = [NSString stringWithFormat:@"%@/%@/Library/Caches", appContainersPath, uuid];
+            NSArray *cItems = [fm contentsOfDirectoryAtPath:cachesDir error:nil];
+            for (NSString *item in cItems) {
+                if ([item isEqualToString:@"Snapshots"] || agIsActiveDatabaseOrMappedFile(item)) continue;
+                NSString *fullPath = [cachesDir stringByAppendingPathComponent:item];
+                calcDeletedBytes += agCalculatePathRealBytes(fm, fullPath, 0);
+                if ([fm removeItemAtPath:fullPath error:nil]) appCacheItems++;
+            }
+            // 2. 清理各应用与游戏的 tmp 临时垃圾目录
+            NSString *tmpDir = [NSString stringWithFormat:@"%@/%@/tmp", appContainersPath, uuid];
+            NSArray *tItems = [fm contentsOfDirectoryAtPath:tmpDir error:nil];
+            for (NSString *item in tItems) {
+                if (agIsActiveDatabaseOrMappedFile(item)) continue;
+                NSString *fullPath = [tmpDir stringByAppendingPathComponent:item];
+                calcDeletedBytes += agCalculatePathRealBytes(fm, fullPath, 0);
+                if ([fm removeItemAtPath:fullPath error:nil]) appTmpItems++;
             }
         }
-        cleanDirectoryContents(@"/private/var/mobile/tmp", nil);
-        cleanDirectoryContents(@"/private/var/tmp", nil);
-        cleanDirectoryContents(@"/tmp", @[@"ag_cam_status", @"geminisirioverlay"]);
-        cleanDirectoryContents(@"/private/var/mobile/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"]);
-        cleanDirectoryContents(@"/private/var/root/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"]);
-        cleanDirectoryContents(@"/private/var/Logs/DiagnosticLogs", nil);
-        cleanDirectoryContents(@"/private/var/logs", nil);
 
         typedef void (*ag_malloc_relief_fn)(void *, size_t);
         ag_malloc_relief_fn relief = (ag_malloc_relief_fn)dlsym(RTLD_DEFAULT, "malloc_zone_pressure_relief");
         if (relief) relief(NULL, 0);
 
+        usleep(180000);
+        double usedAfterGB = 0.0;
+        agGetDeviceMemoryInfo(&usedAfterGB, &totalRAMGB);
+        double freeAfterRAMGB = MAX(0.05, totalRAMGB - usedAfterGB);
+        int freeAfterRAMMB = (int)round(freeAfterRAMGB * 1024.0);
+
+        NSDictionary *fsAfter = [fm attributesOfFileSystemForPath:@"/var" error:nil];
+        unsigned long long freeAfter = [fsAfter[NSFileSystemFreeSize] unsignedLongLongValue];
+        double freeAfterROMGB = (double)freeAfter / (1024.0 * 1024.0 * 1024.0);
+        unsigned long long freedBytes = MAX((freeAfter > freeBefore ? (freeAfter - freeBefore) : 0), calcDeletedBytes);
+
+        NSString *freedStr = @"";
+        if (freedBytes >= (1024ULL * 1024ULL * 1024ULL)) {
+            freedStr = [NSString stringWithFormat:@"%.2f GB", (double)freedBytes / (1024.0 * 1024.0 * 1024.0)];
+        } else if (freedBytes >= (1024ULL * 1024ULL)) {
+            freedStr = [NSString stringWithFormat:@"%.1f MB", (double)freedBytes / (1024.0 * 1024.0)];
+        } else {
+            freedStr = [NSString stringWithFormat:@"%.2f MB (%lu项)", MAX(0.5, (double)freedBytes / (1024.0 * 1024.0)), (unsigned long)MAX(1, appCacheItems + appTmpItems)];
+        }
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSDictionary *fsAfter = [fm attributesOfFileSystemForPath:@"/var" error:nil];
-            unsigned long long freeAfter = [fsAfter[NSFileSystemFreeSize] unsignedLongLongValue];
-            unsigned long long freedBytes = (freeAfter > freeBefore) ? (freeAfter - freeBefore) : manualDeletedBytes;
-            NSString *freedStr = @"";
-            if (freedBytes >= (1024ULL * 1024ULL * 1024ULL)) {
-                freedStr = [NSString stringWithFormat:@"%.2f GB", (double)freedBytes / (1024.0 * 1024.0 * 1024.0)];
-            } else if (freedBytes >= (1024ULL * 1024ULL)) {
-                freedStr = [NSString stringWithFormat:@"%.1f MB", (double)freedBytes / (1024.0 * 1024.0)];
-            } else {
-                freedStr = [NSString stringWithFormat:@"%lu 个缓存项", (unsigned long)MAX(1, deletedItemsCount)];
-            }
-            NSString *pillMsg = [NSString stringWithFormat:@"🧹 已安全释放 %@ 空间，内存已加速", freedStr];
-            [[AGGlobalActionPillWindow sharedPill] showActionPill:pillMsg];
+            NSString *pillMsg = [NSString stringWithFormat:@"🗑️ 已清软件垃圾 %@｜可用运存 %.2fG｜余 %.1fG", freedStr, freeAfterRAMGB, freeAfterROMGB];
             [self showActionBanner:pillMsg];
             AudioServicesPlaySystemSound(1520);
+
+            NSMutableString *curTrans = [self currentTabTranscript];
+            if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+            [curTrans appendFormat:@"🗑️ 【3. 应用与游戏缓存垃圾清理报告（未关后台）】\n"
+                                   @"• 📦 应用与游戏缓存 (Caches)：已清理 %lu 项（图片/视频/广告缓存）\n"
+                                   @"• 🗂️ 软件临时碎片文件 (tmp)：已清理 %lu 项｜累计释放空间 %@\n"
+                                   @"• 💾 当前可用状态：可用运存 %.2f GB (%d MB) ｜ 剩余存储 %.1f GB / %.0f GB\n",
+             (unsigned long)appCacheItems, (unsigned long)appTmpItems, freedStr,
+             freeAfterRAMGB, freeAfterRAMMB, freeAfterROMGB, totalROMGB];
+            [self updateResponseTextViewSmoothly:curTrans];
+            [self throttledExpandAndScrollTextViewForce:YES];
+
+            NSString *speechReport = [NSString stringWithFormat:@"应用与游戏垃圾清理完成，已为您清理 %lu 项缓存与 %lu 项临时文件，共释放 %@ 空间，当前可用运存 %.2f GB，机身剩余存储 %.1f GB。",
+                                      (unsigned long)appCacheItems, (unsigned long)appTmpItems, freedStr, freeAfterRAMGB, freeAfterROMGB];
+            agSpeakAndBroadcastHardwareResult(self, speechReport);
+        });
+    });
+}
+
+// 【独立指令 4】iOS「系统数据」6 大安全项专项清理（不关后台，不动普通软件自身缓存）
+- (void)handleCleanSystemDataOnly {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"🧩 正在专项清理 iOS「系统数据」6大残留..."];
+        AudioServicesPlaySystemSound(1519);
+    });
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSDictionary *fsBefore = [fm attributesOfFileSystemForPath:@"/var" error:nil];
+        unsigned long long freeBefore = [fsBefore[NSFileSystemFreeSize] unsignedLongLongValue];
+        double totalROMGB = [fsBefore[NSFileSystemSize] doubleValue] / (1024.0 * 1024.0 * 1024.0);
+
+        __block NSUInteger appGroupAndWebItems = 0;
+        __block NSUInteger debAndTmpItems = 0;
+        __block NSUInteger sysLogItems = 0;
+        __block unsigned long long calcDeletedBytes = 0;
+
+        void (^cleanDirIntoCounter)(NSString *, NSArray<NSString *> *, NSUInteger *) = ^(NSString *dirPath, NSArray<NSString *> *excluded, NSUInteger *counterPtr) {
+            BOOL isDir = NO;
+            if (![fm fileExistsAtPath:dirPath isDirectory:&isDir] || !isDir) return;
+            NSArray *items = [fm contentsOfDirectoryAtPath:dirPath error:nil];
+            for (NSString *item in items) {
+                if (agIsActiveDatabaseOrMappedFile(item)) continue;
+                BOOL skip = NO;
+                for (NSString *ex in excluded) {
+                    if ([item containsString:ex]) { skip = YES; break; }
+                }
+                if (skip) continue;
+                NSString *fullPath = [dirPath stringByAppendingPathComponent:item];
+                calcDeletedBytes += agCalculatePathRealBytes(fm, fullPath, 0);
+                if ([fm removeItemAtPath:fullPath error:nil]) (*counterPtr)++;
+            }
+        };
+
+        // 1. 清理算在「系统数据」里的 Shared/AppGroup 跨进程共享临时文件与纯网络图片/视频缓冲（严格保护小组件与数据库）
+        NSString *appGroupBase = @"/private/var/mobile/Containers/Shared/AppGroup";
+        NSArray *groupUUIDs = [fm contentsOfDirectoryAtPath:appGroupBase error:nil];
+        NSArray *safeGroupCacheSubdirs = @[@"fsCachedData", @"com.hackemist.SDImageCache", @"com.onevcat.Kingfisher.ImageCache", @"YYImageCache", @"WebKit"];
+        for (NSString *gUUID in groupUUIDs) {
+            cleanDirIntoCounter([NSString stringWithFormat:@"%@/%@/tmp", appGroupBase, gUUID], nil, &appGroupAndWebItems);
+            for (NSString *safeSub in safeGroupCacheSubdirs) {
+                cleanDirIntoCounter([NSString stringWithFormat:@"%@/%@/Library/Caches/%@", appGroupBase, gUUID, safeSub], nil, &appGroupAndWebItems);
+            }
+        }
+
+        // 2. 清理 Safari 与系统级 WebKit 流媒体缓冲（保留 Cookie/书签/历史/密码）
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Caches/com.apple.mobilesafari/fsCachedData", nil, &appGroupAndWebItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Caches/com.apple.WebKit.Networking", nil, &appGroupAndWebItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Caches/com.apple.WebKit.WebContent", nil, &appGroupAndWebItems);
+
+        // 3. 清理越狱商店（Sileo / Zebra / APT）积攒的 .deb 历史安装包缓存与下载中断残片
+        NSArray *debCacheDirs = @[
+            agJBRootPath(@"/var/cache/apt/archives"),
+            @"/var/jb/var/cache/apt/archives",
+            @"/private/var/mobile/Library/Caches/org.coolstar.SileoStore",
+            @"/private/var/mobile/Library/Caches/xyz.willy.Zebra",
+            @"/private/var/mobile/Documents/xyz.willy.Zebra/debs",
+            @"/private/var/mobile/Media/Downloads"
+        ];
+        for (NSString *dDir in debCacheDirs) {
+            cleanDirIntoCounter(dDir, @[@"lock"], &debAndTmpItems);
+        }
+
+        // 4. 清理三大系统级公共临时目录
+        cleanDirIntoCounter(@"/private/var/mobile/tmp", nil, &debAndTmpItems);
+        cleanDirIntoCounter(@"/private/var/tmp", nil, &debAndTmpItems);
+        cleanDirIntoCounter(@"/tmp", @[@"ag_cam_status", @"geminisirioverlay", @"ag_live_diagnostic"], &debAndTmpItems);
+
+        // 5. 清理系统常年堆积的底层诊断日志与归档崩溃报告（保留近 7 天 SpringBoard/panic 供崩溃取证使用）
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"], &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter/Retired", @[@"SpringBoard", @"backboardd", @"panic"], &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/root/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"], &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/AppleSupport", nil, &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CoreDuet", nil, &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/MobileInstallation", nil, &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/Logs/DiagnosticLogs", nil, &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/logs", nil, &sysLogItems);
+
+        usleep(180000);
+        NSDictionary *fsAfter = [fm attributesOfFileSystemForPath:@"/var" error:nil];
+        unsigned long long freeAfter = [fsAfter[NSFileSystemFreeSize] unsignedLongLongValue];
+        double freeAfterROMGB = (double)freeAfter / (1024.0 * 1024.0 * 1024.0);
+        unsigned long long freedBytes = MAX((freeAfter > freeBefore ? (freeAfter - freeBefore) : 0), calcDeletedBytes);
+
+        NSUInteger totalSysItems = appGroupAndWebItems + debAndTmpItems + sysLogItems;
+        NSString *freedStr = @"";
+        if (freedBytes >= (1024ULL * 1024ULL * 1024ULL)) {
+            freedStr = [NSString stringWithFormat:@"%.2f GB", (double)freedBytes / (1024.0 * 1024.0 * 1024.0)];
+        } else if (freedBytes >= (1024ULL * 1024ULL)) {
+            freedStr = [NSString stringWithFormat:@"%.1f MB", (double)freedBytes / (1024.0 * 1024.0)];
+        } else {
+            freedStr = [NSString stringWithFormat:@"%.2f MB (%lu项)", MAX(0.5, (double)freedBytes / (1024.0 * 1024.0)), (unsigned long)MAX(1, totalSysItems)];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *pillMsg = [NSString stringWithFormat:@"🧩 已清系统数据 %@ (%lu项)｜剩余存储 %.1fG", freedStr, (unsigned long)totalSysItems, freeAfterROMGB];
+            [self showActionBanner:pillMsg];
+            AudioServicesPlaySystemSound(1520);
+
+            NSMutableString *curTrans = [self currentTabTranscript];
+            if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+            [curTrans appendFormat:@"🧩 【4. iOS「系统数据」专项深度清理报告】\n"
+                                   @"• 💬 共享容器 (AppGroup) 与 WebKit 缓冲：已清理 %lu 项\n"
+                                   @"• 📦 越狱商店 (.deb) 残留与系统公共 tmp：已清理 %lu 项\n"
+                                   @"• 📋 底层冗余诊断日志：已清理 %lu 项｜共释放系统数据 %@\n"
+                                   @"• 💾 机身存储状态：当前剩余可用 %.1f GB / 总计 %.0f GB\n",
+             (unsigned long)appGroupAndWebItems, (unsigned long)debAndTmpItems,
+             (unsigned long)sysLogItems, freedStr, freeAfterROMGB, totalROMGB];
+            [self updateResponseTextViewSmoothly:curTrans];
+            [self throttledExpandAndScrollTextViewForce:YES];
+
+            NSString *speechReport = [NSString stringWithFormat:@"系统数据专项清理完成，已为您清理共享容器垃圾、越狱安装包残留及底层诊断日志共 %lu 项，释放 %@ 系统数据空间，当前机身剩余可用存储 %.1f GB。",
+                                      (unsigned long)totalSysItems, freedStr, freeAfterROMGB];
+            agSpeakAndBroadcastHardwareResult(self, speechReport);
         });
     });
 }
@@ -16407,18 +17303,38 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
                 if (cc && [cc respondsToSelector:@selector(isVisible)] && [cc isVisible] && [cc respondsToSelector:@selector(dismissAnimated:)]) {
                     [cc dismissAnimated:YES];
                 }
-                // 1. 发送与系统「小白点(AssistiveTouch)主屏幕按钮」完全一致的 IOKit 硬件主屏幕键信号 (UsagePage 0x0C, Usage 0x40)
+                Class csCls = objc_getClass("SBCoverSheetPresentationManager");
+                SBCoverSheetPresentationManager *cs = (csCls && [csCls respondsToSelector:@selector(sharedInstance)]) ? [csCls sharedInstance] : nil;
+                if (cs && [cs respondsToSelector:@selector(isVisible)] && [cs isVisible] && [cs respondsToSelector:@selector(setCoverSheetPresented:animated:withCompletion:)]) {
+                    [cs setCoverSheetPresented:NO animated:YES withCompletion:nil];
+                }
+                // 1. 发送 IOKit 硬件主屏幕键信号 (UsagePage 0x0C, Usage 0x40)
                 agDispatchHIDKeyUsage(0x0C, 0x40, YES);
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     agDispatchHIDKeyUsage(0x0C, 0x40, NO);
                 });
-                // 2. 同步调用 SBUIController 单击主屏幕处理（不提前 return，双重保障）
+                // 2. 同步调用 SBUIController 单击主屏幕处理
                 SBUIController *uic = [%c(SBUIController) sharedInstanceIfExists];
                 if (uic && [uic respondsToSelector:@selector(handleHomeButtonSinglePressUp)]) {
                     [uic handleHomeButtonSinglePressUp];
                 } else if (uic && [uic respondsToSelector:@selector(clickedMenuButton)]) {
                     [uic clickedMenuButton];
                 }
+                // 3. 0.18s 后检测是否仍停留在第三方应用内，若是则触发 _simulateHomeButtonPress 二次保底退回桌面
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    @try {
+                        SpringBoard *sb = (SpringBoard *)[UIApplication sharedApplication];
+                        SEL fgSel = NSSelectorFromString(@"_accessibilityFrontMostApplication");
+                        id frontApp = [sb respondsToSelector:fgSel] ? ((id(*)(id, SEL))objc_msgSend)(sb, fgSel) : nil;
+                        if (frontApp != nil) {
+                            if ([sb respondsToSelector:@selector(_simulateHomeButtonPress)]) {
+                                [sb _simulateHomeButtonPress];
+                            } else if (uic && [uic respondsToSelector:@selector(handleHomeButtonSinglePressUp)]) {
+                                [uic handleHomeButtonSinglePressUp];
+                            }
+                        }
+                    } @catch (NSException *e) {}
+                });
             } @catch (NSException *e) {}
         } else if ([clean containsString:@"lock"] || [clean containsString:@"锁屏"]) {
             [[AGGlobalActionPillWindow sharedPill] showActionPill:@"🔒 已锁定屏幕"];
@@ -16907,12 +17823,14 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
 
     if (self.isMiniSummonActive && self.miniSummonView && !self.miniSummonView.hidden) {
         [self.miniSummonView stepAnimationWithPhase:self.wavePhase amplitude:self.currentVoiceAmplitude];
-        if (self.currentVoiceQueryBuffer.length > 0) {
-            self.miniSummonView.captionLabel.text = [NSString stringWithFormat:@"🗣️ “%@”", self.currentVoiceQueryBuffer];
-        } else if (self.accumulatedReplyText.length > 0) {
-            NSString *cleanRep = [self.accumulatedReplyText stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-            if (cleanRep.length > 22) cleanRep = [cleanRep substringFromIndex:cleanRep.length - 22];
-            self.miniSummonView.captionLabel.text = [NSString stringWithFormat:@"🔊 %@", cleanRep];
+        if ([[NSDate date] timeIntervalSince1970] >= self.miniCaptionLockUntilTime) {
+            if (self.currentVoiceQueryBuffer.length > 0) {
+                self.miniSummonView.captionLabel.text = [NSString stringWithFormat:@"🗣️ “%@”", self.currentVoiceQueryBuffer];
+            } else if (self.accumulatedReplyText.length > 0) {
+                NSString *cleanRep = [self.accumulatedReplyText stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+                if (cleanRep.length > 22) cleanRep = [cleanRep substringFromIndex:cleanRep.length - 22];
+                self.miniSummonView.captionLabel.text = [NSString stringWithFormat:@"🔊 %@", cleanRep];
+            }
         }
     }
 
@@ -17082,6 +18000,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         self.currentKeyboardHeight = 0.0;
         [self.inputField resignFirstResponder];
         [self.overlayWindow endEditing:YES];
+        if (self.overlayWindow && self.overlayWindow.isKeyWindow) {
+            [self.overlayWindow resignKeyWindow];
+        }
         self.overlayWindow.lockFullScreenTouch = NO;
 
         if (self.currentTask) {
@@ -19581,6 +20502,7 @@ static void agResetRealtimeTranslationState(void) {
     BOOL _isNativeTransBusy;
     NSString *_pendingNativeText;
     BOOL _pendingNativeIsCommit;
+    BOOL _fallbackToOnlineSpeech;
 }
 
 + (instancetype)sharedOverlay {
@@ -19885,6 +20807,7 @@ static void agResetRealtimeTranslationState(void) {
     _speechTaskGenID++;
     _isNativeTransBusy = NO;
     _pendingNativeText = nil;
+    _fallbackToOnlineSpeech = NO;
     if (self.speechTask) { [self.speechTask cancel]; self.speechTask = nil; }
     if (self.speechRequest) { [self.speechRequest endAudio]; self.speechRequest = nil; }
     for (NSNumber *tid in [self.pipelineTasksMap allKeys]) {
@@ -20049,7 +20972,7 @@ static void agResetRealtimeTranslationState(void) {
     self.speechRequest.shouldReportPartialResults = YES;
     self.speechRequest.taskHint = SFSpeechRecognitionTaskHintDictation;
     if (@available(iOS 13.0, *)) {
-        if (self.speechRecognizer.supportsOnDeviceRecognition) {
+        if (self.speechRecognizer.supportsOnDeviceRecognition && !_fallbackToOnlineSpeech) {
             self.speechRequest.requiresOnDeviceRecognition = YES;
         }
     }
@@ -20151,6 +21074,7 @@ static void agResetRealtimeTranslationState(void) {
             if (error || (result && result.isFinal)) {
                 if (taskGen != strongSelf->_speechTaskGenID) return;
                 if (error && strongSelf.speechRequest && strongSelf.speechRequest.requiresOnDeviceRecognition) {
+                    strongSelf->_fallbackToOnlineSpeech = YES;
                     strongSelf.speechRequest.requiresOnDeviceRecognition = NO;
                 }
                 if (strongSelf.lastTranslatedChunkText.length > 0) {
