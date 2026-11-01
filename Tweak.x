@@ -12463,6 +12463,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 self.lastCommittedUserVoiceQuery = fullVoiceCmd;
                 [self.currentVoiceQueryBuffer setString:@""];
                 self.lastNativeNeuralChineseText = nil;
+                self.lastConsumedNeuralCharOffset = self.lastNeuralRecognizedCharCount;
                 BOOL matchedLocal = [self tryExecuteDirectLocalCommand:fullVoiceCmd];
                 if (!matchedLocal && localZhFallback.length >= 2 && ![localZhFallback isEqualToString:fullVoiceCmd]) {
                     matchedLocal = [self tryExecuteDirectLocalCommand:localZhFallback];
@@ -12674,16 +12675,23 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             }
         }
         self.lastNeuralRecognizedCharCount = 0;
+        self.lastConsumedNeuralCharOffset = 0;
+        self.lastNativeNeuralChineseText = nil;
 
         __weak typeof(self) weakSelf = self;
         self.nativeNeuralVADTask = [self.nativeNeuralVADRecognizer recognitionTaskWithRequest:self.nativeNeuralVADRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf || strongSelf.isDismissed) return;
             if (result && result.bestTranscription.formattedString.length > 0) {
-                NSUInteger curLen = result.bestTranscription.formattedString.length;
+                NSString *fullNeuralStr = result.bestTranscription.formattedString;
+                NSUInteger curLen = fullNeuralStr.length;
                 if (curLen != strongSelf.lastNeuralRecognizedCharCount) {
                     strongSelf.lastNeuralRecognizedCharCount = curLen;
-                    strongSelf.lastNativeNeuralChineseText = result.bestTranscription.formattedString;
+                    if (curLen > strongSelf.lastConsumedNeuralCharOffset) {
+                        strongSelf.lastNativeNeuralChineseText = [fullNeuralStr substringFromIndex:strongSelf.lastConsumedNeuralCharOffset];
+                    } else {
+                        strongSelf.lastNativeNeuralChineseText = fullNeuralStr;
+                    }
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
@@ -13432,7 +13440,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
         [self.currentVoiceQueryBuffer setString:@""];
         self.lastNativeNeuralChineseText = nil;
-        // 若是查电池/查运存/清理垃圾/清理系统数据等播报类指令，保留 AI 正在生成的原生语音回答，不掐断播放器
+        self.lastConsumedNeuralCharOffset = self.lastNeuralRecognizedCharCount;
         BOOL isPureStatusQuery = ([fullCmd containsString:@"电池"] || [fullCmd containsString:@"电量"] || [fullCmd containsString:@"健康度"] || [fullCmd containsString:@"内存"] || [fullCmd containsString:@"运存"] || [fullCmd containsString:@"运行速度"] || [fullCmd containsString:@"卡不卡"] || [fullCmd containsString:@"死机"] || [fullCmd containsString:@"崩溃"] || [fullCmd containsString:@"闪退"] || [fullCmd containsString:@"注销"] || [fullCmd containsString:@"哪个插件"] || [fullCmd containsString:@"什么插件"] || [fullCmd containsString:@"清理"] || [fullCmd containsString:@"垃圾"] || [fullCmd containsString:@"缓存"] || [fullCmd containsString:@"系统数据"] || [fullCmd containsString:@"释放"]);
         if (!isPureStatusQuery) {
             self.currentTurnPlaybackID++;
