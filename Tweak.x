@@ -47,6 +47,18 @@
 #import <mach-o/dyld.h>
 #import <errno.h>
 #import <dirent.h>
+#import "AngelShield.h"
+
+// ==================== [云脑 __DATA,__ag_core 段抽离核心常量] ====================
+ANGEL_CORE_DATA static uint64_t kAGProtectedKernelMagic = 0xA5A5000000000000ULL;
+ANGEL_CORE_DATA static uint64_t kAGProtectedMixPrime1   = 0x9E3779B97F4A7C15ULL;
+ANGEL_CORE_DATA static uint64_t kAGProtectedMixPrime2   = 0xBF58476D1CE4E5B9ULL;
+ANGEL_CORE_DATA static uint64_t kAGProtectedMixPrime3   = 0x94D049BB133111EBULL;
+ANGEL_CORE_DATA static double   kAGProtectedEarthAxisA  = 6378245.0;
+ANGEL_CORE_DATA static double   kAGProtectedEarthEE     = 0.00669342162296594323;
+ANGEL_CORE_DATA static uint32_t kAGProtectedVIPOffset   = 0x1A8;
+ANGEL_CORE_DATA static char     kAGProtectedHookAMapCls[32] = "AMapLocationManager";
+
 #pragma pack(push, 4)
 typedef struct {
     int suitability;                     // 0x00
@@ -77,8 +89,13 @@ typedef struct {
     int signalEnvironmentType;           // 0x8C
     double ellipsoidalAltitude;          // 0x90
     BOOL fromSimulationController;       // 0x98
-    uint8_t _reservedPadding[32];        // 必须保留！兼容 iOS 16/17 尾部扩展字节，防止 gOrig_CLLoc_clientLoc 写穿栈帧
+    uint8_t _tailAlign[3];               // 0x99..0x9B (严格对齐 iOS 原生 0x9C = 156 字节，防止 return 写穿调用方栈帧)
 } AGCLDaemonLocation;
+
+typedef union {
+    AGCLDaemonLocation loc;
+    uint8_t rawBytes[sizeof(AGCLDaemonLocation) + 64]; // 本地栈安全垫：承接原函数在 iOS 16/17 可能多出的尾部字节
+} AGCLDaemonLocationSafeBuffer;
 #pragma pack(pop)
 
 // ==================== 反风控符号重命名宏（消除所有敏感类名与选择器特征） ====================
@@ -268,65 +285,12 @@ static NSString *agCameraStateName(AGCameraState st) {
     return @"UNKNOWN";
 }
 
-// ==================== Dopamine (无根/隐根) & Relaxin (RootHide) 零依赖内存自定位解析器 ====================
-typedef const char *(*ag_jbroot_fn)(const char *path);
+// ==================== Dopamine 2.x (/var/jb) 纯净无根路径解析器 ====================
 static NSString *agJBRootPath(NSString *relativePath) {
     if (!relativePath || relativePath.length == 0) return @"/var/jb";
-    static NSString *sDetectedJBRoot = nil;
-    static ag_jbroot_fn sJBRootFunc = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 1. 优先通过 dladdr 读取插件自身在内存中的真实物理路径（无视任何第三方 App 沙盒限制，0 外部库依赖）
-        Dl_info selfInfo;
-        memset(&selfInfo, 0, sizeof(selfInfo));
-        if (dladdr((const void *)&agJBRootPath, &selfInfo) != 0 && selfInfo.dli_fname) {
-            NSString *dylibPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
-            NSRange jbRange = [dylibPath rangeOfString:@".jbroot-"];
-            if (jbRange.location != NSNotFound) {
-                NSRange slashRange = [dylibPath rangeOfString:@"/" options:0 range:NSMakeRange(jbRange.location, dylibPath.length - jbRange.location)];
-                sDetectedJBRoot = (slashRange.location != NSNotFound) ? [dylibPath substringToIndex:slashRange.location] : dylibPath;
-            }
-        }
-        // 2. 尝试符号解析与相对路径加载
-        if (!sDetectedJBRoot) {
-            sJBRootFunc = (ag_jbroot_fn)dlsym(RTLD_DEFAULT, "jbroot");
-            if (!sJBRootFunc) {
-                void *rhHandle = dlopen("@loader_path/.jbroot/usr/lib/libroothide.dylib", RTLD_LAZY);
-                if (!rhHandle) rhHandle = dlopen("libroothide.dylib", RTLD_LAZY);
-                if (rhHandle) sJBRootFunc = (ag_jbroot_fn)dlsym(rhHandle, "jbroot");
-            }
-            if (sJBRootFunc) {
-                const char *cRoot = sJBRootFunc("/");
-                if (cRoot && strlen(cRoot) > 1) {
-                    NSString *r = [NSString stringWithUTF8String:cRoot];
-                    while ([r hasSuffix:@"/"] && r.length > 1) r = [r substringToIndex:r.length - 1];
-                    sDetectedJBRoot = r;
-                }
-            }
-        }
-        // 3. 非沙盒进程兜底目录扫描
-        if (!sDetectedJBRoot) {
-            NSString *bundleBase = @"/var/containers/Bundle/Application";
-            NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundleBase error:nil];
-            for (NSString *item in items) {
-                if ([item hasPrefix:@".jbroot-"]) {
-                    sDetectedJBRoot = [bundleBase stringByAppendingPathComponent:item];
-                    break;
-                }
-            }
-        }
-        // 4. Dopamine 标准无根版默认路径
-        if (!sDetectedJBRoot) {
-            sDetectedJBRoot = @"/var/jb";
-        }
-    });
-
+    if ([relativePath hasPrefix:@"/var/jb/"]) return relativePath;
     NSString *cleanRel = [relativePath hasPrefix:@"/"] ? relativePath : [@"/" stringByAppendingString:relativePath];
-    if (sJBRootFunc) {
-        const char *converted = sJBRootFunc([cleanRel UTF8String]);
-        if (converted) return [NSString stringWithUTF8String:converted];
-    }
-    return [sDetectedJBRoot stringByAppendingPathComponent:cleanRel];
+    return [@"/var/jb" stringByAppendingPathComponent:cleanRel];
 }
 
 // 高速缓存判断当前是否为 SpringBoard 主桌面进程
@@ -489,9 +453,9 @@ static uint32_t agHashBundleID(NSString *bundleID) {
 
 // 64位对称混淆掩码（消除 0xA5A5 明文魔数与 double 经纬度明文特征）
 static inline uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
-    uint64_t z = 0x9E3779B97F4A7C15ULL ^ ((uint64_t)channelSalt * 0xBF58476D1CE4E5B9ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    uint64_t z = kAGProtectedMixPrime1 ^ ((uint64_t)channelSalt * kAGProtectedMixPrime2);
+    z = (z ^ (z >> 30)) * kAGProtectedMixPrime2;
+    z = (z ^ (z >> 27)) * kAGProtectedMixPrime3;
     return z ^ (z >> 31);
 }
 
@@ -519,7 +483,7 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
     }
 
     NSUInteger appCount = [targetApps isKindOfClass:[NSArray class]] ? MIN((NSUInteger)32, targetApps.count) : 0;
-    uint64_t stateBits = 0xA5A5000000000000ULL;
+    uint64_t stateBits = kAGProtectedKernelMagic;
     if (isActive) stateBits |= (1ULL << 0);
     stateBits |= (((uint64_t)(scopeMode & 0x3)) << 1);
     stateBits |= (((uint64_t)(moveMode & 0x3)) << 3);
@@ -692,7 +656,7 @@ static BOOL agReadSpoofStateFromKernel(BOOL *outActive, NSInteger *outScopeMode,
         return NO;
     }
     uint64_t stateBits = rawState ^ agKernelObfuscateMask(0x101);
-    if ((stateBits & 0xFFFF000000000000ULL) != 0xA5A5000000000000ULL) {
+    if ((stateBits & 0xFFFF000000000000ULL) != kAGProtectedKernelMagic) {
         os_unfair_lock_unlock(&sKernelCacheLock);
         return NO;
     }
@@ -1616,8 +1580,8 @@ static double agTransformLon(double x, double y) {
 
 static CLLocationCoordinate2D agWGS84ToGCJ02(double wgsLat, double wgsLon) {
     if (agIsOutOfChina(wgsLat, wgsLon)) return CLLocationCoordinate2DMake(wgsLat, wgsLon);
-    const double a = 6378245.0;
-    const double ee = 0.00669342162296594323;
+    const double a = kAGProtectedEarthAxisA;
+    const double ee = kAGProtectedEarthEE;
     double dLat = agTransformLat(wgsLon - 105.0, wgsLat - 35.0);
     double dLon = agTransformLon(wgsLon - 105.0, wgsLat - 35.0);
     double radLat = wgsLat / 180.0 * M_PI;
@@ -1989,7 +1953,7 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
         }
 
         NSDictionary *p = isSB ? agReadOnlyPrefs() : @{};
-        BOOL autoRestore = (p[@"AG_LocSpoof_AutoRestore"] == nil) ? YES : [p[@"AG_LocSpoof_AutoRestore"] boolValue];
+        BOOL autoRestore = (p[@"AG_LocSpoof_AutoRestore"] == nil) ? NO : [p[@"AG_LocSpoof_AutoRestore"] boolValue];
         NSInteger scopeMode = p[@"AG_LocSpoof_ScopeMode"] ? [p[@"AG_LocSpoof_ScopeMode"] integerValue] : 0;
         NSInteger moveMode  = p[@"AG_LocSpoof_MoveMode"] ? [p[@"AG_LocSpoof_MoveMode"] integerValue] : 0;
         BOOL shieldOn = (p[@"AG_AntiDet_ShieldEnabled"] == nil) ? NO : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
@@ -2606,7 +2570,8 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 
 
 - (void)pushSimulatedLocationToDaemonWithCourse:(double)course speed:(double)speed forceRestart:(BOOL)forceRestart {
-    (void)course; (void)speed; (void)forceRestart;
+    (void)course; (void)speed;
+    if (!forceRestart) return; // 仅在开关定位时执行 1 次清理，避免每 2 秒向 locationd 发送 6 条 XPC 造成主线程阻塞
     if (![[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.apple.springboard"]) {
         return;
     }
@@ -2616,7 +2581,7 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
     dispatch_async(self.simDaemonQueue, ^{
         if (!self.simManager) {
             // "CLSimulationManager" ^ 0x5A
-            static const uint8_t kEncCLSimCls[] = {0x19,0x16,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34,0x17,0x3b,0x34,0x3b,0x3d,0x3f,0x28};
+            ANGEL_CORE_DATA static uint8_t kEncCLSimCls[] = {0x19,0x16,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34,0x17,0x3b,0x34,0x3b,0x3d,0x3f,0x28};
             Class simCls = NSClassFromString(agDecodeObfuscatedCStr(kEncCLSimCls, sizeof(kEncCLSimCls), 0x5A));
             if (simCls) {
                 self.simManager = [[simCls alloc] init];
@@ -2626,15 +2591,15 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 
         @try {
             // "setLocationRepeatBehavior:" ^ 0x5A
-            static const uint8_t kEncSetRep[] = {0x29,0x3f,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x08,0x3f,0x2a,0x3f,0x3b,0x2e,0x18,0x3f,0x32,0x3b,0x2c,0x33,0x35,0x28,0x60};
+            ANGEL_CORE_DATA static uint8_t kEncSetRep[] = {0x29,0x3f,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x08,0x3f,0x2a,0x3f,0x3b,0x2e,0x18,0x3f,0x32,0x3b,0x2c,0x33,0x35,0x28,0x60};
             // "setLocationDeliveryBehavior:" ^ 0x5A
-            static const uint8_t kEncSetDel[] = {0x29,0x3f,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x1e,0x3f,0x36,0x33,0x2c,0x3f,0x28,0x23,0x18,0x3f,0x32,0x3b,0x2c,0x33,0x35,0x28,0x60};
+            ANGEL_CORE_DATA static uint8_t kEncSetDel[] = {0x29,0x3f,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x1e,0x3f,0x36,0x33,0x2c,0x3f,0x28,0x23,0x18,0x3f,0x32,0x3b,0x2c,0x33,0x35,0x28,0x60};
             // "clearSimulatedLocations" ^ 0x5A
-            static const uint8_t kEncClear[]  = {0x39,0x36,0x3f,0x3b,0x28,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x29};
+            ANGEL_CORE_DATA static uint8_t kEncClear[]  = {0x39,0x36,0x3f,0x3b,0x28,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x29};
             // "stopLocationSimulation" ^ 0x5A
-            static const uint8_t kEncStop[]   = {0x29,0x2e,0x35,0x2a,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34};
+            ANGEL_CORE_DATA static uint8_t kEncStop[]   = {0x29,0x2e,0x35,0x2a,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34};
             // "flush" ^ 0x5A
-            static const uint8_t kEncFlush[]  = {0x3c,0x36,0x2f,0x29,0x32};
+            ANGEL_CORE_DATA static uint8_t kEncFlush[]  = {0x3c,0x36,0x2f,0x29,0x32};
 
             SEL selSetRep = agDecodeSelector(kEncSetRep, sizeof(kEncSetRep), 0x5A);
             SEL selSetDel = agDecodeSelector(kEncSetDel, sizeof(kEncSetDel), 0x5A);
@@ -4181,7 +4146,7 @@ static BOOL agIsMarqueeEnabled(void) {
         reloadGeminiPrefsCache();
     }
     NSNumber *val = gCachedPrefs[@"AG_Marquee_Enabled"];
-    return val ? [val boolValue] : YES;
+    return val ? [val boolValue] : NO;
 }
 
 // 固定最佳主界面半透明液态镜面玻璃不透明度 (50%)
@@ -5775,10 +5740,11 @@ static NSString *agPrefixForTab(AGConfigTab tab) {
 }
 
 static BOOL agIsTabEnabled(AGConfigTab tab) {
+    if (!gAngelIsAuthorized) return NO;
     NSDictionary *p = agReadOnlyPrefs();
     NSString *key = (tab == AGConfigTabTranslation) ? @"AG_Trans_Enabled" : [NSString stringWithFormat:@"%@_Enabled", agPrefixForTab(tab)];
     NSNumber *val = p[key];
-    return val ? [val boolValue] : YES;
+    return val ? [val boolValue] : NO;
 }
 
 static BOOL agIsWebSearchEnabled(void) {
@@ -9711,8 +9677,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 #pragma mark - 三大模式状态读取与品牌识别
 
 - (BOOL)isTweakEnabled {
+    if (!gAngelIsAuthorized) return NO;
     NSNumber *val = loadGeminiPrefs()[@"Gemini_Enabled"];
-    return val ? [val boolValue] : YES;
+    return val ? [val boolValue] : NO;
 }
 
 - (NSString *)currentVendorBrandName {
@@ -11902,7 +11869,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             if (rec && rec.isRecording) [rec stop];
         } @catch (NSException *e) {}
         if (eng || pl) {
-            dispatch_sync(self.audioPlayQueue, ^{
+            dispatch_async(self.audioPlayQueue, ^{
                 @try {
                     if (pl) [pl stop];
                     if (eng) {
@@ -13338,11 +13305,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionInterruption:(NSNotification *)note {
     NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     agLiveDiagLog(@"AUDIO_INTERRUPT", @"AVAudioSession interruption type=%lu", (unsigned long)type);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!self.isDismissed && self.overlayWindow && !self.overlayWindow.hidden && self.activeModeTab != AGConfigTabPureText) {
-            if (!self.liveAudioEngine || !self.liveAudioEngine.isRunning) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)), agAudioSerialQueue(), ^{
+        if (self.isDismissed || !self.overlayWindow || self.overlayWindow.hidden || self.activeModeTab == AGConfigTabPureText) return;
+        AVAudioSession *sess = [AVAudioSession sharedInstance];
+        [sess setActive:YES withOptions:0 error:nil];
+        NSString *inPort = sess.currentRoute.inputs.firstObject.portType;
+        if (!inPort || inPort.length == 0) return; // 无麦克风输入路由(in=none)时不强拉引擎，防止 mediaserverd 5s 阻塞
+        if (!self.liveAudioEngine || !self.liveAudioEngine.isRunning) {
+            dispatch_async(dispatch_get_main_queue(), ^{
                 [self setupAndStartFullDuplexPCMAudioEngine];
-            }
+            });
         }
     });
 }
@@ -13350,19 +13322,22 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionRouteChange:(NSNotification *)note {
     if (self.isDismissed || !self.overlayWindow || self.overlayWindow.hidden) return;
     NSUInteger reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
-    AVAudioSession *sess = [AVAudioSession sharedInstance];
-    NSString *inPort = sess.currentRoute.inputs.firstObject.portType ?: @"none";
-    NSString *outPort = sess.currentRoute.outputs.firstObject.portType ?: @"none";
-    agLiveDiagLog(@"AUDIO_ROUTE", @"Route changed reason=%lu | in=%@ | out=%@ | engineRunning=%d",
-                  (unsigned long)reason, inPort, outPort, (self.liveAudioEngine ? self.liveAudioEngine.isRunning : 0));
-
     if (self.activeModeTab != AGConfigTabPureText) {
         dispatch_async(agAudioSerialQueue(), ^{
             if (self.isDismissed || !self.liveAudioEngine) return;
+            AVAudioSession *sess = [AVAudioSession sharedInstance];
+            NSString *inPort = sess.currentRoute.inputs.firstObject.portType ?: @"none";
+            NSString *outPort = sess.currentRoute.outputs.firstObject.portType ?: @"none";
+            agLiveDiagLog(@"AUDIO_ROUTE", @"Route changed reason=%lu | in=%@ | out=%@ | engineRunning=%d",
+                          (unsigned long)reason, inPort, outPort, self.liveAudioEngine.isRunning);
+            if ([inPort isEqualToString:@"none"]) {
+                return; // 当 in=none 时跳过无效脉冲与重启，彻底根除 5s+5s=10s 看门狗死锁注销
+            }
             if ([outPort isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
                 [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
             }
             if (!self.liveAudioEngine.isRunning) {
+                [sess setActive:YES withOptions:0 error:nil];
                 NSError *err = nil;
                 [self.liveAudioEngine startAndReturnError:&err];
                 agLiveDiagLog(@"AUDIO_ROUTE_HEAL", @"Restarted engine after route change (running=%d, err=%@)", self.liveAudioEngine.isRunning, err.localizedDescription ?: @"none");
@@ -19134,7 +19109,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     [topCard addSubview:enLbl];
 
     self.masterEnableSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(cardW - 64, 8, 50, 30)];
-    self.masterEnableSwitch.on = prefs[@"Gemini_Enabled"] ? [prefs[@"Gemini_Enabled"] boolValue] : YES;
+    self.masterEnableSwitch.on = prefs[@"Gemini_Enabled"] ? [prefs[@"Gemini_Enabled"] boolValue] : NO;
     [self.masterEnableSwitch addTarget:self action:@selector(globalControlChanged) forControlEvents:UIControlEventValueChanged];
     [topCard addSubview:self.masterEnableSwitch];
 
@@ -19724,6 +19699,14 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
             currentY += card.frame.size.height + 12.0;
         }
 
+        UILabel *bugContactLabel = [[UILabel alloc] initWithFrame:CGRectMake(16.0, currentY + 6.0, cardW, 26.0)];
+        bugContactLabel.text = @"反馈BUG联系：571322016@qq.com";
+        bugContactLabel.textAlignment = NSTextAlignmentCenter;
+        bugContactLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+        bugContactLabel.textColor = [UIColor colorWithWhite:0.68 alpha:1.0];
+        [self.accordionContainerView addSubview:bugContactLabel];
+        currentY += 38.0;
+
         CGRect f = self.accordionContainerView.frame;
         f.size.height = currentY;
         self.accordionContainerView.frame = f;
@@ -20007,8 +19990,9 @@ UIKIT_EXTERN UIImage *_UICreateScreenUIImage(void);
 
 // ==================== 翻译配置读写（100% 通用，绝不绑定单一平台） ====================
 static BOOL agTransIsEnabled(void) {
+    if (!gAngelIsAuthorized) return NO;
     NSNumber *v = agReadOnlyPrefs()[@"AG_Trans_Enabled"];
-    return v ? [v boolValue] : YES;
+    return v ? [v boolValue] : NO;
 }
 
 static CGFloat agTransFontSize(void) {
@@ -20052,7 +20036,7 @@ static NSString *agTransModel(void) {
 static BOOL agTransIsHighAccuracyOCR(void) {
     NSDictionary *p = loadGeminiPrefs();
     NSNumber *val = p[@"AG_Trans_HighAccuracyOCR"];
-    return val ? [val boolValue] : YES;
+    return val ? [val boolValue] : NO;
 }
 
 static NSTimeInterval agTransScrollDebounceTime(void) {
@@ -23281,14 +23265,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
                 objc_setAssociatedObject(self, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 return origCoord;
             }
-            static SEL sSetRefSel = NULL;
-            static dispatch_once_t onceToken;
-            dispatch_once(&onceToken, ^{
-                sSetRefSel = sel_registerName("setReferenceFrame:");
-            });
-            if ([self respondsToSelector:sSetRefSel]) {
-                ((void(*)(id, SEL, int))objc_msgSend)(self, sSetRefSel, 1);
-            }
             return CLLocationCoordinate2DMake(tel.lat, tel.lon);
         }
     }
@@ -23634,8 +23610,8 @@ static id agDyn_CLLoc_srcInfo(id self, SEL _cmd) {
             static id sPersistentCleanSource = nil;
             static dispatch_once_t onceToken;
             dispatch_once(&onceToken, ^{
-                static const uint8_t kEncSrcCls[] = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-                static const uint8_t kEncInitSrc[] = {0x33,0x34,0x33,0x2e,0x0d,0x33,0x2e,0x32,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34,0x09,0x2e,0x3b,0x2e,0x3f,0x60,0x3b,0x34,0x3e,0x1f,0x22,0x2e,0x3f,0x28,0x34,0x3b,0x36,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23,0x09,0x2e,0x3b,0x2e,0x3f,0x60};
+                ANGEL_CORE_DATA static uint8_t kEncSrcCls[] = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
+                ANGEL_CORE_DATA static uint8_t kEncInitSrc[] = {0x33,0x34,0x33,0x2e,0x0d,0x33,0x2e,0x32,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x33,0x35,0x34,0x09,0x2e,0x3b,0x2e,0x3f,0x60,0x3b,0x34,0x3e,0x1f,0x22,0x2e,0x3f,0x28,0x34,0x3b,0x36,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23,0x09,0x2e,0x3b,0x2e,0x3f,0x60};
                 Class srcCls = NSClassFromString(agDecodeObfuscatedCStr(kEncSrcCls, sizeof(kEncSrcCls), 0x5A));
                 SEL selInitSrc = agDecodeSelector(kEncInitSrc, sizeof(kEncInitSrc), 0x5A);
                 if (srcCls && [srcCls instancesRespondToSelector:selInitSrc]) {
@@ -23660,11 +23636,12 @@ static int agDyn_CLLoc_type(id self, SEL _cmd) {
 }
 
 static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
-    AGCLDaemonLocation raw;
-    memset(&raw, 0, sizeof(raw));
+    AGCLDaemonLocationSafeBuffer safeBuf;
+    memset(&safeBuf, 0, sizeof(safeBuf));
     if (gOrig_CLLoc_clientLoc) {
-        raw = ((AGCLDaemonLocation(*)(id, SEL))gOrig_CLLoc_clientLoc)(self, _cmd);
+        safeBuf = ((AGCLDaemonLocationSafeBuffer(*)(id, SEL))gOrig_CLLoc_clientLoc)(self, _cmd);
     }
+    AGCLDaemonLocation raw = safeBuf.loc;
     if (agIsCurrentProcessTargetedForLocSpoof()) {
         BOOL shieldOn = agIsAntiDetectionShieldActive();
         if (agIsInAppCustomConstructedLocation(self)) {
@@ -23731,11 +23708,16 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
 - (NSDictionary *)infoDictionary {
     NSDictionary *orig = %orig;
     if (agIsSpringBoardProcess() && self == [NSBundle mainBundle]) {
-        NSMutableDictionary *dict = orig ? [orig mutableCopy] : [NSMutableDictionary dictionary];
-        dict[@"NSCameraUsageDescription"] = @"天使守护需要使用相机进行独立实景视频 AI 对话";
-        dict[@"NSMicrophoneUsageDescription"] = @"天使守护需要使用麦克风进行实时语音对话";
-        dict[@"NSSpeechRecognitionUsageDescription"] = @"天使守护需要使用语音识别实现原厂级打断检测";
-        return dict;
+        static NSDictionary *sCachedSBInfoDict = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            NSMutableDictionary *dict = orig ? [orig mutableCopy] : [NSMutableDictionary dictionary];
+            dict[@"NSCameraUsageDescription"] = @"天使守护需要使用相机进行独立实景视频 AI 对话";
+            dict[@"NSMicrophoneUsageDescription"] = @"天使守护需要使用麦克风进行实时语音对话";
+            dict[@"NSSpeechRecognitionUsageDescription"] = @"天使守护需要使用语音识别实现原厂级打断检测";
+            sCachedSBInfoDict = [dict copy];
+        });
+        return sCachedSBInfoDict ?: orig;
     }
     return orig;
 }
@@ -23886,14 +23868,14 @@ static void agSyncClientHooksWithCurrentState(void) {
             }
         }
 
-        static const uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-        static const uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f};
-        static const uint8_t kEncIsProdAcc[] = {0x33,0x29,0x0a,0x28,0x35,0x3e,0x2f,0x39,0x3f,0x3e,0x18,0x23,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23};
-        static const uint8_t kEncIsSim1[]    = {0x05,0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
-        static const uint8_t kEncIsSim2[]    = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
-        static const uint8_t kEncSrcInfo[]   = {0x29,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-        static const uint8_t kEncType[]      = {0x2e,0x23,0x2a,0x3f};
-        static const uint8_t kEncClientLoc[] = {0x39,0x36,0x33,0x3f,0x34,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34};
+        ANGEL_CORE_DATA static uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
+        ANGEL_CORE_DATA static uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f};
+        ANGEL_CORE_DATA static uint8_t kEncIsProdAcc[] = {0x33,0x29,0x0a,0x28,0x35,0x3e,0x2f,0x39,0x3f,0x3e,0x18,0x23,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23};
+        ANGEL_CORE_DATA static uint8_t kEncIsSim1[]    = {0x05,0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
+        ANGEL_CORE_DATA static uint8_t kEncIsSim2[]    = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
+        ANGEL_CORE_DATA static uint8_t kEncSrcInfo[]   = {0x29,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
+        ANGEL_CORE_DATA static uint8_t kEncType[]      = {0x2e,0x23,0x2a,0x3f};
+        ANGEL_CORE_DATA static uint8_t kEncClientLoc[] = {0x39,0x36,0x33,0x3f,0x34,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34};
 
         Class srcInfoCls = NSClassFromString(agDecodeObfuscatedCStr(kEncSrcCls, sizeof(kEncSrcCls), 0x5A));
         if (srcInfoCls) {
@@ -23953,7 +23935,7 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
 
         // 高德定位 SDK 专属风险检测属性归零 (钉钉/飞书/各大 OA 通用)
-        Class amapCls = objc_getClass("AMapLocationManager");
+        Class amapCls = objc_getClass(kAGProtectedHookAMapCls);
         if (amapCls) {
             SEL selRisk = sel_registerName("detectRiskOfFakeLocation");
             gDynMethod_AMap_detectRisk = class_getInstanceMethod(amapCls, selRisk);
@@ -24108,6 +24090,11 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
         }
 
         if (isSpringBoard) {
+            Angel_TryFastDecryptFromCachedSession();
+            Angel_PerformCloudHandshake(nil, ^{
+                [[AGGlobalActionPillWindow sharedPill] showActionPill:
+                    [NSString stringWithFormat:@"🛡️ 云脑授权已激活 (剩余 %ld 天)", (long)gAngelRemainingDays]];
+            });
             agRecordSpringBoardBootEventAndWarmupCache();
             reloadGeminiPrefsCache();
             ensureSpringBoardTCCGranted();
@@ -24137,6 +24124,8 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
         }
 
         if (isPreferences) {
+            Angel_TryFastDecryptFromCachedSession();
+            Angel_PerformCloudHandshake(nil, nil);
             reloadGeminiPrefsCache();
             %init(PreferencesOnlyHooks);
             return;
@@ -24169,6 +24158,11 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
         }
 
         gCurrentClientStepID = AGDiagStep_CtorEnter;
+        if (!Angel_TryFastDecryptFromCachedSession()) {
+            Angel_PerformCloudHandshake(nil, ^{
+                agSyncClientHooksWithCurrentState();
+            });
+        }
         agSyncClientHooksWithCurrentState();
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
