@@ -12647,8 +12647,7 @@ sIsServerGeneratingTurn = YES;
 // ====== 实时看屏推帧与防重复执行替换块 2 结束 ======
             if (aiDelta.length > 0 && !self.isMutedByLocalBargeIn) {
                 if (self.isLastTranscriptLineUser) {
-                    [[self currentTabTranscript] appendString:@"
-"];
+                    [[self currentTabTranscript] appendString:@"\n"];
                     self.isLastTranscriptLineUser = NO;
                 }
                 [self appendIncomingTextDelta:aiDelta];
@@ -12669,8 +12668,7 @@ sIsServerGeneratingTurn = YES;
                 }
                 if (part[@"text"] && self.disableTranscriptionInSetup && !self.isMutedByLocalBargeIn) {
                     if (self.isLastTranscriptLineUser) {
-                        [[self currentTabTranscript] appendString:@"
-"];
+                        [[self currentTabTranscript] appendString:@"\n"];
                         self.isLastTranscriptLineUser = NO;
                     }
                     [self appendIncomingTextDelta:part[@"text"]];
