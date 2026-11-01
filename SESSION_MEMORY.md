@@ -223,3 +223,37 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 微信扫一扫原生VC直调/打断禁音锁保护/神经声学严格同步/零回声门控100ms发包 (Run #14)
+
+### 1. 修改要点 (5 处局部替换)
+1. **【修复 1】微信扫一扫原生视图控制器直推 (`agExecuteWeChatCommandDict`)**:
+   - 与付款码对齐，第一优先级直接 Push 原生扫码视图控制器（轮询 `CameraScanViewController`、`CameraScannerViewController`、`WCScanViewController`、`BaseScanViewController`），适配 `initWithCameraMode:`；
+   - 第二优先级调用微信内部 `MMURLHandler` 打开 `weixin://dl/scan`；
+   - 第三优先级使用 `com.tencent.xin.shortcut.qrscan` 与 `scan` 双快捷入口兜底。
+2. **【修复 2】打断禁音锁被提前解开 & 过滤云端外语回声幻听 (`handleIncomingWebSocketJSON:`)**:
+   - 增加中文字符校验与外语碎词检测，当 AI 播报中或人声音量不足且无中文字符时，直接丢弃云端空耳幻听的外语碎片（如 `le 14h / tendo / ita / ¿Sí?`）；
+   - 在 `outputTranscription` 开始输出文字前精准解锁 `self.isMutedByLocalBargeIn = NO`，防止旧回复禁音锁提前失效。
+3. **【修复 3】防止苹果本地识别滞后引发静音假打断 (`startNativeAppleNeuralVADIfNeeded`)**:
+   - 增加 `hasImmediateHumanEnergy`（过去 0.12s 麦克风 > -34.0dB 且 AI 已播报 > 0.85s）作为打断刚性门禁，彻底根除尾字识别滞后导致的假打断；
+   - 保持 `hasRecentHumanEnergy` 用于本地中文指令抢先触发。
+4. **【修复 4】灵敏打断 + 零回声门控 + 100ms 流式发包降温 (`processMicrophoneInputPCMBuffer:`)**:
+   - AI 播音期间且未打断时，上行推送纯零静音模板帧（0 能量），让服务端 100% 听不到 AI 喇叭发出的声音；
+   - 日常流式改用 3200B (100ms) 缓冲，降低 50% WebSocket 发包频率与发热，仅在打断瞬间使用 1600B 极速冲刷。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `ACA97BBA22E3990DF4C0E3443B5EFCEA983734B9C4468114AA485EAC3EC7DCF1`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `ACA97BBA22E3990DF4C0E3443B5EFCEA983734B9C4468114AA485EAC3EC7DCF1`)
+- 镜像状态: 100% 一致。
+- 语法检测: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #14, ID: 41275389842, Commit: ff1d0b2)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (518,344 字节, SHA256: `E927FEC35CAB98F181027605A24DFB6A6DA3BE8E1A3DF017788FA1B6F0393017`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (342,072 字节, SHA256: `8EF017C993C0A072CD04123AB13522DB935C0E4FBE0C26140339BAEB51D7880B`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
