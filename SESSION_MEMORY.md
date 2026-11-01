@@ -423,3 +423,46 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 中文普通话听音准则锁定/标点智能提速/100% VAD喂流/三点抗混叠降采样/商城连招复扫 (Run #27)
+
+### 1. 修改要点 (6 处精准深度优化)
+1. **【修改点 1】锁定“用户全程中文普通话听音准则” (`URLSession:webSocketTask:didOpenWithProtocol:`)**:
+   - 在 WebSocket 握手系统提示词中追加严格指令：用户全程仅使用中文普通话，严禁将中文语音误转写为韩语、越南语、印地语、西班牙语等外语谐音字符，彻底消除外语谐音乱码。
+2. **【修改点 2】标点智能落字提速 (0.14s / 0.32s) + 苹果本地中文兜底 + 静默拦截迟到语音包 (`handleIncomingWebSocketJSON:`)**:
+   - 云端增量文字若包含句号/问号/叹号等结尾标点，提速至 0.14s 自动提交；无标点短语 0.32s 提交；
+   - 收到云端零件及智能提交时双重触发 `checkDeferredVoiceLocalCommand`；
+   - 本地指令命中执行后，立即设置 `self.aiPlaybackEndTime = now + 4.0; self.isMutedByLocalBargeIn = YES;`，静默丢弃云端随后到达的语音流，杜绝本地操作与 AI 播报打架。
+3. **【修改点 3】苹果本地纯中文识别结果同步保存 (`startNativeAppleNeuralVADIfNeeded` 与 `stopNativeAppleNeuralVAD`)**:
+   - 实时同步维护 `self.lastNativeNeuralChineseText` 与 `self.lastConsumedNeuralCharOffset`，为云端外语音空耳提供本地离线纯中文识别文本救火兜底。
+4. **【修改点 4】nativeNeuralVADRequest 100% 连续喂入 + 3点均值抗混叠降采样 + 双保险打断 + 恒定 3200B 匀速发包 (`processMicrophoneInputPCMBuffer:`)**:
+   - 无论当前分贝高低，麦克风 PCM 数据 100% 连续喂给苹果本地识别引擎，杜绝因分贝过低切断数据流导致本地识别中断；
+   - 48kHz -> 16kHz 采用 3 点均值抗混叠下采样（盒式滤波），移除 `tanhf` 软饱和非线性谐波失真；
+   - 增加双保险瞬时分贝打断：当 `db > -30.0f && peakDb > -16.5f` 连续 2 帧，即使字数未变也能立刻打断 AI 播报；
+   - 恢复 3200 字节 (100ms) 恒定匀速发包，保障每一句话的首音完整性。
+5. **【修改点 5】双引擎容错 + 应用拼音同音词容错 + 商城连招 2.2s 提速与复扫 (`checkDeferredVoiceLocalCommand` / `tryExecuteDirectLocalCommand:` / `resolveInstalledAppBundleIDForName:`)**:
+   - 本地与云端双引擎交叉校验；
+   - 紧凑三连招正则优化，第 2 步打开 App 后提速至 2.2s 自动执行点击并支持 2 次重试 (`performVisualTapWithRetry:attempt:1 maxAttempts:2`)；
+   - 扩充高频口语音/错别字容错（如“清理好台/请你后台”、“关毕/关闭掉”、“支付宝/足球场/支护宝”、“备忘录/贝旺路/微网络”等）；
+   - 内置 App 映射字典扩充常见应用拼音全拼映射。
+6. **【修改点 6】performVisualTapWithRetry:attempt:maxAttempts: 视觉点击优化**:
+   - 小胶囊模式采用 0.12s 极速截屏（全卡片 0.20s）；
+   - 正则 `salesStripRe` 预先剔除同行“1000+人付款/已拼1.2万件”等销量干扰，精准提取纯价格；
+   - 冷启动超时未找到目标文字时，自动在 1.0s 后执行二次复扫兜底。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `9049aae413492ea70b23b4c40cf047786d0887ed86f954431ec4758fc59c440a`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `9049aae413492ea70b23b4c40cf047786d0887ed86f954431ec4758fc59c440a`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #27, ID: 41289372506, Commit: 5b4e025)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (525,424 字节, SHA256: `c4aa5ae0016eab7a154a21bfa1c6f81afcdb3781fb387e6e1f8b16c44f4eb959`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (342,388 字节, SHA256: `493b6911b1b870f6fed09b23214a6eb5b31911b7139ea30b79ecad44e411cafa`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
