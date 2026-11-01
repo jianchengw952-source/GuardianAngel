@@ -191,3 +191,35 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 微信特权直调/崩溃重启诊断过滤/Siri级双门限秒打断/重启问询防误看屏 (Run #12)
+
+### 1. 修改要点 (4 大补丁全景)
+1. **【补丁 1】微信进程内部特权通道 (秒开微信扫一扫/付款码/收款码/朋友圈)**:
+   - 在 `agExecuteWeChatCommandDict` 中注入模式 0 微信原生直调逻辑，利用 `MMContext`、`MMServiceCenter`、`CContactMgr`、`NewMainFrameViewController`、`WCPayFacingReceiveQRCodeViewController` 等原生控制器与业务路由，绕过腾讯外部 URL Scheme 封锁。
+   - 在 `handleWechatShortcut:` 中直写 `ag_wechat_send.json` 指令并呼起微信。
+2. **【补丁 2】真实异常死机崩溃（Kernel Panic / SpringBoard 崩溃）精准诊断过滤**:
+   - 在 `agAnalyzeRecentCrashesAndResprings` 中新增正常关机/用户主动重启过滤逻辑，精准排除普通用户重启日志，仅在检测到 `panic`、`watchdog`、`wdt timeout`、`thermal`、`kernel_task` 或真正崩溃日志时才进行异常报警，杜绝假报警。
+3. **【补丁 3】iOS 14~17 通用 Siri 级秒打断与抗自回声双门禁**:
+   - 新增 6 个核心属性声明：`isMutedByLocalBargeIn`、`bargeInMuteTimestamp`、`lastActiveMicDB`、`lastActiveMicDBTime`、`vadFallbackToOnline`、`lastCleanNeuralAlphaNumCount`。
+   - `handleIncomingWebSocketJSON:` 中实现多音节空耳乱码自动替换为纯正本地 Apple zh-CN 神经识别文本（防韩文、日文假名、西语反问号乱码）。
+   - 实现 `triggerNativeSiriGradeInstantBargeIn:` 原生秒打断、`startNativeAppleNeuralVADIfNeeded`、`stopNativeAppleNeuralVAD`、`enqueueAndPlayIncomingPCM24kData:` 禁音死锁阻断、`processMicrophoneInputPCMBuffer:` 实时麦克风分贝采样双门禁。
+4. **【补丁 4】重启记录/死机问询极速本地触发 (防误触发屏幕视觉与看屏截屏)**:
+   - 在 `checkDeferredVoiceLocalCommand` 与 `tryExecuteDirectLocalCommand:` 中新增 `@"重启记录"`、`@"重启次数"`、`@"为什么重启"` 触发词，直接输出系统死机诊断报告，避免误走屏幕视觉截屏流程。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `EC5BEF2E7F7D57991426B6D4533C221050DCF5CBC8639FA3733FAC5BE042999D`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `EC5BEF2E7F7D57991426B6D4533C221050DCF5CBC8639FA3733FAC5BE042999D`)
+- 镜像状态: 100% 一致。
+- 语法检测: `Braces: 0, Parens: 0, Brackets: 0`，Logos 标签完备。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #12, ID: 41273275646, Commit: f977d13)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (518,560 字节, SHA256: `774895F1354AEB39E20ADA729300B2796F22C40C0F08634957032617FE50CD1D`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (341,260 字节, SHA256: `CF62813DC445C40DA50E914C0B974F9E1CDC2186B15861F9191C0DD2F2503536`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
