@@ -498,3 +498,37 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 虚拟定位+防检测连招/防检测独立开关/6个同音词/支付唤起防误触/钉钉同音容错 (Run #29)
+
+### 1. 修改要点 (3 处精准优化)
+1. **【修改点 1】升级“虚拟定位 + 防检测”识别与一句话连招 (`tryExecuteDirectLocalCommand:`)**:
+   - 兼容全部同音错词：`防检测`、`反检测`、`房检测`、`房检车`、`房间车`、`房间侧`、`网检车`；
+   - 支持一句话连招（如“把定位改到海口市然后把防检测打开”），正则在提取纯净地名前精准剥离末尾防检测指令词，并在定位成功落盘回调中自动开启防检测护盾，杜绝两步割裂与设置被覆盖；
+   - 扩充定位动词匹配（`修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在` 等），修复吞字问题；支持“丁维”、“打码”同音词与地名容错；
+   - 支持独立开启与关闭防检测（关闭时同步重置偏好项并下发 `kAGLocMasterSyncNotification` 通知）；
+   - 在 0.2 多步连招正则前增加 `isLocAndShieldCombo` 豁免，避免被拆成两步慢速等待。
+2. **【修改点 2】修复“打开支付宝 / 打开云闪付”误跳付款码 (`tryExecuteDirectLocalCommand:`)**:
+   - 将原单字匹配 `@"付"` 严谨收紧为 `@"付款"`、`@"付钱"`、`@"买单"`、`@"收付款"`；
+   - 将支付宝收款匹配收紧为 `@"收款"`、`@"收钱"`；
+   - 彻底杜绝普通“打开支付宝”或“打开云闪付”因 App 名称自带“付”字而误触发付款码界面的 Bug。
+3. **【修改点 3】补齐“打卡丁丁 / 打开丁丁”同音容错 (`tryExecuteDirectLocalCommand:` 与 `resolveInstalledAppBundleIDForName:`)**:
+   - 在 `tryExecuteDirectLocalCommand:` 中直接匹配 `打卡丁丁`、`打卡钉钉`、`打开丁丁` 极速打开钉钉；
+   - 在 `resolveInstalledAppBundleIDForName:` 中将 `丁丁` 映射纠错为 `钉钉`。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `5bece87cbb42caa78e03864c62fa0e43fec163f3e32c62e3c444bfec3f15da3b`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `5bece87cbb42caa78e03864c62fa0e43fec163f3e32c62e3c444bfec3f15da3b`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #29, ID: 41300956943, Commit: d5808e5)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (528028 字节, SHA256: `09de3f6e0a0af51912df783c6b2ac0d48432bd718482c239694b54e3ad2b938f`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343512 字节, SHA256: `c90fcbd3141e585118f92ca1a8748d90c0aeee438fc66da42966478d38e1d065`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
