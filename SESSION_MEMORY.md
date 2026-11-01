@@ -354,3 +354,37 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: -51dB打断门限/ANE静音休眠降温/胶囊悬浮空转阻断/电商同行价格防误跳 (Run #23)
+
+### 1. 修改要点 (4 处精准局部替换)
+1. **【修改 1】VAD 芯片级打断门限微调为 -51.0f dB (`startNativeAppleNeuralVADIfNeeded`)**:
+   - 判定门限由 `-53.0f dB` 调至 `-51.0f dB`（`strongSelf.lastActiveMicDB > -51.0f`），仅拦截 `<= -51.0f dB` 的纯静音底噪，保留轻声说话 0ms 瞬时打断；
+   - 同步更新注释文字对齐。
+2. **【修改 2】麦克风活跃音量记录门限同步 -51.0f dB + ANE 纯静音休眠降温 (`processMicrophoneInputPCMBuffer:`)**:
+   - 提取 `rawFloats` 直接计算分贝能量；
+   - 增加静音时间戳追踪（`sLastNonSilentTime`），当 `db > -55dB` 或说完话 `0.85s` 内，0ms 原样喂入离线神经引擎；在纯静音期（`<= -55dB`）暂停喂入死寂帧，让 ANE 硬件芯片充分休眠降温，0 损灵敏度；
+   - 将麦克风活跃音量记录门限同步对齐至 `-51.0f dB`。
+3. **【修改 3】小胶囊悬浮模式下阻断大主界面后台 60fps 空转重绘 (`tickFluidWaveAnimation`)**:
+   - 跑马灯保持 60/120fps 全局丝滑渲染；
+   - 在小胶囊展开模式下（`isMiniSummonActive`），仅满帧渲染小胶囊视图，完全暂停对已隐藏（`hidden=YES`）的大主界面背景画布、3D 灵动球、双轨声波与音柱进行后台空算绘图，消除发热；大主界面展开时保持 100% 满帧渲染。
+4. **【修改 4】电商商品同行排版价格解析防误跳 (`performVisualTapWithRetry:`)**:
+   - 解决淘宝/拼多多“¥6999 1000+人付款 / 已售1万+”同行排版导致价格行被误跳过的问题；
+   - 分离显式符号正则 `explicitPriceRe`（带 `¥/￥/$`）与通用价格正则 `generalPriceRe`；行内包含显式货币符号时，直接精准提取其后价格数字，不再被行内“人/付款/已售/万”等字样误拦截，40ms 一次点中，彻底根除二次截屏与 8 秒延迟。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `B0D9C8F8035790B507F9189BC0747FCB8994A8F90B4AE4D4EDCF14CE69519E68`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `B0D9C8F8035790B507F9189BC0747FCB8994A8F90B4AE4D4EDCF14CE69519E68`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #23, ID: 41284699419, Commit: c60cac7)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (518,136 字节, SHA256: `5bef17654712b54215489a0c143b634fe1d2f8e99695de93a68392026be02028`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (340,876 字节, SHA256: `902b5661acf9595d2ca1886aa70fe1fd1f7679ecab95857c7eac941c17dceece`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
