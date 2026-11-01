@@ -532,3 +532,22 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 新建分支项目 GuardianAngelrelaxin 并完成 Dopamine 测试版本全量上传
+
+### 1. 项目与仓库元数据
+- **新建仓库名称**: `GuardianAngelrelaxin`
+- **GitHub 仓库地址**: [https://github.com/jianchengw952-source/GuardianAngelrelaxin](https://github.com/jianchengw952-source/GuardianAngelrelaxin)
+- **本地项目路径**: `D:\dopamine测试版本`
+- **单文件 TXT 源码备份**: `D:\dopamine测试版本.txt` (1,331,050 字节, SHA256: `5bece87cbb42caa78e03864c62fa0e43fec163f3e32c62e3c444bfec3f15da3b`)
+- **首次提交 Commit**: `a0a92f9`
+- **CI 构建状态**: Run #1 (ID: 41302018863) 自动触发编译中（双架构支持：Dopamine Rootless arm64 + Relaxin RootHide arm64e）。
+
+### 2. 包含文件完整性
+- 包含主源码: `Tweak.x`、`主修实时翻译.txt`、`dopamine测试版本.txt` (SHA256 完全一致)
+- 包含构建脚手架: `Makefile`、`control`、`AngelCameraHelper.m`、`cam_ent.xml`、`GeminiSiriOverlay.plist`、`HelperInfo.plist`、`layout/`、`.github/workflows/build.yml`、`.gitignore`、`README.md`
+- 包含最新编译纯 .xz deb 安装包:
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
