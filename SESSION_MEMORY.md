@@ -326,3 +326,31 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 语音活动与打断门限同步微调至 -53.0f dB（仅滤 -55dB~-130dB 电流底噪, Run #21)
+
+### 1. 修改要点
+1. **【VAD 打断底噪门限微调 (`startNativeAppleNeuralVADIfNeeded`)】**:
+   - 将麦克风音量判定门限由 `-50.0f dB` 微调为 `-53.0f dB`（`strongSelf.lastActiveMicDB > -53.0f`），仅过滤 `-55dB ~ -130dB` 的极微弱电流底噪，灵敏度与 `主修实时翻译.txt` 原版完全一致，保留极轻人声 0ms 瞬时打断；
+   - 同步更新注释文字对齐。
+2. **【麦克风活跃音量记录门限微调 (`processMicrophoneInputPCMBuffer:`)】**:
+   - 同步将麦克风活跃音量记录门槛放宽至 `-53.0f dB`（`if (db > -53.0f)`），确保极轻微开口声能第一时间更新 `lastActiveMicDB` 与 `lastActiveMicDBTime`。
+3. **【本地指令解析统一变量命名 (`checkDeferredVoiceLocalCommand`)】**:
+   - 确保指令判断代码使用 `[fullCmd containsString:@"清理"]`，与上下文变量 `fullCmd` 严格对齐。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `AE96E7279F2A4574196FE8DC6E1B57B083F4D26A5827252D4A0A1C55A160C698`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `AE96E7279F2A4574196FE8DC6E1B57B083F4D26A5827252D4A0A1C55A160C698`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #21, ID: 41283983564, Commit: 0a25d09)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (517,476 字节, SHA256: `c515aa4d89b0e02d089aa82476401cd0116f1294c2a5a34eb2ff9bb758ea38eb`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (340,124 字节, SHA256: `3761d489e0f517c16f7986782d888790f5d9ee4d4f6bd221c4fb65ae26ac30c4`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
