@@ -257,3 +257,39 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 云端状态机sIsServerGeneratingTurn/双状态打断锁/VPIO硬件挂载规范/单帧0.1s瞬断与550ms尾音门控 (Run #17)
+
+### 1. 修改要点 (4 大核心局部升级)
+1. **【修改 1】引入云端回合状态机 `sIsServerGeneratingTurn` + 拆除停播自杀代码 (`handleIncomingWebSocketJSON:`)**:
+   - 增加 `static volatile BOOL sIsServerGeneratingTurn = NO;` 全局状态追踪；
+   - 收到 `outputTranscription` 或 `modelTurn.parts` 时置 `sIsServerGeneratingTurn = YES`，收到 `interrupted` 或 `turnComplete` 时重置为 `NO`；
+   - 在 `inputTranscription` 中，AI 播报期间若收到无中文汉字的微弱杂音，直接丢弃且绝不停播喇叭；彻底拆除原有的 `[self.pcmPlayerNode stop]` 停播自杀逻辑；
+   - 在 `turnComplete` 中，仅当处于被打断状态时清空音频缓冲，正常完成则调用 `flushPCM24kStagingBuffer`。
+2. **【修改 2】双状态打断锁 + 移除 APPLE_NEURAL_SYLLABLE 延迟假打断 (`triggerNativeSiriGradeInstantBargeIn:` & `startNativeAppleNeuralVADIfNeeded`)**:
+   - `triggerNativeSiriGradeInstantBargeIn:` 精准区分云端流式生成中（`sIsServerGeneratingTurn == YES`）与本地余量播放（`sIsServerGeneratingTurn == NO`），仅在云端仍在下发旧回合时锁定禁音门禁，本地余量播完时新回答零延迟秒出声；
+   - 在 `startNativeAppleNeuralVADIfNeeded` 中彻底移除延迟 0.8s 误掐断喇叭的 `APPLE_NEURAL_SYLLABLE` 调用，仅保留识别文字并由 VPIO/麦克风即时声能门控负责打断。
+3. **【修改 3】遵循 Apple VPIO 双总线规范先挂载单声道参考源 (`setupAndStartFullDuplexPCMAudioEngine`)**:
+   - 先挂载并连接单声道 `player -> mainMixerNode -> outputNode` 作为 Bus 0 参考源，显式初始化 `outputNode`；
+   - 播放参考链路就绪后，再激活 `inputNode` 的 `setVoiceProcessingEnabled:YES` 与 `voiceProcessingAGCEnabled = YES`，为 DSP 提供完整数字参考信号，消除喇叭回声且不压制双讲。
+4. **【修改 4】原生 Siri 级单帧 0.1s 瞬时打断 + 550ms 混响尾音静音门控 (`processMicrophoneInputPCMBuffer:`)**:
+   - VPIO 参考总线对齐后单帧（100ms）达标立即打断喇叭；
+   - 维护 200ms 预录环形缓冲，保留开口打断的首字字头；
+   - 在 AI 播报期间及播完后 550ms 混响窗口内，微弱尾音/底噪（`db < -42.0f`）统一发送纯零静音帧，让云端 100% 听不到回声。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `FF011261B1AB7133FF7160BCE608CFBB5D11783C8B5B1D8C35CC8FE2A5CC3F31`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `FF011261B1AB7133FF7160BCE608CFBB5D11783C8B5B1D8C35CC8FE2A5CC3F31`)
+- 镜像状态: 100% 一致。
+- 语法检测: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #17, ID: 41280348786, Commit: 16f6bdb)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (519,188 字节, SHA256: `1DF816999B326C58DAEFA6D73E8BEA9425F90C6045199227D1AAF18F6AD24384`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (341,836 字节, SHA256: `563163A71860D1D50156D0CA5881ECCFF4E193E22DBE64F1161F1106FD912263`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
