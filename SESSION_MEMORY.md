@@ -293,3 +293,36 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-01: 恢复主修实时翻译原版语音对话与打断逻辑（-50.0f dB微调/剥离isMutedByLocalBargeIn与ZH_OVERRIDE, Run #19)
+
+### 1. 修改要点 (3 大核心替换块)
+1. **【修改 1】恢复 `handleIncomingWebSocketJSON:` 为 `主修实时翻译.txt` 原版逻辑**:
+   - 彻底移除 `static volatile BOOL sIsServerGeneratingTurn` 状态机变量声明与相关引用；
+   - 1.1: 恢复 `interrupted` 与 `inputTranscription` 原版回声抑制门逻辑，过滤西语/拉美/印地语极短空耳杂音（`¿Qué` / `de 4 a 2` / `सर`），移除 `ZH_OVERRIDE` 与强制停播自杀逻辑；
+   - 1.2: 恢复 `outputTranscription` 与 `turnComplete` 原版逻辑，移除 `isMutedByLocalBargeIn` 与双重打断锁，确保模型回复即时流式上屏与推流。
+2. **【修改 2】恢复打断器、本地芯片级 VAD 与音频入队播放为原版逻辑（-50.0f dB 微调与标点过滤）**:
+   - 恢复 `triggerNativeSiriGradeInstantBargeIn:` 为原版逻辑；
+   - `startNativeAppleNeuralVADIfNeeded`: 剔除标点符号统计字数，防止系统自动补句号误触发假打断；门禁放宽至仅拦截 `<= -50.0f dB` 的纯静音底噪，保留 `-45dB` 极轻人声 0ms 瞬时打断；
+   - 恢复 `stopNativeAppleNeuralVAD` 与 `flushPCM24kStagingBuffer`；
+   - 恢复 `enqueueAndPlayIncomingPCM24kData:` 为原版逻辑，移除 `isMutedByLocalBargeIn` 禁音锁。
+3. **【修改 3】恢复 `processMicrophoneInputPCMBuffer:` 与 `checkDeferredVoiceLocalCommand` 为原版逻辑**:
+   - 3.1: 将记录麦克风活跃分贝的门槛同步放宽至 `-50.0f dB`；人声插话打断完全对齐原版阈值（`pastEchoGrace > 0.55s`，`db > -24.5f && peakDb > -12.5f`，连续 4 帧）；移除临时环形缓冲区与尾音静音门控；
+   - 3.2: 恢复 `checkDeferredVoiceLocalCommand` 为原版逻辑，移除神经识别文本 fallback。
+
+### 2. 代码镜像一致性
+- `D:\双工具版本\Tweak.x` (SHA256: `6EF6DF09954BBA2547906385C0B6BD3EC2975E37AFCE9D9C9F4A1158F2C33EDD`)
+- `D:\双工具版本\主修实时翻译.txt` (SHA256: `6EF6DF09954BBA2547906385C0B6BD3EC2975E37AFCE9D9C9F4A1158F2C33EDD`)
+- 镜像状态: 100% 一致。
+- 语法检查: `Braces: 0, Parens: 0, Brackets: 0`。
+- 绝对隔离保障: `TimeGuardianSiri123` 保持冻结 (Commit `214b4d7`)，`D:\天使siri测试版` 未被触碰。
+
+### 3. CI 编译与安装包分发 (Run #19, ID: 41282891594, Commit: eea66cc)
+- **Deb 校验 (Pure XZ, 0% Zstandard)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (517,564 字节, SHA256: `bbfec38d69a8fefde0c7bcb854f31f778a32aaf3a29d703d6ca29411efb84f3b`, valid: true)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (340,444 字节, SHA256: `1eded1b3fe8ab2cc5fbca7439ab3abdc755e4d4afe4d88c2e52712458b5f2bae`, valid: true)
+- **安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
