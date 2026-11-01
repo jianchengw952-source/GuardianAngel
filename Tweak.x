@@ -13871,7 +13871,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 
     // 0.2 匹配任意含“然后 / 接着 / 再去”的多步复合连招（绝不再被后面的单步点击截胡！）
-    NSTextCheckingResult *chainMatch = [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
+    BOOL isLocAndShieldCombo = (([cleanCmd containsString:@"定位"] || [cleanCmd containsString:@"位置"] || [cleanCmd containsString:@"丁维"]) &&
+                                ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] || [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] || [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"网检车"]));
+    NSTextCheckingResult *chainMatch = isLocAndShieldCombo ? nil : [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (chainMatch && chainMatch.numberOfRanges >= 3) {
         NSString *step1Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         NSString *step2Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
@@ -13926,20 +13928,58 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         });
         return YES;
     }
-    if ([cleanCmd containsString:@"考勤防检测"] || [cleanCmd containsString:@"打卡防检测"]) {
-        [[AGLocationSpoofManager sharedSpoofer] enableAttendanceStealthPreset];
-        return YES;
-    }
 
-    NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟)?(?:定位|位置)(?:修改|改|定|设|设置|瞬移|切换到|改到|定在|设在|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
+    BOOL hasAntiDetIntent = ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] ||
+                             [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
+                             [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] ||
+                             [cleanCmd containsString:@"网检车"]);
+
+    // 优先匹配虚拟定位（支持“把定位改到XX然后把防检测打开”一句话连招，在定位落盘回调后自动开启防检测，绝不被覆盖！）
+    NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
     NSTextCheckingResult *locMatch = [locPinRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (locMatch && locMatch.numberOfRanges > 1) {
         NSString *targetPlace = [[cleanCmd substringWithRange:[locMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
+        // 若用户一句话连说了“把定位改到海口市把防检测打开”，剥离末尾的防检测指令词，提取纯净地名
+        NSRegularExpression *stripAntiDetRe = [NSRegularExpression regularExpressionWithPattern:@"(?:然后|接着|再|并|同时)?(?:帮我|给我)?(?:把|将)?(?:考勤|打卡)?(?:防检测|反检测|房检测|房检车|房间车|房间侧|网检车).*$" options:0 error:nil];
+        targetPlace = [[stripAntiDetRe stringByReplacingMatchesInString:targetPlace options:0 range:NSMakeRange(0, targetPlace.length) withTemplate:@""] stringByTrimmingCharactersInSet:trimSet];
+        if ([targetPlace hasPrefix:@"的"] && targetPlace.length > 1) {
+            targetPlace = [targetPlace substringFromIndex:1];
+        }
+        if ([targetPlace isEqualToString:@"口试的人民政府"] || [targetPlace isEqualToString:@"口市人民政府"]) {
+            targetPlace = @"海口市人民政府";
+        }
         if (targetPlace.length >= 2) {
             [self showActionBanner:[NSString stringWithFormat:@"📍 正在锁定虚拟定位：%@...", targetPlace]];
-            [[AGLocationSpoofManager sharedSpoofer] resolvePlaceAndPin:targetPlace completion:nil];
+            [[AGLocationSpoofManager sharedSpoofer] resolvePlaceAndPin:targetPlace completion:^(BOOL ok, NSString *summary) {
+                if (ok && hasAntiDetIntent) {
+                    [[AGLocationSpoofManager sharedSpoofer] enableAttendanceStealthPreset];
+                }
+            }];
             return YES;
         }
+    }
+
+    // 单独开启或关闭防检测保护（兼容“防检测 / 反检测 / 房检测 / 房检车 / 房间车 / 房间侧 / 网检车”）
+    if (hasAntiDetIntent) {
+        BOOL turnOffShield = ([cleanCmd containsString:@"关"] || [cleanCmd containsString:@"退"] || [cleanCmd containsString:@"取消"]);
+        if (turnOffShield) {
+            NSMutableDictionary *p = loadGeminiPrefs();
+            p[@"AG_AntiDet_ShieldEnabled"] = @NO;
+            p[@"AG_AntiDet_HideSimFlag"] = @NO;
+            p[@"AG_AntiDet_MotionSync"] = @NO;
+            p[@"AG_AntiDet_HideHookPtr"] = @NO;
+            p[@"AG_LocSpoof_JitterEnabled"] = @NO;
+            p[@"AG_AntiDet_WiFiMode"] = @0;
+            saveGeminiPrefs(p);
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                 (__bridge CFStringRef)kAGLocMasterSyncNotification,
+                                                 NULL, NULL, YES);
+            [self showActionBanner:@"🛡️ 已关闭防检测保护"];
+        } else {
+            [[AGLocationSpoofManager sharedSpoofer] enableAttendanceStealthPreset];
+            [self showActionBanner:@"🛡️ 已开启防检测保护护盾"];
+        }
+        return YES;
     }
 
     // 0A. 💬 微信未读消息检查、打开指定好友聊天窗与发消息
@@ -14479,13 +14519,13 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"乘车码"] || ([cmd containsString:@"支付宝"] && ([cmd containsString:@"公交"] || [cmd containsString:@"地铁"] || [cmd containsString:@"乘车"]))) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"bus"}]; return YES;
     }
-    if (([cmd containsString:@"支付宝"] || [cmd containsString:@"足球场"] || [cmd containsString:@"支护宝"]) && ([cmd containsString:@"付"] || [cmd containsString:@"买单"])) {
+    if (([cmd containsString:@"支付宝"] || [cmd containsString:@"足球场"] || [cmd containsString:@"支护宝"]) && ([cmd containsString:@"付款"] || [cmd containsString:@"付钱"] || [cmd containsString:@"买单"] || [cmd containsString:@"收付款"])) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"pay"}]; return YES;
     }
     if ([cmd containsString:@"付款码"] && ![cmd containsString:@"微信"] && ![cmd containsString:@"云闪付"]) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"pay"}]; return YES;
     }
-    if ([cmd containsString:@"支付宝"] && [cmd containsString:@"收"]) {
+    if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"收款"] || [cmd containsString:@"收钱"])) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"receipt"}]; return YES;
     }
     if ([cmd containsString:@"蚂蚁森林"] || [cmd containsString:@"收能量"] || [cmd containsString:@"收取能量"]) {
@@ -14549,7 +14589,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"云闪付"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"upwallet://native/scanCode"]; return YES;
     }
-    if ([cmd containsString:@"云闪付"] && ([cmd containsString:@"付"] || [cmd containsString:@"买单"])) {
+    if ([cmd containsString:@"云闪付"] && ([cmd containsString:@"付款"] || [cmd containsString:@"付钱"] || [cmd containsString:@"买单"])) {
         [self openURLString:@"upwallet://pay"]; return YES;
     }
     if ([cmd containsString:@"云闪付"] && ([cmd containsString:@"乘车"] || [cmd containsString:@"公交"] || [cmd containsString:@"地铁"])) {
@@ -14642,6 +14682,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     // 办公 / 音乐 / 快递 / 民生深度直达
     if ([cmd containsString:@"钉钉"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"dingtalk://dingtalkclient/page/scan"]; return YES;
+    }
+    if ([cleanCmd isEqualToString:@"打卡丁丁"] || [cleanCmd isEqualToString:@"打卡钉钉"] || [cleanCmd isEqualToString:@"打开丁丁"]) {
+        [self executeActionDictionary:@{@"type": @"open_app", @"app": @"钉钉"}]; return YES;
     }
     if ([cmd containsString:@"飞书"] && [cmd containsString:@"扫"]) {
         [self openURLString:@"feishu://applink.feishu.cn/client/qrcode"]; return YES;
@@ -15446,6 +15489,7 @@ static NSString *agNormalizedPinyinForString(NSString *str) {
     if ([cleanName isEqualToString:@"照片"] || [cleanName isEqualToString:@"图库"]) cleanName = @"相册";
     if ([cleanName isEqualToString:@"拍照"] || [cleanName isEqualToString:@"照相"]) cleanName = @"相机";
     if ([cleanName isEqualToString:@"贝旺路"] || [cleanName isEqualToString:@"贝窝网"] || [cleanName isEqualToString:@"被忘录"] || [cleanName isEqualToString:@"备忘路"] || [cleanName isEqualToString:@"背忘录"] || [cleanName isEqualToString:@"微网络"]) cleanName = @"备忘录";
+    if ([cleanName isEqualToString:@"丁丁"]) cleanName = @"钉钉";
 
     // 1. 优先从 380+ 内置映射匹配（含拼音同音字自动纠错）并验证本机已安装
     NSString *targetBundleID = agResolveInstalledBundleIDFromCandidateString(self.builtinAppMap[cleanName]);
