@@ -12023,6 +12023,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
     NSString *sysInstruction = [NSString stringWithFormat:
         @"请用自然、亲切、简练的中文直接与用户实时语音对话。你的真实官方身份是 %@（模型：%@）。\n"
+        @"【重要听音准则】用户全程仅使用中文（普通话）说话，所有接收到的麦克风语音均为中文发音（或夹杂常见英文App名），请务必按中文普通话语境理解与转写，严禁将用户的中文语音误判或转写为韩语、越南语、印地语、西班牙语、葡萄牙语、德语或荷兰语等外语。\n"
         @"【设备控制指令规则】当用户明确要求控制手机或执行具体操作时，请在回答末尾附带标准指令标记（支持连续输出多个 [ACTION:{...}] 组合连招，系统将按时序自动依次执行）：\n"
         @"1. 打开应用：[ACTION:{\"type\":\"open_app\",\"app\":\"应用名\"}]\n"
         @"2. 微信发消息：[ACTION:{\"type\":\"wechat_message\",\"target\":\"联系人\",\"content\":\"内容\"}]\n"
@@ -12552,6 +12553,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     self.isLastTranscriptLineUser = YES;
                     self.currentTurnSearchCount = 0;
                     self.isWaitingForToolResponse = NO;
+                    self.isMutedByLocalBargeIn = NO;
                 }
                 [curTrans appendString:userDelta];
                 [self.currentVoiceQueryBuffer appendString:userDelta];
@@ -12563,7 +12565,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 agTouchLockScreenActivity();
                 NSString *curSpoken = self.currentVoiceQueryBuffer;
                 BOOL isTapIntent = ([curSpoken containsString:@"点击"] || [curSpoken containsString:@"点一下"] || [curSpoken containsString:@"点开"] || [curSpoken containsString:@"点选"] || [curSpoken containsString:@"点"] || [curSpoken containsString:@"按"] || [curSpoken containsString:@"两个字"] || [curSpoken containsString:@"三个字"] || [curSpoken containsString:@"四个字"] || [curSpoken containsString:@"最贵"] || [curSpoken containsString:@"最便宜"] || [curSpoken containsString:@"第"]);
-                BOOL isHardwareQuery = ([curSpoken containsString:@"电池"] || [curSpoken containsString:@"电量"] || [curSpoken containsString:@"健康度"] || [curSpoken containsString:@"内存"] || [curSpoken containsString:@"运存"] || [curSpoken containsString:@"运行速度"] || [curSpoken containsString:@"存储"] || [curSpoken containsString:@"空间"] || [curSpoken containsString:@"音量"] || [curSpoken containsString:@"亮度"] || [curSpoken containsString:@"死机"] || [curSpoken containsString:@"崩溃"] || [curSpoken containsString:@"闪退"] || [curSpoken containsString:@"注销"] || [curSpoken containsString:@"重启"] || [curSpoken containsString:@"哪个插件"] || [curSpoken containsString:@"什么插件"]);
+                BOOL isHardwareQuery = ([curSpoken containsString:@"电池"] || [curSpoken containsString:@"电量"] || [curSpoken containsString:@"健康度"] || [curSpoken containsString:@"内存"] || [curSpoken containsString:@"运存"] || [curSpoken containsString:@"运行速度"] || [curSpoken containsString:@"存储"] || [curSpoken containsString:@"空间"] || [curSpoken containsString:@"音量"] || [curSpoken containsString:@"亮度"] || [curSpoken containsString:@"死机"] || [curSpoken containsString:@"崩溃"] || [curSpoken containsString:@"闪退"] || [curSpoken containsString:@"注销"] || [curSpoken containsString:@"重启"] || [curSpoken containsString:@"哪个插件"] || [curSpoken containsString:@"什么插件"] || [curSpoken containsString:@"清理"] || [curSpoken containsString:@"垃圾"] || [curSpoken containsString:@"缓存"] || [curSpoken containsString:@"淘宝"] || [curSpoken containsString:@"拼多多"] || [curSpoken containsString:@"京东"]);
                 BOOL isVisualScreenQuery = ([curSpoken containsString:@"屏幕"] || [curSpoken containsString:@"页面"] ||
                                             [curSpoken containsString:@"界面"] || [curSpoken containsString:@"看下"] ||
                                             [curSpoken containsString:@"看一下"] || [curSpoken containsString:@"看看"] ||
@@ -12599,22 +12601,43 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     }
                 }
 
+                NSString *trimSpoken = [curSpoken stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                BOOL hasEndPunct = ([trimSpoken hasSuffix:@"。"] || [trimSpoken hasSuffix:@"？"] || [trimSpoken hasSuffix:@"！"] ||
+                                    [trimSpoken hasSuffix:@"."] || [trimSpoken hasSuffix:@"?"] || [trimSpoken hasSuffix:@"!"]);
+                NSTimeInterval cmdDelay = hasEndPunct ? 0.14 : 0.32;
                 [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-                [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.32];
+                [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:cmdDelay];
             }
         }
 
         NSDictionary *outputTrans = serverContent[@"outputTranscription"];
         if ([outputTrans isKindOfClass:[NSDictionary class]] && [outputTrans[@"text"] isKindOfClass:[NSString class]]) {
             [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+            if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 2.2)) {
+                return;
+            }
             if (self.currentVoiceQueryBuffer.length > 0) {
                 NSString *fullVoiceCmd = [self.currentVoiceQueryBuffer copy];
                 self.lastCommittedUserVoiceQuery = fullVoiceCmd;
                 [self.currentVoiceQueryBuffer setString:@""];
-                if ([self tryExecuteDirectLocalCommand:fullVoiceCmd]) {
-                    self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
-                    BOOL isPureStatusQuery = ([fullVoiceCmd containsString:@"电池"] || [fullVoiceCmd containsString:@"电量"] || [fullVoiceCmd containsString:@"健康度"] || [fullVoiceCmd containsString:@"内存"] || [fullVoiceCmd containsString:@"运存"] || [fullVoiceCmd containsString:@"运行速度"] || [fullVoiceCmd containsString:@"卡不卡"] || [fullVoiceCmd containsString:@"死机"] || [fullVoiceCmd containsString:@"崩溃"] || [fullVoiceCmd containsString:@"闪退"] || [fullVoiceCmd containsString:@"注销"] || [fullVoiceCmd containsString:@"重启"] || [fullVoiceCmd containsString:@"哪个插件"] || [fullVoiceCmd containsString:@"什么插件"] || [fullVoiceCmd containsString:@"清理"] || [fullVoiceCmd containsString:@"垃圾"] || [fullVoiceCmd containsString:@"缓存"] || [fullVoiceCmd containsString:@"系统数据"] || [fullVoiceCmd containsString:@"释放"]);
+                BOOL localHandled = [self tryExecuteDirectLocalCommand:fullVoiceCmd];
+                NSString *execCmd = fullVoiceCmd;
+                if (!localHandled && self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
+                    NSString *nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
+                    self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
+                    if ([self tryExecuteDirectLocalCommand:nativeSeg]) {
+                        localHandled = YES;
+                        execCmd = nativeSeg;
+                        agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued command via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
+                    }
+                }
+                if (localHandled) {
+                    NSTimeInterval nowExec = [[NSDate date] timeIntervalSince1970];
+                    self.lastLocalActionExecTime = nowExec;
+                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"]);
                     if (!isPureStatusQuery) {
+                        self.isMutedByLocalBargeIn = YES;
+                        self.bargeInMuteTimestamp = nowExec;
                         self.currentTurnPlaybackID++;
                         self.pendingPlayBuffersCount = 0;
                         self.aiPlaybackEndTime = 0;
@@ -12642,6 +12665,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
         NSArray *parts = serverContent[@"modelTurn"][@"parts"];
         if ([parts isKindOfClass:[NSArray class]]) {
+            if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 2.2)) {
+                return;
+            }
             for (NSDictionary *part in parts) {
                 if (![part isKindOfClass:[NSDictionary class]]) continue;
                 if ([part[@"thought"] boolValue]) continue;
@@ -12817,6 +12843,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             }
         }
         self.lastNeuralRecognizedCharCount = 0;
+        self.lastNativeNeuralChineseText = @"";
+        self.lastConsumedNeuralCharOffset = 0;
 
         __weak typeof(self) weakSelf = self;
         self.nativeNeuralVADTask = [self.nativeNeuralVADRecognizer recognitionTaskWithRequest:self.nativeNeuralVADRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
@@ -12824,6 +12852,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             if (!strongSelf || strongSelf.isDismissed) return;
             if (result && result.bestTranscription.formattedString.length > 0) {
                 NSString *fullNeuralStr = result.bestTranscription.formattedString;
+                if (fullNeuralStr.length < strongSelf.lastConsumedNeuralCharOffset) {
+                    strongSelf.lastConsumedNeuralCharOffset = 0;
+                }
+                strongSelf.lastNativeNeuralChineseText = fullNeuralStr;
+
                 // 微调 1：统计字数时剔除标点符号，防止系统自动补句号误触发打断
                 NSMutableCharacterSet *ignoreSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
                 [ignoreSet formUnionWithCharacterSet:[NSCharacterSet punctuationCharacterSet]];
@@ -12859,6 +12892,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             self.nativeNeuralVADTask = nil;
         }
         self.lastNeuralRecognizedCharCount = 0;
+        self.lastNativeNeuralChineseText = nil;
+        self.lastConsumedNeuralCharOffset = 0;
     } @catch (NSException *e) {}
 }
 
@@ -13167,14 +13202,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
     NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
 
-    static NSTimeInterval sLastNonSilentTime = 0;
-    if (db > -55.0f) {
-        sLastNonSilentTime = nowTs;
-    }
-
-    // 【核心接入 + ANE 静音休眠降温】：只要有声音(db > -55dB)或刚说完话 0.85s 内，0毫秒原样喂入苹果本地神经引擎；
-    // 当处于 -60dB ~ -135dB 纯静音时暂停喂入死寂帧，让苹果神经引擎芯片休眠降温，0 损灵敏度！
-    if (self.nativeNeuralVADRequest && (db > -55.0f || (nowTs - sLastNonSilentTime <= 0.85))) {
+    // 100% 连续喂入苹果本地神经引擎，严禁静音断流导致 SFSpeechRecognizer 时间轴挂起漏检首音节
+    if (self.nativeNeuralVADRequest) {
         @try {
             [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
         } @catch (NSException *e) {}
@@ -13220,10 +13249,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         for (NSUInteger i = 0; i < outFrames; i++) {
             double srcIdx = (double)i * ratio;
             NSUInteger idx0 = (NSUInteger)srcIdx;
-            NSUInteger idx1 = MIN(idx0 + 1, (NSUInteger)(inFrames - 1));
-            float rawSample = (float)((1.0 - (srcIdx - idx0)) * floatSamples[idx0] + (srcIdx - idx0) * floatSamples[idx1]);
-            // 【核心优化】保持 VoiceProcessingIO 硬件 AGC 归一化采样，采用微量平滑软饱和 (tanhf soft-knee) 杜绝硬削波失真与爆音
-            float sample = tanhf(rawSample * 1.15f);
+            float sample = 0.0f;
+            // 3 点均值抗混叠滤波（48kHz -> 16kHz），完整保留中文平翘舌与字头清辅音高频细节，去除 tanhf 非线性谐波失真
+            if (ratio >= 2.5 && (idx0 + 2) < (NSUInteger)inFrames) {
+                sample = (floatSamples[idx0] + floatSamples[idx0 + 1] + floatSamples[idx0 + 2]) / 3.0f;
+            } else {
+                NSUInteger idx1 = MIN(idx0 + 1, (NSUInteger)(inFrames - 1));
+                sample = (float)((1.0 - (srcIdx - idx0)) * floatSamples[idx0] + (srcIdx - idx0) * floatSamples[idx1]);
+            }
+            if (sample > 1.0f) sample = 1.0f;
+            else if (sample < -1.0f) sample = -1.0f;
             outPtr[i] = (int16_t)(sample * 32767.0f);
         }
 
@@ -13239,12 +13274,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             return;
         }
 
-        // 本地人声插话打断检测（与 主修实时翻译.txt 稳定阈值完全一致）
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.55);
+        // 双保险分贝兜底打断检测（db > -30.0f && peakDb > -16.5f 满 2 帧即断，与 APPLE_NEURAL_SYLLABLE 形成双保险）
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.45);
         if (isAIPlaying && pastEchoGrace) {
-            if (db > -24.5f && peakDb > -12.5f) {
+            if (db > -30.0f && peakDb > -16.5f) {
                 strongSelf.wsBargeInVoiceTicks++;
-                if (strongSelf.wsBargeInVoiceTicks >= 4) {
+                if (strongSelf.wsBargeInVoiceTicks >= 2) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
                 }
             } else {
@@ -13254,13 +13289,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             strongSelf.wsBargeInVoiceTicks = 0;
         }
 
-        // 持续稳定推送 16kHz 音频流：说话或刚说完 0.6s 内保持 3200B(100ms) 0延迟发送；
-        // 安静未说话时按 6400B(200ms) 合并发送，无线基带与 JSON/Base64 编码功耗直降 50%，彻底消除 inFlight=11 拥塞！
-        NSUInteger sendThreshold = (db >= -50.0f || (nowTs - strongSelf.lastActiveMicDBTime <= 0.60)) ? 3200 : 6400;
+        // 恒定 3200B (100ms) 匀速发送，绝不跳变包长吞掉说话第一个字的字头声母
         [strongSelf.outgoingPCMBuffer appendData:pcm16Chunk];
-        if (strongSelf.outgoingPCMBuffer.length >= sendThreshold) {
-            NSData *packet = [strongSelf.outgoingPCMBuffer copy];
-            [strongSelf.outgoingPCMBuffer setLength:0];
+        while (strongSelf.outgoingPCMBuffer.length >= 3200) {
+            NSData *packet = [strongSelf.outgoingPCMBuffer subdataWithRange:NSMakeRange(0, 3200)];
+            [strongSelf.outgoingPCMBuffer replaceBytesInRange:NSMakeRange(0, 3200) withBytes:NULL length:0];
             NSString *b64PCM = [packet base64EncodedStringWithOptions:0];
             strongSelf.txAudioPacketsCount++;
             if (strongSelf.txAudioPacketsCount % 25 == 1) {
@@ -13597,11 +13630,31 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)checkDeferredVoiceLocalCommand {
     if (self.currentVoiceQueryBuffer.length == 0) return;
     NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
-    if ([self tryExecuteDirectLocalCommand:fullCmd]) {
-        self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
+    BOOL handled = [self tryExecuteDirectLocalCommand:fullCmd];
+    NSString *matchedCmd = fullCmd;
+
+    // 双引擎兜底：若云端转写因外语谐音（如韩语/越南语/印地语）未命中，立即使用苹果本地 zh-CN 识别器文本二次匹配
+    if (!handled && self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
+        NSString *nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
+        if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+            handled = YES;
+            matchedCmd = nativeSeg;
+            self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
+            agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred command rescued via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullCmd);
+        }
+    }
+
+    if (handled) {
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        self.lastLocalActionExecTime = now;
+        if (self.lastNativeNeuralChineseText.length > 0) {
+            self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
+        }
         [self.currentVoiceQueryBuffer setString:@""];
-        BOOL isPureStatusQuery = ([fullCmd containsString:@"电池"] || [fullCmd containsString:@"电量"] || [fullCmd containsString:@"健康度"] || [fullCmd containsString:@"内存"] || [fullCmd containsString:@"运存"] || [fullCmd containsString:@"运行速度"] || [fullCmd containsString:@"卡不卡"] || [fullCmd containsString:@"死机"] || [fullCmd containsString:@"崩溃"] || [fullCmd containsString:@"闪退"] || [fullCmd containsString:@"注销"] || [fullCmd containsString:@"重启"] || [fullCmd containsString:@"哪个插件"] || [fullCmd containsString:@"什么插件"] || [fullCmd containsString:@"清理"] || [fullCmd containsString:@"垃圾"] || [fullCmd containsString:@"缓存"] || [fullCmd containsString:@"系统数据"] || [fullCmd containsString:@"释放"]);
+        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"]);
         if (!isPureStatusQuery) {
+            self.isMutedByLocalBargeIn = YES;
+            self.bargeInMuteTimestamp = now;
             self.currentTurnPlaybackID++;
             self.pendingPlayBuffersCount = 0;
             self.aiPlaybackEndTime = 0;
@@ -13702,7 +13755,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         // 1. 一气呵成紧凑三连招正则（支持“打开淘宝搜索手机点击贵的那个” / “打开京东搜索手机，然后找到最贵的那个点进去”）
-        compactComboRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动)?(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买)(?:一下)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我|再去)?(?:点击|点一下|点开|点选|找到|找一下|挑一个|选一个|选择|点|选|挑)(.+?)(?:点进去|点开|打开|进去|吧|呢)?$" options:0 error:nil];
+        compactComboRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动)?(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买|的)(?:一下)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我|再去)?(?:点击|点一下|点开|点选|找到|找一下|挑一个|选一个|选择|哪个是|点|选|挑)(.+?)(?:点进去|点开|打开|进去|给我看|给我|吧|呢)?$" options:0 error:nil];
         // 2. 通用多步“然后/接着/再”连招切分正则（支持有无逗号/空格的各种连招！）
         multiChainRe = [NSRegularExpression regularExpressionWithPattern:@"^(.+?)(?:，|,|。|\\s)*(?:然后|接着|再帮我|再去|然后再|接着再)(?:帮我|给我)?(.+)$" options:0 error:nil];
         // 3. 倒装点击句式正则（如：“打开我屏幕上面现在有一个按钮是电池。让我点击”）
@@ -13770,14 +13823,15 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         NSString *searchKw = [[cleanCmd substringWithRange:[comboMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
         NSString *tapTarget = [[cleanCmd substringWithRange:[comboMatch rangeAtIndex:3]] stringByTrimmingCharactersInSet:trimSet];
         if (pltName.length > 0 && searchKw.length > 0 && tapTarget.length > 0) {
-            agLiveDiagLog(@"COMBO_EXEC", @"Step1: Search [%@] for [%@] -> Step2 (2.4s later): Tap [%@]", pltName, searchKw, tapTarget);
+            agLiveDiagLog(@"COMBO_EXEC", @"Step1: Search [%@] for [%@] -> Step2 (2.2s later): Tap [%@]", pltName, searchKw, tapTarget);
             gLastOpenedSearchPlatform = pltName;
             gLastOpenedPlatformTime = [[NSDate date] timeIntervalSince1970];
             [self executeActionDictionary:@{@"type": @"search", @"keyword": searchKw, @"platform": pltName}];
-            // 等待 3.0 秒让淘宝/京东搜索结果页商品与价格完全加载出来，然后自动执行点击（如“最贵的”或“第三个”）！
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                gLastExecutedActionSignature = nil; // 允许连招第 2 步立即通过幂等网关
-                [self executeActionDictionary:@{@"type": @"ui_tap_text", @"text": tapTarget}];
+            // 2.2 秒发起首次极速本地 OCR 点击（热启动秒点）；若遇 App 冷启动尚未刷出商品，自动隔 1.0 秒免费复扫第 2 次
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                gLastExecutedActionSignature = nil;
+                [self dismissOverlayIfMainCardActive];
+                [self performVisualTapWithRetry:tapTarget attempt:1 maxAttempts:2];
             });
             return YES;
         }
@@ -14077,7 +14131,8 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 
     // 8. 🧹 四大清理指令严格独立（①清理后台 / ②清理系统数据 / ③纯清理运存 / ④清理应用与游戏缓存垃圾）
-    if (([cmd containsString:@"清理"] || [cmd containsString:@"关闭"] || [cmd containsString:@"清空"] || [cmd containsString:@"杀掉"] || [cmd containsString:@"退掉"] || [cmd containsString:@"清一下"]) && [cmd containsString:@"后台"]) {
+    if ((([cmd containsString:@"清理"] || [cmd containsString:@"请你"] || [cmd containsString:@"关闭"] || [cmd containsString:@"清空"] || [cmd containsString:@"杀掉"] || [cmd containsString:@"退掉"] || [cmd containsString:@"清一下"]) && [cmd containsString:@"后台"]) ||
+        [cmd containsString:@"清理好台"] || [cmd containsString:@"请你后台"]) {
         [self executeActionDictionary:@{@"type": @"kill_background_apps"}];
         return YES;
     }
@@ -14158,11 +14213,12 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         }
     }
 
-    // 10A. 👋 语音关闭/退出天使守护助手自己（支持“你可以关闭了 / 关掉你 / 退下吧”等自然口语）
+    // 10A. 👋 语音关闭/退出天使守护助手自己（支持“你可以关闭了 / 关掉你 / 关毕掉 / 退下吧”等自然口语与同音字）
     if ([cmd containsString:@"你可以关闭"] || [cmd containsString:@"可以关闭了"] ||
         [cmd containsString:@"关闭你自己"] || [cmd containsString:@"关掉你自己"] ||
         [cmd containsString:@"管好你自己"] || [cmd containsString:@"关掉你"] ||
         [cmd containsString:@"管掉你"] || [cmd containsString:@"你关了吧"] ||
+        [cmd containsString:@"关毕"] || [cmd containsString:@"关闭掉"] ||
         [cmd containsString:@"你光忙吧"] || [cmd containsString:@"送你走吧"] ||
         [cmd containsString:@"退下吧"] || [cmd containsString:@"你可以退下"] ||
         [cmd containsString:@"退出语音"] || [cmd containsString:@"关闭语音"] ||
@@ -14390,7 +14446,10 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if ([cmd containsString:@"乘车码"] || ([cmd containsString:@"支付宝"] && ([cmd containsString:@"公交"] || [cmd containsString:@"地铁"] || [cmd containsString:@"乘车"]))) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"bus"}]; return YES;
     }
-    if ([cmd containsString:@"支付宝"] && ([cmd containsString:@"付"] || [cmd containsString:@"买单"])) {
+    if (([cmd containsString:@"支付宝"] || [cmd containsString:@"足球场"] || [cmd containsString:@"支护宝"]) && ([cmd containsString:@"付"] || [cmd containsString:@"买单"])) {
+        [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"pay"}]; return YES;
+    }
+    if ([cmd containsString:@"付款码"] && ![cmd containsString:@"微信"] && ![cmd containsString:@"云闪付"]) {
         [self executeActionDictionary:@{@"type": @"alipay_shortcut", @"feature": @"pay"}]; return YES;
     }
     if ([cmd containsString:@"支付宝"] && [cmd containsString:@"收"]) {
@@ -15353,10 +15412,22 @@ static NSString *agNormalizedPinyinForString(NSString *str) {
     if ([cleanName isEqualToString:@"系统设置"] || [cleanName isEqualToString:@"手机设置"] || [cleanName isEqualToString:@"设置中心"]) cleanName = @"设置";
     if ([cleanName isEqualToString:@"照片"] || [cleanName isEqualToString:@"图库"]) cleanName = @"相册";
     if ([cleanName isEqualToString:@"拍照"] || [cleanName isEqualToString:@"照相"]) cleanName = @"相机";
+    if ([cleanName isEqualToString:@"贝旺路"] || [cleanName isEqualToString:@"贝窝网"] || [cleanName isEqualToString:@"被忘录"] || [cleanName isEqualToString:@"备忘路"] || [cleanName isEqualToString:@"背忘录"] || [cleanName isEqualToString:@"微网络"]) cleanName = @"备忘录";
 
-    // 1. 优先从 380+ 内置映射匹配并验证本机已安装
+    // 1. 优先从 380+ 内置映射匹配（含拼音同音字自动纠错）并验证本机已安装
     NSString *targetBundleID = agResolveInstalledBundleIDFromCandidateString(self.builtinAppMap[cleanName]);
     if (targetBundleID) return targetBundleID;
+    if (cleanName.length >= 2) {
+        NSString *cleanPy = agNormalizedPinyinForString(cleanName);
+        if (cleanPy.length >= 4) {
+            for (NSString *bKey in self.builtinAppMap) {
+                if (bKey.length == cleanName.length && [agNormalizedPinyinForString(bKey) isEqualToString:cleanPy]) {
+                    targetBundleID = agResolveInstalledBundleIDFromCandidateString(self.builtinAppMap[bKey]);
+                    if (targetBundleID) return targetBundleID;
+                }
+            }
+        }
+    }
 
     // 2. 若在主线程，实时同步一次 SpringBoard 桌面图标中文名 (SBApplicationController)
     if ([NSThread isMainThread]) {
@@ -16334,11 +16405,12 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
 }
 
 - (void)performVisualTapWithRetry:(NSString *)targetText attempt:(NSInteger)attempt maxAttempts:(NSInteger)maxAttempts {
-    (void)maxAttempts;
     if (gIsScreenVisionAgentBusy && attempt == 1) return;
     gIsScreenVisionAgentBusy = YES;
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.22 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 小胶囊模式下无需等待大卡片 0.18s 淡出动画，按 0.12s 极速截屏；大卡片展开时按 0.20s 截屏防残影；冷启动第 2 次复扫等待 1.0s
+    NSTimeInterval snapWait = (attempt > 1) ? 1.0 : (self.isMiniSummonActive ? 0.12 : 0.20);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(snapWait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIImage *safeScreenImg = agCaptureSafeScreenBitmapWithMaxEdge(800.0, self.overlayWindow);
         if (!safeScreenImg || !safeScreenImg.CGImage) {
             gIsScreenVisionAgentBusy = NO;
@@ -16352,7 +16424,7 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                 CGImageRef cgImg = strongImgHold.CGImage;
                 VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
                     NSString *cleanTarget = [[targetText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                    NSArray<NSString *> *noiseWords = @[@"这个数字的", @"这个数字", @"这几个字的", @"这几个字", @"搜索结果", @"的结果", @"结果", @"按钮", @"选项", @"那个", @"商品", @"的"];
+                    NSArray<NSString *> *noiseWords = @[@"给我看看", @"给我看", @"给我", @"这个数字的", @"这个数字", @"这几个字的", @"这几个字", @"搜索结果", @"的结果", @"结果", @"按钮", @"选项", @"那个", @"商品", @"的"];
                     for (NSString *nw in noiseWords) {
                         if ([cleanTarget hasSuffix:nw] && cleanTarget.length > nw.length) {
                             cleanTarget = [cleanTarget substringToIndex:cleanTarget.length - nw.length];
@@ -16360,11 +16432,12 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                     }
                     cleanTarget = [cleanTarget stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-                    // 模式 A：智能价格比大小（兼容淘宝/拼多多“¥6999 1000+人付款 / 已售1万+”同行排版，40ms 一次点中，不触发二次截屏）
+                    // 模式 A：智能价格比大小（先剥离同行“已拼1.2万件 / 1000+人付款”销量干扰，再提取价格，兼容 ¥ 被 OCR 识别为 Y/y 或独立框）
                     BOOL wantMostExpensive = ([cleanTarget containsString:@"最贵"] || [cleanTarget containsString:@"贵的"] || [cleanTarget isEqualToString:@"贵"] || [cleanTarget containsString:@"最高价"] || [cleanTarget containsString:@"价格最高"]);
                     BOOL wantCheapest      = ([cleanTarget containsString:@"最便宜"] || [cleanTarget containsString:@"便宜的"] || [cleanTarget isEqualToString:@"便宜"] || [cleanTarget containsString:@"最低价"] || [cleanTarget containsString:@"价格最低"]);
                     if (wantMostExpensive || wantCheapest) {
-                        NSRegularExpression *explicitPriceRe = [NSRegularExpression regularExpressionWithPattern:@"(?:¥|￥|\\$)\\s*(\\d{2,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
+                        NSRegularExpression *salesStripRe = [NSRegularExpression regularExpressionWithPattern:@"(?:已拼|已售|月销|付款|评价|评论)?\\s*\\d+(?:\\.\\d+)?\\s*万?\\+?\\s*(?:人付款|人已买|人看过|件|人|条评价|条|折|%|km|公里)+" options:NSRegularExpressionCaseInsensitive error:nil];
+                        NSRegularExpression *explicitPriceRe = [NSRegularExpression regularExpressionWithPattern:@"(?:¥|￥|\\$|Y|y|羊)\\s*(\\d{1,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
                         NSRegularExpression *generalPriceRe  = [NSRegularExpression regularExpressionWithPattern:@"(\\d{2,6}(?:\\.\\d{1,2})?)" options:0 error:nil];
                         VNRecognizedTextObservation *extremePriceObs = nil;
                         double extremePriceVal = wantMostExpensive ? -1.0 : 1e12;
@@ -16375,24 +16448,23 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                             if (screenY < 135.0 || screenY > sb.size.height - 70.0) continue;
 
                             VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-                            NSString *s = top.string ?: @"";
-                            BOOL hasExplicitSymbol = ([s containsString:@"¥"] || [s containsString:@"￥"] || [s containsString:@"$"]);
-                            BOOL hasCurrencySign   = hasExplicitSymbol || [s containsString:@"元"] || [s containsString:@"到手"] || [s containsString:@"券后"];
+                            NSString *rawS = top.string ?: @"";
+                            if (rawS.length == 0) continue;
 
-                            // 若行内无 ¥/￥ 符号，则过滤付款人数、评价数、好评率、折扣等非价格数字；若含 ¥/￥ 则直接精准提取 ¥ 后的价格数字
-                            if (!hasExplicitSymbol &&
-                                ([s containsString:@"人"] || [s containsString:@"付款"] || [s containsString:@"已售"] ||
-                                 [s containsString:@"评价"] || [s containsString:@"条"] || [s containsString:@"%"] ||
-                                 [s containsString:@"折"] || [s containsString:@"km"] || [s containsString:@"万"])) {
-                                continue;
-                            }
+                            // 先剔除同行销量、评价数、折扣百分比，保留纯净价格文本
+                            NSString *s = [salesStripRe stringByReplacingMatchesInString:rawS options:0 range:NSMakeRange(0, rawS.length) withTemplate:@" "];
+                            BOOL hasExplicitSymbol = ([s containsString:@"¥"] || [s containsString:@"￥"] || [s containsString:@"$"] || [s containsString:@"Y"] || [s containsString:@"y"]);
+                            BOOL hasCurrencySign   = hasExplicitSymbol || [s containsString:@"元"] || [s containsString:@"到手"] || [s containsString:@"券后"] || [s containsString:@"起"] || [rawS containsString:@"已拼"] || [rawS containsString:@"付款"];
+
                             NSRegularExpression *useRe = hasExplicitSymbol ? explicitPriceRe : generalPriceRe;
                             NSArray<NSTextCheckingResult *> *pMatches = [useRe matchesInString:s options:0 range:NSMakeRange(0, s.length)];
+                            if (pMatches.count == 0 && hasExplicitSymbol) {
+                                pMatches = [generalPriceRe matchesInString:s options:0 range:NSMakeRange(0, s.length)];
+                            }
                             for (NSTextCheckingResult *pm in pMatches) {
                                 if (pm.numberOfRanges > 1) {
                                     double val = [[s substringWithRange:[pm rangeAtIndex:1]] doubleValue];
-                                    // 若无货币符号，仅采纳合理商品价格区间 (50 ~ 99999) 且排除类似型号年份 (2023/2024/2025/2026)
-                                    if (!hasCurrencySign && (val < 50.0 || val > 99999.0 || (val >= 2020.0 && val <= 2027.0))) continue;
+                                    if (!hasCurrencySign && (val < 30.0 || val > 99999.0 || (val >= 2020.0 && val <= 2027.0))) continue;
                                     if (val <= 1.0 || val > 200000.0) continue;
 
                                     if (wantMostExpensive && val > extremePriceVal) {
@@ -16414,6 +16486,12 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                                 gIsScreenVisionAgentBusy = NO;
                                 [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"💰 已找到%@商品 (¥%.0f) 并点击", (wantMostExpensive ? @"最贵" : @"最便宜"), extremePriceVal]];
                                 agSimulateScreenTapAtPoint(CGPointMake(tapX, tapY));
+                            });
+                            return;
+                        } else if (attempt < maxAttempts) {
+                            // 若首次扫描时 App 尚在冷启动加载中未刷出价格，等 1.0s 自动进行第 2 次本地极速 OCR 复扫
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [self performVisualTapWithRetry:targetText attempt:(attempt + 1) maxAttempts:maxAttempts];
                             });
                             return;
                         }
