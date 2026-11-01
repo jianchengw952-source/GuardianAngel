@@ -8866,6 +8866,7 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
 @property (nonatomic, assign) NSUInteger currentTurnSearchCount;
 @property (nonatomic, assign) BOOL isWaitingForToolResponse;
 @property (nonatomic, copy) NSString *lastNativeNeuralChineseText;
+@property (nonatomic, assign) NSUInteger lastConsumedNeuralCharOffset;
 @property (nonatomic, assign) NSTimeInterval miniCaptionLockUntilTime;
 - (void)primeFullDuplexAudioEngineWithSilentPulse:(NSString *)reasonTag;
 - (void)startNativeAppleNeuralVADIfNeeded;
