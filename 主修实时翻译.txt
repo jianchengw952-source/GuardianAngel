@@ -12261,8 +12261,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }];
 }
 
-static volatile BOOL sIsServerGeneratingTurn = NO;
-
 - (void)handleIncomingWebSocketJSON:(NSDictionary *)json {
     if (json[@"error"]) {
         NSString *errMsg = json[@"error"][@"message"] ?: @"实时流模型返回错误";
@@ -12507,11 +12505,8 @@ static volatile BOOL sIsServerGeneratingTurn = NO;
     NSDictionary *serverContent = json[@"serverContent"];
     if ([serverContent isKindOfClass:[NSDictionary class]]) {
         if ([serverContent[@"interrupted"] boolValue]) {
-            sIsServerGeneratingTurn = NO;
-            self.isMutedByLocalBargeIn = NO;
             self.currentTurnPlaybackID++;
             self.pendingPlayBuffersCount = 0;
-            if (self.pcm24kStagingBuffer) [self.pcm24kStagingBuffer setLength:0];
             if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
                 [self.pcmPlayerNode stop];
                 [self.pcmPlayerNode play];
@@ -12526,30 +12521,19 @@ static volatile BOOL sIsServerGeneratingTurn = NO;
         if ([inputTrans isKindOfClass:[NSDictionary class]] && [inputTrans[@"text"] isKindOfClass:[NSString class]]) {
             NSString *userDelta = inputTrans[@"text"];
             if (userDelta.length > 0) {
-                NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
-                BOOL isAIPlayingNow = (self.pendingPlayBuffersCount > 0 || nowTs < self.aiPlaybackEndTime);
-
-                BOOL hasChineseChar = NO;
-                BOOL hasForeignGibberish = NO;
-                for (NSUInteger ci = 0; ci < userDelta.length; ci++) {
-                    unichar ch = [userDelta characterAtIndex:ci];
-                    if (ch >= 0x4E00 && ch <= 0x9FFF) {
-                        hasChineseChar = YES;
-                    } else if ((ch >= 0xAC00 && ch <= 0xD7AF) || (ch >= 0x3040 && ch <= 0x30FF) || ch == 0x00BF || ch == 0x00A1 || (ch >= 0x0900 && ch <= 0x097F)) {
-                        hasForeignGibberish = YES;
+                // 【方案 5 回声抑制门】：扬声器正在发声时，过滤极短西班牙语/拉美/印地语音节空耳杂音（如 "¿Qué", "de 4 a 2", "सर"）
+                if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
+                    NSString *cleanUD = [userDelta stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    if ([cleanUD isEqualToString:@"¿Qué"] || [cleanUD isEqualToString:@"¿Qué?"] || [cleanUD containsString:@"de 4 a 2"] || [cleanUD containsString:@"सर"]) {
+                        agLiveDiagLog(@"ECHO_SUPPRESS", @"Suppressed speaker echo hallucination delta: '%@'", userDelta);
+                        return;
                     }
                 }
-                // AI 播报期间若收到无汉字的杂音字母（如 's'、'A'、'Hey'、'le 14h'），直接静默丢弃，绝不停播喇叭！
-                if (isAIPlayingNow && !self.isMutedByLocalBargeIn && !hasChineseChar) {
-                    agLiveDiagLog(@"ECHO_SUPPRESS", @"Suppressed non-Chinese echo/noise delta during playback: '%@'", userDelta);
-                    return;
+                if (self.aiPlaybackEndTime > 0 && self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
+                    [self.pcmPlayerNode stop];
+                    [self.pcmPlayerNode play];
+                    self.aiPlaybackEndTime = 0;
                 }
-                if (hasForeignGibberish && self.lastNativeNeuralChineseText.length > 0) {
-                    agLiveDiagLog(@"ZH_OVERRIDE", @"Replaced foreign gibberish '%@' with local Apple zh-CN '%@'", userDelta, self.lastNativeNeuralChineseText);
-                    userDelta = self.lastNativeNeuralChineseText;
-                    [self.currentVoiceQueryBuffer setString:@""];
-                }
-                // 【关键修复】：彻底移除此处原有的 [self.pcmPlayerNode stop] 自杀代码，防止杂音字幕清空正在播放的语音队列！
                 NSMutableString *curTrans = [self currentTabTranscript];
                 if (!self.isLastTranscriptLineUser) {
                     if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
@@ -12612,21 +12596,13 @@ static volatile BOOL sIsServerGeneratingTurn = NO;
         NSDictionary *outputTrans = serverContent[@"outputTranscription"];
         if ([outputTrans isKindOfClass:[NSDictionary class]] && [outputTrans[@"text"] isKindOfClass:[NSString class]]) {
             [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-            if (self.currentVoiceQueryBuffer.length > 0 || self.lastNativeNeuralChineseText.length > 0) {
-                NSString *fullVoiceCmd = (self.currentVoiceQueryBuffer.length > 0) ? [self.currentVoiceQueryBuffer copy] : [self.lastNativeNeuralChineseText copy];
-                NSString *localZhFallback = [self.lastNativeNeuralChineseText copy];
+            if (self.currentVoiceQueryBuffer.length > 0) {
+                NSString *fullVoiceCmd = [self.currentVoiceQueryBuffer copy];
                 self.lastCommittedUserVoiceQuery = fullVoiceCmd;
                 [self.currentVoiceQueryBuffer setString:@""];
-                self.lastNativeNeuralChineseText = nil;
-                self.lastConsumedNeuralCharOffset = self.lastNeuralRecognizedCharCount;
-                BOOL matchedLocal = [self tryExecuteDirectLocalCommand:fullVoiceCmd];
-                if (!matchedLocal && localZhFallback.length >= 2 && ![localZhFallback isEqualToString:fullVoiceCmd]) {
-                    matchedLocal = [self tryExecuteDirectLocalCommand:localZhFallback];
-                    if (matchedLocal) fullVoiceCmd = localZhFallback;
-                }
-                if (matchedLocal) {
+                if ([self tryExecuteDirectLocalCommand:fullVoiceCmd]) {
                     self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
-                    BOOL isPureStatusQuery = ([fullVoiceCmd containsString:@"电池"] || [fullVoiceCmd containsString:@"电量"] || [fullVoiceCmd containsString:@"健康度"] || [fullVoiceCmd containsString:@"内存"] || [fullVoiceCmd containsString:@"运存"] || [fullVoiceCmd containsString:@"运行速度"] || [fullVoiceCmd containsString:@"卡不卡"] || [fullVoiceCmd containsString:@"死机"] || [fullVoiceCmd containsString:@"崩溃"] || [fullVoiceCmd containsString:@"闪退"] || [fullVoiceCmd containsString:@"注销"] || [fullVoiceCmd containsString:@"哪个插件"] || [fullVoiceCmd containsString:@"什么插件"] || [fullVoiceCmd containsString:@"清理"] || [fullVoiceCmd containsString:@"垃圾"] || [fullVoiceCmd containsString:@"缓存"] || [fullVoiceCmd containsString:@"系统数据"] || [fullVoiceCmd containsString:@"释放"]);
+                    BOOL isPureStatusQuery = ([fullVoiceCmd containsString:@"电池"] || [fullVoiceCmd containsString:@"电量"] || [fullVoiceCmd containsString:@"健康度"] || [fullVoiceCmd containsString:@"内存"] || [fullVoiceCmd containsString:@"运存"] || [fullVoiceCmd containsString:@"运行速度"] || [fullVoiceCmd containsString:@"卡不卡"] || [fullVoiceCmd containsString:@"死机"] || [fullVoiceCmd containsString:@"崩溃"] || [fullVoiceCmd containsString:@"闪退"] || [fullVoiceCmd containsString:@"注销"] || [fullVoiceCmd containsString:@"重启"] || [fullVoiceCmd containsString:@"哪个插件"] || [fullVoiceCmd containsString:@"什么插件"] || [fullVoiceCmd containsString:@"清理"] || [fullVoiceCmd containsString:@"垃圾"] || [fullVoiceCmd containsString:@"缓存"] || [fullVoiceCmd containsString:@"系统数据"] || [fullVoiceCmd containsString:@"释放"]);
                     if (!isPureStatusQuery) {
                         self.currentTurnPlaybackID++;
                         self.pendingPlayBuffersCount = 0;
@@ -12642,10 +12618,9 @@ static volatile BOOL sIsServerGeneratingTurn = NO;
                     }
                 }
             }
-sIsServerGeneratingTurn = YES;
             NSString *aiDelta = outputTrans[@"text"];
 // ====== 实时看屏推帧与防重复执行替换块 2 结束 ======
-            if (aiDelta.length > 0 && !self.isMutedByLocalBargeIn) {
+            if (aiDelta.length > 0) {
                 if (self.isLastTranscriptLineUser) {
                     [[self currentTabTranscript] appendString:@"\n"];
                     self.isLastTranscriptLineUser = NO;
@@ -12656,7 +12631,6 @@ sIsServerGeneratingTurn = YES;
 
         NSArray *parts = serverContent[@"modelTurn"][@"parts"];
         if ([parts isKindOfClass:[NSArray class]]) {
-            sIsServerGeneratingTurn = YES;
             for (NSDictionary *part in parts) {
                 if (![part isKindOfClass:[NSDictionary class]]) continue;
                 if ([part[@"thought"] boolValue]) continue;
@@ -12666,7 +12640,7 @@ sIsServerGeneratingTurn = YES;
                     BOOL actionDirectExecuted = NO;
                     [self parseAndExecuteActions:rawPartText executed:&actionDirectExecuted];
                 }
-                if (part[@"text"] && self.disableTranscriptionInSetup && !self.isMutedByLocalBargeIn) {
+                if (part[@"text"] && self.disableTranscriptionInSetup) {
                     if (self.isLastTranscriptLineUser) {
                         [[self currentTabTranscript] appendString:@"\n"];
                         self.isLastTranscriptLineUser = NO;
@@ -12682,18 +12656,11 @@ sIsServerGeneratingTurn = YES;
             }
         }
         if ([serverContent[@"turnComplete"] boolValue]) {
-            BOOL wasMutedByBargeIn = self.isMutedByLocalBargeIn;
-            sIsServerGeneratingTurn = NO;
-            self.isMutedByLocalBargeIn = NO;
             NSString *committedQuery = (self.lastCommittedUserVoiceQuery.length > 0) ? self.lastCommittedUserVoiceQuery : (self.currentVoiceQueryBuffer ?: @"");
             agRecordDialogueTurnToUniversalMemory(committedQuery, self.accumulatedReplyText ?: @"");
             self.lastCommittedUserVoiceQuery = nil;
             [self.currentVoiceQueryBuffer setString:@""];
-            if (wasMutedByBargeIn) {
-                if (self.pcm24kStagingBuffer) [self.pcm24kStagingBuffer setLength:0];
-            } else {
-                [self flushPCM24kStagingBuffer];
-            }
+            [self flushPCM24kStagingBuffer];
             self.isLastTranscriptLineUser = NO;
             if ([self.accumulatedReplyText containsString:@"[ACTION:"]) {
                 BOOL actionExecuted = NO;
@@ -12795,21 +12762,17 @@ sIsServerGeneratingTurn = YES;
     agLiveDiagLog(@"PREROLL_SENT", @"Flushed 3200B silence lead + %lu bytes of pre-roll audio on setupComplete", (unsigned long)preRoll.length);
 }
 
-// 2. 原厂 Siri 级 0 毫秒瞬时打断器（精准区分云端流式生成中 vs 本地余量播放，0 复播、0 吞新回答）
+// 2. 原厂 Siri 级 0 毫秒瞬时打断器（恢复 主修实时翻译.txt 原版）
 - (void)triggerNativeSiriGradeInstantBargeIn:(NSString *)sourceTag {
     self.wsBargeInVoiceTicks = 0;
-    // 核心状态机：若云端仍在流式下发旧回合（尚未收到 turnComplete），开启禁音锁拦截所有在途旧包；
-    // 若云端早已下发完 turnComplete（仅手机本地在播缓存队列），则无需锁新包，确保新回答秒出声！
-    self.isMutedByLocalBargeIn = sIsServerGeneratingTurn;
-    self.bargeInMuteTimestamp = [[NSDate date] timeIntervalSince1970];
     self.currentTurnPlaybackID++;
     self.pendingPlayBuffersCount = 0;
     self.aiPlaybackEndTime = 0;
     if (self.pcm24kStagingBuffer) [self.pcm24kStagingBuffer setLength:0];
     self.neuralUserSpeakingActive = YES;
-    self.lastNeuralSpeechActiveTime = self.bargeInMuteTimestamp;
+    self.lastNeuralSpeechActiveTime = [[NSDate date] timeIntervalSince1970];
 
-    agLiveDiagLog(@"BARGE_IN_LOCAL", @"Apple Neural VAD barge-in (%@), turnID=%lu, lockInFlight=%d", sourceTag, (unsigned long)self.currentTurnPlaybackID, self.isMutedByLocalBargeIn);
+    agLiveDiagLog(@"BARGE_IN_LOCAL", @"Apple Neural VAD barge-in (%@), turnID=%lu", sourceTag, (unsigned long)self.currentTurnPlaybackID);
 
     dispatch_async(self.audioPlayQueue, ^{
         if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
@@ -12818,7 +12781,6 @@ sIsServerGeneratingTurn = YES;
         }
     });
     dispatch_async(dispatch_get_main_queue(), ^{
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(flushPCM24kStagingBuffer) object:nil];
         self.subStatusLabel.text = @"⚡ 正在倾听您说话...";
         [self setWaveBarsLevel:0.72];
     });
@@ -12827,7 +12789,7 @@ sIsServerGeneratingTurn = YES;
     }
 }
 
-// 3. 苹果 iOS 14 ~ iOS 17 全兼容原厂语音引擎（双门禁防自打断 + 0.25s 本地中文秒执行 + 离线/在线自动降级保活）
+// 3. 启动苹果 iOS 本地芯片级语音活动检测（主修实时翻译.txt 原版 + 仅过滤标点与 -50.0dB 纯静音底噪微调）
 - (void)startNativeAppleNeuralVADIfNeeded {
     [self stopNativeAppleNeuralVAD];
     @try {
@@ -12839,14 +12801,11 @@ sIsServerGeneratingTurn = YES;
         self.nativeNeuralVADRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
         self.nativeNeuralVADRequest.shouldReportPartialResults = YES;
         if (@available(iOS 13.0, *)) {
-            if (self.nativeNeuralVADRecognizer.supportsOnDeviceRecognition && !self.vadFallbackToOnline) {
-                self.nativeNeuralVADRequest.requiresOnDeviceRecognition = YES;
+            if (self.nativeNeuralVADRecognizer.supportsOnDeviceRecognition) {
+                self.nativeNeuralVADRequest.requiresOnDeviceRecognition = YES; // 强制跑在苹果本地神经引擎芯片，0网络延迟
             }
         }
         self.lastNeuralRecognizedCharCount = 0;
-        self.lastCleanNeuralAlphaNumCount = 0;
-        self.lastConsumedNeuralCharOffset = 0;
-        self.lastNativeNeuralChineseText = nil;
 
         __weak typeof(self) weakSelf = self;
         self.nativeNeuralVADTask = [self.nativeNeuralVADRecognizer recognitionTaskWithRequest:self.nativeNeuralVADRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
@@ -12854,53 +12813,25 @@ sIsServerGeneratingTurn = YES;
             if (!strongSelf || strongSelf.isDismissed) return;
             if (result && result.bestTranscription.formattedString.length > 0) {
                 NSString *fullNeuralStr = result.bestTranscription.formattedString;
-                NSUInteger curLen = fullNeuralStr.length;
-
-                // 门禁 1：剥离所有标点符号与空格，防止 SFSpeechRecognizer 延迟 1.5s 自动补句号/问号引发假打断！
+                // 微调 1：统计字数时剔除标点符号，防止系统自动补句号误触发打断
                 NSMutableCharacterSet *ignoreSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
                 [ignoreSet formUnionWithCharacterSet:[NSCharacterSet punctuationCharacterSet]];
-                [ignoreSet formUnionWithCharacterSet:[NSCharacterSet symbolCharacterSet]];
-                NSString *cleanAlphaNum = [[fullNeuralStr componentsSeparatedByCharactersInSet:ignoreSet] componentsJoinedByString:@""];
-                NSUInteger cleanCount = cleanAlphaNum.length;
+                NSString *cleanStr = [[fullNeuralStr componentsSeparatedByCharactersInSet:ignoreSet] componentsJoinedByString:@""];
+                NSUInteger curLen = cleanStr.length;
 
-                if (curLen != strongSelf.lastNeuralRecognizedCharCount) {
+                if (curLen > strongSelf.lastNeuralRecognizedCharCount) {
                     strongSelf.lastNeuralRecognizedCharCount = curLen;
-                    if (curLen > strongSelf.lastConsumedNeuralCharOffset) {
-                        strongSelf.lastNativeNeuralChineseText = [fullNeuralStr substringFromIndex:strongSelf.lastConsumedNeuralCharOffset];
-                    } else {
-                        strongSelf.lastNativeNeuralChineseText = fullNeuralStr;
-                    }
-                }
-
-                if (cleanCount > strongSelf.lastCleanNeuralAlphaNumCount) {
-                    strongSelf.lastCleanNeuralAlphaNumCount = cleanCount;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 仅用于辅助提供本地中文识别文本，绝不用滞后 0.8s 的异步文字回调去切断正在播音的喇叭！
-                    BOOL hasRealHumanVoiceEnergy = ((now - strongSelf.lastActiveMicDBTime <= 0.55) && (strongSelf.lastActiveMicDB > -38.0f));
-
-                    // 原厂 Siri 级 0.25s 本地中文指令抢先触发（无需傻等国外服务器传回韩语/日语字幕）
-                    if (hasRealHumanVoiceEnergy && strongSelf.lastNativeNeuralChineseText.length >= 2) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [NSObject cancelPreviousPerformRequestsWithTarget:strongSelf selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-                            [strongSelf performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.26];
-                        });
+                    // 微调 2：仅拦截 <= -50.0f dB 的纯静音底噪（您可以随时微调 -50.0f 这个数字），保留 -45dB 极轻人声 0ms 瞬时打断！
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -50.0f));
+                    BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
+                    if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
+                        [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
                 }
-            }
-
-            // iOS 14 ~ iOS 17 自动容错：若设备无离线包报错则自动降级为原厂在线流式识别，满 1 分钟结束自动无缝续接
-            if (error || (result && result.isFinal)) {
-                if (error && strongSelf.nativeNeuralVADRequest && strongSelf.nativeNeuralVADRequest.requiresOnDeviceRecognition) {
-                    strongSelf.vadFallbackToOnline = YES;
-                }
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (!strongSelf.isDismissed && strongSelf.liveAudioEngine && strongSelf.liveAudioEngine.isRunning) {
-                        [strongSelf startNativeAppleNeuralVADIfNeeded];
-                    }
-                });
             }
         }];
     } @catch (NSException *e) {}
@@ -12917,7 +12848,6 @@ sIsServerGeneratingTurn = YES;
             self.nativeNeuralVADTask = nil;
         }
         self.lastNeuralRecognizedCharCount = 0;
-        self.lastCleanNeuralAlphaNumCount = 0;
     } @catch (NSException *e) {}
 }
 
@@ -12931,14 +12861,6 @@ sIsServerGeneratingTurn = YES;
 
 - (void)enqueueAndPlayIncomingPCM24kData:(NSData *)pcm16Data {
     if (!self.liveAudioEngine || !self.pcmPlayerNode || !self.playerOutputFormat) return;
-    // 防复播禁音锁：本地打断后 3.0s 内拒绝路上残留的旧回合语音包重新点燃喇叭，直到云端确认新回合解锁
-    if (self.isMutedByLocalBargeIn) {
-        if ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 3.0) {
-            agLiveDiagLog(@"SRV_AUDIO_DROP", @"Blocked rebound packet during local barge-in mute lock");
-            return;
-        }
-        self.isMutedByLocalBargeIn = NO;
-    }
     NSUInteger inSampleCount = pcm16Data.length / sizeof(int16_t);
     if (inSampleCount < 24) return; // 过滤小于 1ms 的无效微碎包，防止队列碎片化与爆音
 
@@ -13215,32 +13137,14 @@ sIsServerGeneratingTurn = YES;
 
     AVAudioFrameCount inFrames = buffer.frameLength;
     double inSampleRate = buffer.format.sampleRate > 0 ? buffer.format.sampleRate : 48000.0;
-    const float *rawFloatPtr = buffer.floatChannelData[0];
+    NSData *copiedFloats = [NSData dataWithBytes:buffer.floatChannelData[0] length:inFrames * sizeof(float)];
 
-    float sum = 0.0f;
-    float peakVal = 0.0f;
-    for (AVAudioFrameCount i = 0; i < inFrames; i++) {
-        float s = rawFloatPtr[i];
-        sum += s * s;
-        float absS = fabsf(s);
-        if (absS > peakVal) peakVal = absS;
-    }
-    float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
-    float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
-
-    NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
-    BOOL isAIPlayingNow = (self.pendingPlayBuffersCount > 0 || nowTs < self.aiPlaybackEndTime);
-
-    // 仅在非 AI 播音期（或出现真实打断人声时）喂给本地识别器，防止识别器把喇叭声音转成文字
+    // 【核心接入】将实时硬件麦克风音频流喂入苹果离线神经识别引擎，实现毫秒级人声开口检测
     if (self.nativeNeuralVADRequest) {
-        if (!isAIPlayingNow || (db > -38.0f && peakDb > -23.0f)) {
-            @try {
-                [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
-            } @catch (NSException *e) {}
-        }
+        @try {
+            [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
+        } @catch (NSException *e) {}
     }
-
-    NSData *copiedFloats = [NSData dataWithBytes:rawFloatPtr length:inFrames * sizeof(float)];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.encodeQueue, ^{
@@ -13248,6 +13152,17 @@ sIsServerGeneratingTurn = YES;
         if (!strongSelf || strongSelf.isDismissed) return;
 
         const float *floatSamples = (const float *)copiedFloats.bytes;
+        float sum = 0.0f;
+        float peakVal = 0.0f;
+        for (AVAudioFrameCount i = 0; i < inFrames; i++) {
+            float s = floatSamples[i];
+            sum += s * s;
+            float absS = fabsf(s);
+            if (absS > peakVal) peakVal = absS;
+        }
+
+        float db = 20.0f * log10f(MAX(sqrtf(sum / MAX(1, inFrames)), 1e-7f));
+        float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
 
         strongSelf.micFramesSinceEngineStart++;
         if (strongSelf.micFramesSinceEngineStart == 1) {
@@ -13256,16 +13171,14 @@ sIsServerGeneratingTurn = YES;
                           (long)firstFrameMs, (unsigned int)inFrames, inSampleRate, db);
         }
 
-        if (db > -38.0f) {
+        NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+        if (db > -50.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
         }
         BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || nowTs < strongSelf.aiPlaybackEndTime);
 
-        static NSTimeInterval sLastAIPlaybackActiveTime = 0;
-        if (isAIPlaying) {
-            sLastAIPlaybackActiveTime = nowTs;
-        } else {
+        if (!isAIPlaying) {
             if (db > -44.0f) {
                 [strongSelf setWaveBarsLevel:MAX(0.24, MIN(1.0, (db + 46.0f) / 26.0f))];
             } else {
@@ -13285,10 +13198,12 @@ sIsServerGeneratingTurn = YES;
             NSUInteger idx0 = (NSUInteger)srcIdx;
             NSUInteger idx1 = MIN(idx0 + 1, (NSUInteger)(inFrames - 1));
             float rawSample = (float)((1.0 - (srcIdx - idx0)) * floatSamples[idx0] + (srcIdx - idx0) * floatSamples[idx1]);
+            // 【核心优化】保持 VoiceProcessingIO 硬件 AGC 归一化采样，采用微量平滑软饱和 (tanhf soft-knee) 杜绝硬削波失真与爆音
             float sample = tanhf(rawSample * 1.15f);
             outPtr[i] = (int16_t)(sample * 32767.0f);
         }
 
+        // 握手完成前存入环形缓冲，握手完成瞬间自动冲刷
         if (!strongSelf.isWebSocketConnected || !strongSelf.isSetupHandshakeCompleted) {
             @synchronized (strongSelf.wsPreRollPCMBuffer) {
                 [strongSelf.wsPreRollPCMBuffer appendData:pcm16Chunk];
@@ -13300,48 +13215,23 @@ sIsServerGeneratingTurn = YES;
             return;
         }
 
-        // 维护 200ms (6400字节) 预录环形缓冲，确保开口打断的第一个字头完整保留
-        static NSMutableData *sPreBargeInRing = nil;
-        if (!sPreBargeInRing) sPreBargeInRing = [NSMutableData dataWithCapacity:8192];
-
-        // 【原生 Siri 级单帧 0.1 秒瞬时打断】：VPIO 参考总线对齐后，每帧为 100ms (inFrames=4800)，单帧达标立即秒断喇叭！
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.20);
+        // 本地人声插话打断检测（与 主修实时翻译.txt 稳定阈值完全一致）
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.55);
         if (isAIPlaying && pastEchoGrace) {
-            float curVol = [AVAudioSession sharedInstance].outputVolume;
-            float dbLimit   = (curVol > 0.72f) ? -34.5f : -40.0f;
-            float peakLimit = (curVol > 0.72f) ? -19.5f : -24.5f;
-
-            if (db > dbLimit && peakDb > peakLimit) {
-                [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
-                isAIPlaying = NO;
-                sLastAIPlaybackActiveTime = 0;
-                if (sPreBargeInRing.length > 0) {
-                    [strongSelf.outgoingPCMBuffer appendData:sPreBargeInRing];
-                    [sPreBargeInRing setLength:0];
+            if (db > -24.5f && peakDb > -12.5f) {
+                strongSelf.wsBargeInVoiceTicks++;
+                if (strongSelf.wsBargeInVoiceTicks >= 4) {
+                    [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
                 }
             } else {
-                [sPreBargeInRing appendData:pcm16Chunk];
-                if (sPreBargeInRing.length > 6400) {
-                    [sPreBargeInRing replaceBytesInRange:NSMakeRange(0, sPreBargeInRing.length - 6400) withBytes:NULL length:0];
-                }
+                strongSelf.wsBargeInVoiceTicks = 0;
             }
-        } else if (!isAIPlaying && sPreBargeInRing.length > 0) {
-            [sPreBargeInRing setLength:0];
+        } else {
+            strongSelf.wsBargeInVoiceTicks = 0;
         }
 
-        // 【播放期 + 550ms 房间混响尾音静音门控】：在 AI 播报期间及刚播完 550ms 混响消散窗内，
-        // 凡未触发人声打断的微弱尾音/底噪（db < -42.0f），上行一律发送纯零静音帧，让云端 100% 听不到自己的回声，绝不自断！
-        BOOL isInAECTailWindow = isAIPlaying || (nowTs - sLastAIPlaybackActiveTime < 0.55);
-        NSData *chunkToSend = pcm16Chunk;
-        if (isInAECTailWindow && db < -42.0f) {
-            static NSData *sZeroSilenceTemplate = nil;
-            if (!sZeroSilenceTemplate || sZeroSilenceTemplate.length < pcm16Chunk.length) {
-                sZeroSilenceTemplate = [NSMutableData dataWithLength:MAX((NSUInteger)4096, pcm16Chunk.length)];
-            }
-            chunkToSend = [sZeroSilenceTemplate subdataWithRange:NSMakeRange(0, pcm16Chunk.length)];
-        }
-
-        [strongSelf.outgoingPCMBuffer appendData:chunkToSend];
+        // 持续稳定推送 16kHz 音频流（严禁发送 audioStreamEnd 关停流！）
+        [strongSelf.outgoingPCMBuffer appendData:pcm16Chunk];
         if (strongSelf.outgoingPCMBuffer.length >= 1600) {
             NSData *packet = [strongSelf.outgoingPCMBuffer copy];
             [strongSelf.outgoingPCMBuffer setLength:0];
@@ -13360,6 +13250,7 @@ sIsServerGeneratingTurn = YES;
         }
     });
 }
+
 - (void)handleAudioSessionInterruption:(NSNotification *)note {
     NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     agLiveDiagLog(@"AUDIO_INTERRUPT", @"AVAudioSession interruption type=%lu", (unsigned long)type);
@@ -13678,19 +13569,11 @@ sIsServerGeneratingTurn = YES;
 #pragma mark - 3. 手机操作引擎 (全场景系统级 Agent 自动化中枢)
 
 - (void)checkDeferredVoiceLocalCommand {
-    if (self.currentVoiceQueryBuffer.length == 0 && self.lastNativeNeuralChineseText.length == 0) return;
-    NSString *fullCmd = (self.currentVoiceQueryBuffer.length > 0) ? [self.currentVoiceQueryBuffer copy] : [self.lastNativeNeuralChineseText copy];
-    NSString *localZhFallback = [self.lastNativeNeuralChineseText copy];
-    BOOL matched = [self tryExecuteDirectLocalCommand:fullCmd];
-    if (!matched && localZhFallback.length >= 2 && ![localZhFallback isEqualToString:fullCmd]) {
-        matched = [self tryExecuteDirectLocalCommand:localZhFallback];
-        if (matched) fullCmd = localZhFallback;
-    }
-    if (matched) {
+    if (self.currentVoiceQueryBuffer.length == 0) return;
+    NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
+    if ([self tryExecuteDirectLocalCommand:fullCmd]) {
         self.lastLocalActionExecTime = [[NSDate date] timeIntervalSince1970];
         [self.currentVoiceQueryBuffer setString:@""];
-        self.lastNativeNeuralChineseText = nil;
-        self.lastConsumedNeuralCharOffset = self.lastNeuralRecognizedCharCount;
         BOOL isPureStatusQuery = ([fullCmd containsString:@"电池"] || [fullCmd containsString:@"电量"] || [fullCmd containsString:@"健康度"] || [fullCmd containsString:@"内存"] || [fullCmd containsString:@"运存"] || [fullCmd containsString:@"运行速度"] || [fullCmd containsString:@"卡不卡"] || [fullCmd containsString:@"死机"] || [fullCmd containsString:@"崩溃"] || [fullCmd containsString:@"闪退"] || [fullCmd containsString:@"注销"] || [fullCmd containsString:@"重启"] || [fullCmd containsString:@"哪个插件"] || [fullCmd containsString:@"什么插件"] || [fullCmd containsString:@"清理"] || [fullCmd containsString:@"垃圾"] || [fullCmd containsString:@"缓存"] || [fullCmd containsString:@"系统数据"] || [fullCmd containsString:@"释放"]);
         if (!isPureStatusQuery) {
             self.currentTurnPlaybackID++;
