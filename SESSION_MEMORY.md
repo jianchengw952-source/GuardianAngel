@@ -594,3 +594,20 @@
 - `aff0863`: `feat: integrate AngelShield 5-tier DRM protection, symbol stripping, and watchdog fix`
 - `21963eb`: `ci: remove test.yml [skip ci]`
 - GitHub 仓库: [https://github.com/jianchengw952-source/GuardianAngel](https://github.com/jianchengw952-source/GuardianAngel)
+
+### 4. CI 编译与安装包分发 (Run #34, ID: 41319631454, Commit: 703658f)
+- **CI 环境与编译修复**:
+  - 针对 GitHub 官方于 2026 年 11 月正式退役 `macos-14` 镜像导致任务被立即取消的问题，升级 CI 运行环境至 `macos-15`。
+  - 修复 Objective-C++ 编译下 `mutable` 为 C++ 保留关键字的语法冲突，重命名为 `mutStr`。
+  - 在 `Makefile` 中恢复 `-Wno-incomplete-implementation` 与警告豁免参数，消除 Xcode 16 / Clang 语法阻断。
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (680,376 字节, SHA256: `89cdb2f0442cc7e46020d9dd09483e7e25cb220d610eba1f0fce2e240ec7445d`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (442,764 字节, SHA256: `cb21204c05fb0108efab9d0ced4b50ef50c1e87bc6433f38226270ef8f9795ec`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+- **三文件镜像一致性验证**:
+  - `D:\双工具版本\Tweak.xm` (SHA256: `a7f108f693ff28848a3f2923ec20583af69d08748b1fe50ccbd380cc5e17b1a6`)
+  - `D:\双工具版本\Tweak.x` (SHA256: `a7f108f693ff28848a3f2923ec20583af69d08748b1fe50ccbd380cc5e17b1a6`)
+  - `D:\双工具版本\主修实时翻译.txt` (SHA256: `a7f108f693ff28848a3f2923ec20583af69d08748b1fe50ccbd380cc5e17b1a6`)
+  - 镜像状态: 100% 字节完全一致。
