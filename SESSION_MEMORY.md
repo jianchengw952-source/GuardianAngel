@@ -772,3 +772,35 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (524992 字节, SHA256: `75005b807403be28727178e74aaa6ebc139480a0f55bdbf7d8629e79ba196d1f`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (345012 字节, SHA256: `251e078cae26f060d38b1f3e916af226d7d39b94d22cad0700ebaa8b406172ce`)
+
+---
+
+## 2026-11-03: 破硬件压制·轻声秒断方案与 1.85 倍人声增益补偿 (Run #53)
+
+### 1. 修改要点 (3 处打断阈值调整，全平台双环境同时生效)
+1. **优化本地神经引擎音节打断窗口**:
+   - 在 `startNativeAppleNeuralVADIfNeeded` 内部，仅拦截 `<= -54.0f dB` 的纯静音底噪，并将 AI 发音保护窗从 0.25s 优化缩短至 `0.20s`，使轻声说话时本地神经引擎离线识别出第一个音节瞬间能 100% 顺利触发打断。
+2. **设置 -46dB 破硬件压制秒断阈值与 1.85 倍动态人声增益补偿**:
+   - 在 `processMicrophoneInputPCMBuffer:` 中，针对 AI 播音时 iOS 硬件回声消除将人声压低至 -43dB 左右的物理特性，将分贝阈值设为 `db > -46.0f && peakDb > -29.0f`、满 `2` 帧（约 42ms）即断，并立即标记 `isAIPlaying = NO`。
+   - 在双讲期或触发打断后 0.85 秒硬件压制恢复期内，对录入人声做 `1.85` 倍动态增益补偿（`sample *= gainFactor`），杜绝打断时首两字因被硬件压低而被云端误判转写为外语碎词。
+3. **放宽备用录音机模式打断阈值**:
+   - 在 `updateAudioMeters` 中，将插话打断条件优化为 `power > -32.0f && peak > -18.0f`，判定帧数调至 `2` 帧。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,340,826 字节
+- SHA256 校验和：`2983629303cf89e44393a78a3b3c49ea06a4ffce4e34bee145badd3864588fd6`
+
+### 3. CI 构建与产物
+- 提交哈希：`98028a6`
+- GitHub Actions CI Run #53 (ID: 41485963364) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526088 字节, SHA256: `7b4ca5c8c4cd0c5fa828b7898495e98a431785da13a638dc0977d09e62e72642`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (344844 字节, SHA256: `6fa8e743a4f827aed31308088de0b65db06e225273697493298c391e6223865e`)
