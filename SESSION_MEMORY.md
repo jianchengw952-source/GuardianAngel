@@ -677,3 +677,32 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (527,380 字节, SHA256: `b48f24f8c860e0dda8b1bff29cc5af7d0c9a984528cb52fe5013d85aee5e5a89`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,728 字节, SHA256: `483b8a5e482e3feef7e521fd360c6494d2abdf54e1372b086b6c26eb8bc036ef`)
+
+---
+
+## 2026-11-02: 还原 6 个 agDyn_ 函数与 simFlagStealth 为 shieldActive (Run #50)
+
+### 1. 修改要点 (精准还原两处)
+1. **6 个 agDyn_ 函数还原**:
+   - 将 `agDyn_SrcInfo_isSimSoft`、`agDyn_SrcInfo_isProdAcc`、`agDyn_CLLoc_isSim1`、`agDyn_CLLoc_isSim2`、`agDyn_AMap_detectRisk`、`agDyn_AMap_setDetectRisk` 这 6 个函数内的判断条件全部从 `agIsEnvironmentStealthActive()` 100% 还原回原版的 `agIsAntiDetectionShieldActive()`。
+2. **simFlagStealth 标志还原**:
+   - 在 `agSyncClientHooksWithCurrentState` 中，将 `BOOL simFlagStealth = (shieldActive || envStealthActive);` 还原为 `BOOL simFlagStealth = shieldActive;`，使其严格随定位与防检测开关控制。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,334,619 字节
+- SHA256 校验和：`c8f727754b035e4152d01b70d8b235857e75798f4eb17f85d3c492116d521a37`
+
+### 3. CI 构建与产物
+- 提交哈希：`623f668`
+- GitHub Actions CI Run #50 (ID: 41472912200) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526,964 字节, SHA256: `4714c6394320ff87cb924950ba59c9c3a672155f9db204fc5e77fe72b1dd2dd3`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,452 字节, SHA256: `f1494ce5c3d0f09daf3150b12cfd1966356491351571e9824b3d80fa8b3a5787`)
