@@ -806,3 +806,39 @@
 - **验证结果**:
   - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
   - 双架构均在 macOS 15 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
+
+---
+
+## 2026-11-02: Relaxin 满血防检测与防闪退精准修正 (Run #44)
+
+### 1. 修改要点 (Relaxin 深度调谐与 arm64e PAC 保护)
+1. **`AGCLDaemonLocation` 结构体 PAC 安全对齐**:
+   - 在 `#ifndef __ROOTHIDE__` 下保留 `_reservedPadding[32]`（兼容 iOS 16/17 Dopamine 尾部扩展）；
+   - 在 `#ifdef __ROOTHIDE__` (Relaxin) 下移除 32 字节 Padding，使结构体尺寸严格锁定为 iOS 15/16 标准 156 字节 (`0x9C`)，根除 `agDyn_CLLoc_clientLoc` 在 `arm64e` 下返回时写穿调用方栈帧 PAC 签名返回地址。
+2. **`agIsSuspiciousJailbreakPath` 原生组件目录精准放行**:
+   - 在 `#ifdef __ROOTHIDE__` 下仅放行系统原生 `/Cryptexes/` 与 `/cryptexes/` 目录；
+   - 完整保留针对 `.jbroot`、`/private/preboot/`、`/var/jb` 等全部 19 项越狱路径特征防检测拦截。
+3. **`agInstallAntiDetectionCHooksIfNeeded` 防双层 Hook 踩踏**:
+   - 在 `#ifdef __ROOTHIDE__` 下仅挂钩 `CNCopyCurrentNetworkInfo`（附带 `AG_STRIP_PAC` 剥离 PAC），不重复挂钩 Relaxin 底层已内联接管的 `dladdr` 与 `_dyld_get_image_name`，彻底消除双层 Hook 踩踏闪退；
+   - `#else` 分支原有 Dopamine 逻辑 100% 保持原封不动；
+   - `agSyncClientHooksWithCurrentState` 100% 完整保留原生方法指针还原循环与底层坐标同步逻辑。
+
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `fb0025ddec290c098efe836338ad8586f1081d46943f28ffbe1067f3f2a13ee4`)
+- `D:\双工具版本\Tweak.x` (1,348,642 字节)
+- `D:\双工具版本\Tweak.xm` (1,348,642 字节)
+- `D:\双工具版本\主修实时翻译.txt` (1,348,642 字节)
+- `D:\双工具版本\dopamine测试版本.txt` (1,348,642 字节)
+- `D:\dopamine测试版本.txt` (1,348,642 字节)
+- `C:\Users\57132\Desktop\relaxin调教版本.txt` (1,348,642 字节)
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 6`。
+
+### 3. CI 编译与安装包分发 (Run #44, ID: 41423493912, Commit: 8a264e8)
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (535,200 字节, SHA256: `5952f17195ddcfd2f40b9b8343264abb9901b5d141429cd53c4862cbc730cbea`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352,208 字节, SHA256: `4061d32a45deec19d467e31a841e41eb61247a86f15d291a1bcde14aa845df8b`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+- **验证结果**:
+  - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
+  - 双架构均在 macOS 15 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
