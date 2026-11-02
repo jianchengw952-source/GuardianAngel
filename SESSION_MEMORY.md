@@ -713,11 +713,22 @@
      - 6.1B：`agIsSuspiciousJailbreakPath` 放行 iOS 16 系统原生 `/private/preboot/Cryptexes` 路径，彻底防止误杀 WebKit 闪退；
      - 6.2：`agInstallAntiDetectionCHooksIfNeeded` 在 RootHide 下跳过对 libdyld 的 inline hook；`agSyncClientHooksWithCurrentState` 在 arm64e 下采用单次挂载 + 0.001ms 门禁模式，彻底根除跨线程热插拔造成的崩溃。
 
-### 2. 六文件镜像 100% 字节完全一致 (SHA256: `0833920570705d17779634da70ccc5e870188da39eb15d833bc6f5ae0e7b5c18`)
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `D1FFFFD720AA844AA633D25BCB0174D2843308796486DBE700DD01A566961BAE`)
 - `D:\双工具版本\Tweak.x`
 - `D:\双工具版本\Tweak.xm`
 - `D:\双工具版本\主修实时翻译.txt`
 - `D:\双工具版本\dopamine测试版本.txt`
 - `D:\dopamine测试版本.txt`
 - `C:\Users\57132\Desktop\relaxin调教版本.txt`
-- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`，Logos 指令严格闭合，`kEncIsSimSoft` 修复 `2d -> 0x2D` 语法合规。
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`，Logos 指令严格闭合，统一使用 `agInitStealthLocationClientHooksGroup()` 消除重复 `%init` 冲突。
+
+### 3. CI 编译与安装包分发 (Run #39, ID: 41408702941, Commit: a8fbdc0)
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (534,824 字节, SHA256: `6F6C4C603A5EB8C01B4AC6E4383966CC57176976EF77967AA7F22D27F4EEB23B`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (351,604 字节, SHA256: `BE819EF7A974812EBA51F560DCC71D2D0014773863FFB3DDDAE6CC1F99163FC1`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+- **验证结果**:
+  - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
+  - 双架构完美通过 macOS 15 runner 编译。
