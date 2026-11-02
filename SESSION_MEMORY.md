@@ -603,3 +603,36 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526,896 字节, SHA256: `a507bf1a9dd0c1946e5f5fff09045178a05049aaf7f3d8cdb783b8a13ae0d116`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,400 字节, SHA256: `bc3d1d6d8d4775a37f45618a113e44045c3d88d03a3e88c07ad93794034a460c`)
+
+---
+
+## 2026-11-02: 方案 2 调整：保持原版反检测 Hook 触发逻辑不变，仅在 #if ROOTHIDE 下隔离配置文件路径 (Run #48)
+
+### 1. 修改要点 (3 点精准调整)
+1. **配置文件路径隔离 (reloadGeminiPrefsCache 与 saveGeminiPrefs)**:
+   - `reloadGeminiPrefsCache` 中：在 `#if ROOTHIDE` 下仅读取 `MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")`，移除了外部 `MyRootfsPath`，彻底防止 App 扫出外部配置；在 `#else` 下保持 Dopamine 原版三路径读取不变；
+   - `saveGeminiPrefs` 中：在 `#if ROOTHIDE` 下仅写入 `MyJBPath(...)`，并主动清理外部残留的 plist 与 tmp 文件；在 `#else` 下保持 Dopamine 原版写入与清理不变。
+2. **底层镜像 Hook 条件 100% 还原**:
+   - 彻底删除 `agShouldHideSelfInProcess()` 函数；
+   - `hooked_dladdr`、`hooked_dyld_get_image_name`、`hooked_class_getImageName`、`hooked_objc_copyImageNames`、`hooked_dyld_image_path_containing_address`、`hooked_access` 判定条件全部 100% 还原为原版 `agIsAntiDetectionShieldActive()`。
+3. **agSyncClientHooksWithCurrentState 逻辑 100% 还原**:
+   - 移除开头新增的 `#if ROOTHIDE agInstallAntiDetectionCHooksIfNeeded()` 块，完全恢复为原版防检测与定位挂钩同步逻辑。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,332,020 字节
+- SHA256 校验和：`14c2c6a775f73c679f7050450508e6989214830ed1db7a9f4a9751bc92e78823`
+
+### 3. CI 构建与产物
+- 提交哈希：`fd60c0f`
+- GitHub Actions CI Run #48 (ID: 41466757833) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (525,800 字节, SHA256: `c0a997f9624cf1b14df18402424c1273fcab68982475e84a92124fb480bef283`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,552 字节, SHA256: `e46899202d6fec623a3fce1e4a463d44b1a0c00ebe80154ee464f84bb15302b1`)
