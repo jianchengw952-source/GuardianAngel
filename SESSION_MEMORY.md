@@ -666,3 +666,18 @@
 - `D:\双工具版本\dopamine测试版本.txt`
 - `D:\dopamine测试版本.txt`
 - 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`，Logos `%hook / %end` 严格闭合。
+
+
+---
+
+## 2026-11-02: 导出 GuardianAngel 完整源码与加固防护文档至桌面 (AI 交互便携格式)
+
+### 1. 桌面落地文件清单
+- **主功能源码**：[C:\Users\57132\Desktop\relaxin调教版本.txt](file:///C:/Users/57132/Desktop/relaxin%E8%B0%83%E6%95%99%E7%89%88%E6%9C%AC.txt)
+  - 大小：1,336,827 字节（24,334 行代码）
+  - SHA256：`259622e5994eb574c6f02dc96bd9aaa7bd3e42b644715f5ac5be369bfa29b101`
+  - 包含最新 5 大替换块（iOS 17 X8 栈防写穿、Relaxin 隐根自适应、纯 C 环形表）与 3 大 AngelShield 加固挂接点。
+- **加固防护系统与 AI 导读**：[C:\Users\57132\Desktop\relaxin加固版本.txt](file:///C:/Users/57132/Desktop/relaxin%E5%8A%A0%E5%9B%BA%E7%89%88%E6%9C%AC.txt)（镜像：`AngelShield加固防护.txt`）
+  - 大小：32,340 字节（662 行）
+  - SHA256：`3b14b255ae2b49d7178791c3c2cf195b1ed84c5e0987ccf68dd4fa1b9c7da704`
+  - 内含【AI 快速背景导读】、【5 道顶级防破解防线工作原理与攻防剖析】、【__DATA,__ag_core 内存加密段规范】、【3 处源码挂接锚点】、【Makefile 符号剥离参数】以及完整的 `AngelShield.h` 源码。
