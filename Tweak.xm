@@ -78,7 +78,9 @@ typedef struct {
     int signalEnvironmentType;           // 0x8C
     double ellipsoidalAltitude;          // 0x90
     BOOL fromSimulationController;       // 0x98
-    uint8_t _reservedPadding[64];        // 内部安全缓冲扩展至64字节，配合 gClientLocActualStructSize 精确按调用方真实尺寸写回 X8
+#ifndef __ROOTHIDE__
+    uint8_t _reservedPadding[32];        // 必须保留！兼容 iOS 16/17 尾部扩展字节，防止 gOrig_CLLoc_clientLoc 写穿栈帧
+#endif
 } AGCLDaemonLocation;
 #pragma pack(pop)
 
@@ -23279,6 +23281,11 @@ static const char * const kAGNativeCLSymbolPool[] = {
 
 static BOOL agIsSuspiciousJailbreakPath(const char *path) {
     if (!path) return NO;
+#ifdef __ROOTHIDE__
+    if (strstr(path, "/Cryptexes/") != NULL || strstr(path, "/cryptexes/") != NULL) {
+        return NO;
+    }
+#endif
     return (strstr(path, "/var/jb") != NULL ||
             strstr(path, ".jbroot") != NULL ||
             strstr(path, "/private/preboot/") != NULL ||
@@ -24134,6 +24141,15 @@ static void agInstallAntiDetectionCHooksIfNeeded(void) {
     if (gHasInstalledCHooks) return;
     gHasInstalledCHooks = YES;
 
+#ifdef __ROOTHIDE__
+    void *snHandle = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY);
+    if (snHandle) {
+        void *cnSym = dlsym(snHandle, "CNCopyCurrentNetworkInfo");
+        if (cnSym) {
+            MSHookFunction((void *)AG_STRIP_PAC(cnSym), (void *)hooked_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
+        }
+    }
+#else
     // 仅挂钩函数体大于 64 字节的标准 C 函数，严禁对 8~12 字节的极短 syscall/objc 桩函数 (access / class_getImageName) 使用 MSHookFunction 防止 16 字节跳板越界引发 CPU 100% 死循环发烫！
     MSHookFunction((void *)dladdr, (void *)hooked_dladdr, (void **)&orig_dladdr);
     MSHookFunction((void *)_dyld_get_image_name, (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
@@ -24145,6 +24161,7 @@ static void agInstallAntiDetectionCHooksIfNeeded(void) {
             MSHookFunction(cnSym, (void *)hooked_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
         }
     }
+#endif
 }
 
 static void agSyncClientHooksWithCurrentState(void) {
