@@ -268,65 +268,74 @@ static NSString *agCameraStateName(AGCameraState st) {
     return @"UNKNOWN";
 }
 
-// ==================== Dopamine (无根/隐根) & Relaxin (RootHide) 零依赖内存自定位解析器 ====================
-typedef const char *(*ag_jbroot_fn)(const char *path);
-static NSString *agJBRootPath(NSString *relativePath) {
-    if (!relativePath || relativePath.length == 0) return @"/var/jb";
-    static NSString *sDetectedJBRoot = nil;
-    static ag_jbroot_fn sJBRootFunc = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 1. 优先通过 dladdr 读取插件自身在内存中的真实物理路径（无视任何第三方 App 沙盒限制，0 外部库依赖）
-        Dl_info selfInfo;
-        memset(&selfInfo, 0, sizeof(selfInfo));
-        if (dladdr((const void *)&agJBRootPath, &selfInfo) != 0 && selfInfo.dli_fname) {
-            NSString *dylibPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
-            NSRange jbRange = [dylibPath rangeOfString:@".jbroot-"];
-            if (jbRange.location != NSNotFound) {
-                NSRange slashRange = [dylibPath rangeOfString:@"/" options:0 range:NSMakeRange(jbRange.location, dylibPath.length - jbRange.location)];
-                sDetectedJBRoot = (slashRange.location != NSNotFound) ? [dylibPath substringToIndex:slashRange.location] : dylibPath;
-            }
-        }
-        // 2. 尝试符号解析与相对路径加载
-        if (!sDetectedJBRoot) {
-            sJBRootFunc = (ag_jbroot_fn)dlsym(RTLD_DEFAULT, "jbroot");
-            if (!sJBRootFunc) {
-                void *rhHandle = dlopen("@loader_path/.jbroot/usr/lib/libroothide.dylib", RTLD_LAZY);
-                if (!rhHandle) rhHandle = dlopen("libroothide.dylib", RTLD_LAZY);
-                if (rhHandle) sJBRootFunc = (ag_jbroot_fn)dlsym(rhHandle, "jbroot");
-            }
-            if (sJBRootFunc) {
-                const char *cRoot = sJBRootFunc("/");
-                if (cRoot && strlen(cRoot) > 1) {
-                    NSString *r = [NSString stringWithUTF8String:cRoot];
-                    while ([r hasSuffix:@"/"] && r.length > 1) r = [r substringToIndex:r.length - 1];
-                    sDetectedJBRoot = r;
-                }
-            }
-        }
-        // 3. 非沙盒进程兜底目录扫描
-        if (!sDetectedJBRoot) {
-            NSString *bundleBase = @"/var/containers/Bundle/Application";
-            NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundleBase error:nil];
-            for (NSString *item in items) {
-                if ([item hasPrefix:@".jbroot-"]) {
-                    sDetectedJBRoot = [bundleBase stringByAppendingPathComponent:item];
-                    break;
-                }
-            }
-        }
-        // 4. Dopamine 标准无根版默认路径
-        if (!sDetectedJBRoot) {
-            sDetectedJBRoot = @"/var/jb";
-        }
-    });
+// ==================== 1. Dopamine (无根) & Relaxin (RootHide) 编译期隔离路径封装 ====================
+#if ROOTHIDE
+#if __has_include(<roothide.h>)
+#import <roothide.h>
+#else
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern const char *jbroot(const char *path);
+extern const char *rootfs(const char *path);
+extern NSString *jbrootpath(NSString *path);
+extern NSString *rootfspath(NSString *path);
+#ifdef __cplusplus
+}
+#endif
+#endif
 
-    NSString *cleanRel = [relativePath hasPrefix:@"/"] ? relativePath : [@"/" stringByAppendingString:relativePath];
-    if (sJBRootFunc) {
-        const char *converted = sJBRootFunc([cleanRel UTF8String]);
-        if (converted) return [NSString stringWithUTF8String:converted];
+static inline NSString *MyJBPath(NSString *relativePath) {
+    if (!relativePath || relativePath.length == 0) {
+        return jbrootpath(@"/");
     }
-    return [sDetectedJBRoot stringByAppendingPathComponent:cleanRel];
+    NSString *cleanRel = [relativePath hasPrefix:@"/"] ? relativePath : [@"/" stringByAppendingString:relativePath];
+    return jbrootpath(cleanRel);
+}
+
+static inline const char *MyJBCPath(const char *relativePath) {
+    if (!relativePath || relativePath[0] == '\0') {
+        return jbroot("/");
+    }
+    return jbroot(relativePath);
+}
+
+static inline NSString *MyRootfsPath(NSString *sysPath) {
+    if (!sysPath || sysPath.length == 0) return @"";
+    return rootfspath(sysPath);
+}
+
+static inline const char *MyRootfsCPath(const char *sysPath) {
+    if (!sysPath) return "";
+    return rootfs(sysPath);
+}
+
+#else // ==================== Dopamine (Rootless) 原生分支（与改动前 100% 一致） ====================
+
+static inline NSString *MyJBPath(NSString *relativePath) {
+    if (!relativePath || relativePath.length == 0) return @"/var/jb";
+    NSString *cleanRel = [relativePath hasPrefix:@"/"] ? relativePath : [@"/" stringByAppendingString:relativePath];
+    return [@"/var/jb" stringByAppendingPathComponent:cleanRel];
+}
+
+static inline const char *MyJBCPath(const char *relativePath) {
+    if (!relativePath || relativePath[0] == '\0') return "/var/jb";
+    NSString *nsPath = MyJBPath([NSString stringWithUTF8String:relativePath]);
+    return [nsPath UTF8String];
+}
+
+static inline NSString *MyRootfsPath(NSString *sysPath) {
+    return sysPath;
+}
+
+static inline const char *MyRootfsCPath(const char *sysPath) {
+    return sysPath;
+}
+#endif
+
+// 保持原有函数名兼容，内部统一走 MyJBPath
+static inline NSString *agJBRootPath(NSString *relativePath) {
+    return MyJBPath(relativePath);
 }
 
 // 高速缓存判断当前是否为 SpringBoard 主桌面进程
@@ -348,7 +357,7 @@ static void ensureSpringBoardTCCGranted(void) {
     }
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        void *tccHandle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_LAZY);
+        void *tccHandle = dlopen(MyRootfsCPath("/System/Library/PrivateFrameworks/TCC.framework/TCC"), RTLD_LAZY);
         if (tccHandle) {
             TCCAccessSetForBundleIdFunc setFunc = (TCCAccessSetForBundleIdFunc)dlsym(tccHandle, "TCCAccessSetForBundleId");
             if (setFunc) {
@@ -359,11 +368,11 @@ static void ensureSpringBoardTCCGranted(void) {
             }
         }
 
-        const char *dbPath = "/var/mobile/Library/TCC/TCC.db";
+        const char *dbPath = MyRootfsCPath("/var/mobile/Library/TCC/TCC.db");
         sqlite3 *db = NULL;
         if (sqlite3_open(dbPath, &db) == SQLITE_OK) {
             sqlite3_busy_timeout(db, 1500);
-            NSString *helperJBPath = agJBRootPath(@"/usr/bin/AngelCameraHelper");
+            NSString *helperJBPath = MyJBPath(@"/usr/bin/AngelCameraHelper");
             NSString *sql4Str = [NSString stringWithFormat:@"INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceCamera', '%@', 1, 2, 1, 1);", helperJBPath];
             const char *sql1 = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceCamera', 'com.apple.springboard', 0, 2, 1, 1);";
             const char *sql2 = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceMicrophone', 'com.apple.springboard', 0, 2, 1, 1);";
@@ -445,7 +454,11 @@ static void killNativeSiriAudioDaemon(void) {
 
 static void killZombieCameraHelpers(void) {
     pid_t pid;
-    NSArray<NSString *> *killPaths = @[ agJBRootPath(@"/usr/bin/killall"), @"/var/jb/usr/bin/killall", @"/usr/bin/killall" ];
+#if ROOTHIDE
+    NSArray<NSString *> *killPaths = @[ MyJBPath(@"/usr/bin/killall"), MyRootfsPath(@"/usr/bin/killall") ];
+#else
+    NSArray<NSString *> *killPaths = @[ MyJBPath(@"/usr/bin/killall"), @"/var/jb/usr/bin/killall", @"/usr/bin/killall" ];
+#endif
     for (NSString *kp in killPaths) {
         if ([[NSFileManager defaultManager] isExecutableFileAtPath:kp]) {
             char *argv[] = { (char *)"killall", (char *)"-9", (char *)"AngelCameraHelper", NULL };
@@ -805,11 +818,18 @@ static __thread BOOL sIsInternalPrefsFileRead = NO;
 
 static void reloadGeminiPrefsCache(void) {
     sIsInternalPrefsFileRead = YES;
+#if ROOTHIDE
     NSArray<NSString *> *paths = @[
-        agJBRootPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
+        MyRootfsPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")
+    ];
+#else
+    NSArray<NSString *> *paths = @[
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
         @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist",
         @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"
     ];
+#endif
     NSMutableDictionary *merged = [NSMutableDictionary dictionary];
     NSDate *newestDate = nil;
     NSDictionary *newestDict = nil;
@@ -982,18 +1002,24 @@ static void saveGeminiPrefs(NSDictionary *dict) {
         CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     });
 
-    sIsInternalPrefsFileRead = YES;
-    NSString *detectedRoot = agJBRootPath(@"/");
+sIsInternalPrefsFileRead = YES;
+    NSString *detectedRoot = MyJBPath(@"/");
+#if ROOTHIDE
     NSArray<NSString *> *writePaths = @[
-        agJBRootPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
+        MyRootfsPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")
+    ];
+#else
+    NSArray<NSString *> *writePaths = @[
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
         @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist",
         @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"
     ];
-    [[NSFileManager defaultManager] removeItemAtPath:@"/tmp/com.custom.geminisirioverlay.plist" error:nil];
+#endif
+    [[NSFileManager defaultManager] removeItemAtPath:MyRootfsPath(@"/tmp/com.custom.geminisirioverlay.plist") error:nil];
     for (NSString *wp in writePaths) {
         NSString *dir = [wp stringByDeletingLastPathComponent];
-        // 在 Relaxin / 多巴胺隐根下，若 .jbroot-XXXX 内的 Preferences 目录尚未创建则自动补齐（绝不在隐根机上创建 /var/jb）
-        if (![[NSFileManager defaultManager] fileExistsAtPath:dir] && [detectedRoot containsString:@".jbroot-"] && [wp hasPrefix:detectedRoot]) {
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dir] && [wp hasPrefix:detectedRoot]) {
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
         }
         if ([[NSFileManager defaultManager] fileExistsAtPath:dir]) {
@@ -1072,12 +1098,20 @@ static void agReportAppLocationHookHitToSpringBoard(void) {
 
 // ==================== 全模型通用三层永久记忆中枢 (跨重启永久落盘 + 历史联想唤醒) ====================
 static NSArray<NSString *> *agPermanentMemoryFilePaths(void) {
+#if ROOTHIDE
+    return @[
+        MyRootfsPath(@"/var/mobile/Library/Preferences/ag_universal_ai_memory.json"),
+        MyJBPath(@"/var/mobile/Library/Preferences/ag_universal_ai_memory.json"),
+        MyRootfsPath(@"/tmp/ag_universal_ai_memory.json")
+    ];
+#else
     return @[
         @"/var/mobile/Library/Preferences/ag_universal_ai_memory.json",
-        agJBRootPath(@"/var/mobile/Library/Preferences/ag_universal_ai_memory.json"),
+        MyJBPath(@"/var/mobile/Library/Preferences/ag_universal_ai_memory.json"),
         @"/var/jb/var/mobile/Library/Preferences/ag_universal_ai_memory.json",
         @"/tmp/ag_universal_ai_memory.json"
     ];
+#endif
 }
 
 static NSMutableDictionary *agLoadUniversalMemory(void) {
@@ -6875,19 +6909,27 @@ static void agSafeLaunchURL(NSURL *url) {
 
 // ==================== 微信跨进程自动发消息与系统底层控制核心服务 ====================
 static NSString *agGetGlobalSharedDir(void) {
+#if ROOTHIDE
     NSArray *dirs = @[
-        agJBRootPath(@"/var/mobile/Library/Preferences"),
+        MyJBPath(@"/var/mobile/Library/Preferences"),
+        MyRootfsPath(@"/var/mobile/Library/Preferences"),
+        MyRootfsPath(@"/tmp")
+    ];
+#else
+    NSArray *dirs = @[
+        MyJBPath(@"/var/mobile/Library/Preferences"),
         @"/var/jb/var/mobile/Library/Preferences",
         @"/var/mobile/Library/Preferences",
         @"/tmp"
     ];
+#endif
     for (NSString *d in dirs) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:d] &&
             [[NSFileManager defaultManager] isWritableFileAtPath:d]) {
             return d;
         }
     }
-    return @"/tmp";
+    return MyRootfsPath(@"/tmp");
 }
 
 static NSString *agGetWeChatDocumentsDir(void) {
@@ -8147,15 +8189,22 @@ static inline NSNumber *agSafeNum(id obj) {
 }
 
 static NSString *agRespringLedgerFilePath(void) {
-    return @"/var/mobile/Library/Preferences/ag_respring_ledger.json";
+    return MyRootfsPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json");
 }
 
 static NSArray<NSString *> *agDynamicLibrariesDirs(void) {
+#if ROOTHIDE
     return @[
-        agJBRootPath(@"/Library/MobileSubstrate/DynamicLibraries"),
+        MyJBPath(@"/Library/MobileSubstrate/DynamicLibraries"),
+        MyRootfsPath(@"/Library/MobileSubstrate/DynamicLibraries")
+    ];
+#else
+    return @[
+        MyJBPath(@"/Library/MobileSubstrate/DynamicLibraries"),
         @"/var/jb/Library/MobileSubstrate/DynamicLibraries",
         @"/Library/MobileSubstrate/DynamicLibraries"
     ];
+#endif
 }
 
 // 读取 iOS 内核 KERN_BOOTTIME，获取上次白苹果整机开机的精确时间与已连续稳定运行时间
@@ -8198,11 +8247,18 @@ static NSString *agResolveHumanPluginNameForDylib(NSString *dylibName) {
     os_unfair_lock_unlock(&sCacheLock);
     if (cached) return cached;
 
+#if ROOTHIDE
     NSArray<NSString *> *dpkgBaseDirs = @[
-        agJBRootPath(@"/Library/dpkg"),
+        MyJBPath(@"/Library/dpkg"),
+        MyRootfsPath(@"/Library/dpkg")
+    ];
+#else
+    NSArray<NSString *> *dpkgBaseDirs = @[
+        MyJBPath(@"/Library/dpkg"),
         @"/var/jb/Library/dpkg",
         @"/Library/dpkg"
     ];
+#endif
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *resolvedResult = cleanDylib;
 
@@ -11561,11 +11617,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         [self terminateHelperDaemonSync];
         [[NSFileManager defaultManager] removeItemAtPath:agSharedCameraStopFlagPath() error:nil];
 
+#if ROOTHIDE
         NSArray<NSString *> *helperPaths = @[
-            agJBRootPath(@"/usr/bin/AngelCameraHelper"),
+            MyJBPath(@"/usr/bin/AngelCameraHelper")
+        ];
+#else
+        NSArray<NSString *> *helperPaths = @[
+            MyJBPath(@"/usr/bin/AngelCameraHelper"),
             @"/var/jb/usr/bin/AngelCameraHelper",
             @"/usr/bin/AngelCameraHelper"
         ];
+#endif
         NSString *foundPath = nil;
         for (NSString *p in helperPaths) {
             if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) {
@@ -16294,14 +16356,24 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
         cleanDirIntoCounter(@"/private/var/mobile/Library/Caches/com.apple.WebKit.WebContent", nil, &appGroupAndWebItems);
 
         // 3. 清理越狱商店（Sileo / Zebra / APT）积攒的 .deb 历史安装包缓存与下载中断残片
+#if ROOTHIDE
         NSArray *debCacheDirs = @[
-            agJBRootPath(@"/var/cache/apt/archives"),
+            MyJBPath(@"/var/cache/apt/archives"),
+            MyRootfsPath(@"/private/var/mobile/Library/Caches/org.coolstar.SileoStore"),
+            MyRootfsPath(@"/private/var/mobile/Library/Caches/xyz.willy.Zebra"),
+            MyRootfsPath(@"/private/var/mobile/Documents/xyz.willy.Zebra/debs"),
+            MyRootfsPath(@"/private/var/mobile/Media/Downloads")
+        ];
+#else
+        NSArray *debCacheDirs = @[
+            MyJBPath(@"/var/cache/apt/archives"),
             @"/var/jb/var/cache/apt/archives",
             @"/private/var/mobile/Library/Caches/org.coolstar.SileoStore",
             @"/private/var/mobile/Library/Caches/xyz.willy.Zebra",
             @"/private/var/mobile/Documents/xyz.willy.Zebra/debs",
             @"/private/var/mobile/Media/Downloads"
         ];
+#endif
         for (NSString *dDir in debCacheDirs) {
             cleanDirIntoCounter(dDir, @[@"lock"], &debAndTmpItems);
         }
