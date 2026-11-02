@@ -23712,32 +23712,32 @@ static IMP gOrig_AMap_setDetectRisk = NULL;
 static Method gDynMethod_AMap_setDetectRisk = NULL;
 
 static BOOL agDyn_SrcInfo_isSimSoft(id self, SEL _cmd) {
-    if (agIsEnvironmentStealthActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) return NO;
     return gOrig_SrcInfo_isSimSoft ? ((BOOL(*)(id, SEL))gOrig_SrcInfo_isSimSoft)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_SrcInfo_isProdAcc(id self, SEL _cmd) {
-    if (agIsEnvironmentStealthActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) return NO;
     return gOrig_SrcInfo_isProdAcc ? ((BOOL(*)(id, SEL))gOrig_SrcInfo_isProdAcc)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_CLLoc_isSim1(id self, SEL _cmd) {
-    if (agIsEnvironmentStealthActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) return NO;
     return gOrig_CLLoc_isSim1 ? ((BOOL(*)(id, SEL))gOrig_CLLoc_isSim1)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_CLLoc_isSim2(id self, SEL _cmd) {
-    if (agIsEnvironmentStealthActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) return NO;
     return gOrig_CLLoc_isSim2 ? ((BOOL(*)(id, SEL))gOrig_CLLoc_isSim2)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_AMap_detectRisk(id self, SEL _cmd) {
-    if (agIsEnvironmentStealthActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) return NO;
     return gOrig_AMap_detectRisk ? ((BOOL(*)(id, SEL))gOrig_AMap_detectRisk)(self, _cmd) : NO;
 }
 
 static void agDyn_AMap_setDetectRisk(id self, SEL _cmd, BOOL detectRisk) {
-    if (agIsEnvironmentStealthActive()) {
+    if (agIsAntiDetectionShieldActive()) {
         detectRisk = NO; // 强制将高德定位 SDK 内部成员变量 _detectRiskOfFakeLocation 锁定为 NO
     }
     if (gOrig_AMap_setDetectRisk) {
@@ -24107,7 +24107,7 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
     }
 
-    BOOL simFlagStealth = (shieldActive || envStealthActive);
+    BOOL simFlagStealth = shieldActive;
     if (gDynMethod_SrcInfo_isSimSoft && gOrig_SrcInfo_isSimSoft) {
         IMP t = simFlagStealth ? (IMP)agDyn_SrcInfo_isSimSoft : gOrig_SrcInfo_isSimSoft;
         if (method_getImplementation(gDynMethod_SrcInfo_isSimSoft) != t) {
