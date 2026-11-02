@@ -636,3 +636,33 @@
 - **更新文件**: `dopamine测试版本.txt`
 - **语法校验**: `Braces: 0, Parens: 0, Brackets: 0`，括号完全平衡闭合。
 - **Git 提交**: 同步推送到 GitHub 仓库 `https://github.com/jianchengw952-source/GuardianAngel`。
+
+
+---
+
+## 2026-11-02: GuardianAngel 实装全新双环境自适应 AngelShield.h 与 Tweak 强绑定 (3 大超轻量级挂接)
+
+### 1. AngelShield.h 全新升级 (Dopamine 2.x & Relaxin 双兼容商业级防破解)
+- **核心数据段优化**：位于 `__DATA,__ag_core`，严禁存放指针以 100% 兼容 arm64e PAC / Chained Fixups；
+- **核心段变量**：
+  - `gAngelCoreCanaryMagic` (0xA6590C0E) 金丝雀段内完整性校验魔数；
+  - `gAngelCoreKernelSalt1` (`0x9E3779B97F4A7C15ULL`) 与 `gAngelCoreKernelSalt2` (`0xBF58476D1CE4E5B9ULL`) 内核通信双盐；
+  - `gAngelCoreEarthRadius` (`6378245.0`) 坐标系核心椭球长半轴常数；
+- **双环境配置路径解析器**：`Angel_ResolvePrefsFilePath(BOOL *outIsRootHide)` 自动自适应识别 `.jbroot-` 隐根与 `/var/jb`；Relaxin 模式下绝对不向真实 `/var` 外部泄露配置文件；
+- **假响应防绕过**：解密后严格比对段内金丝雀魔数，不匹配则立即回滚；
+- **内存自毁与到期拦截**：401/402 立即粉碎 `__DATA,__ag_core` 内存段，防止 Dump 回填破解。
+
+### 2. Tweak 源码 3 大超轻量级挂接
+1. **挂接点 1**：在 `#import <dirent.h>` 下方完整引入 `#import "AngelShield.h"`；
+2. **挂接点 2**：`agKernelObfuscateMask` 强绑定 `gAngelCoreKernelSalt1` 与 `gAngelCoreKernelSalt2`，未获解密或段被粉碎时跨进程通信彻底失效；
+3. **挂接点 3**：
+   - `%ctor` 顶部在 `(void)agJBRootPath(@"/");` 下立即挂载 `Angel_TryFastDecryptFromCachedSession();`，所有进程进入前完成秒级无感解密；
+   - `if (isSpringBoard)` 尾部通过 `dispatch_after 2.0s` 异步触发 `Angel_PerformCloudHandshake`，授权成功后调用 `syncMasterStateFromPrefsAndRestartTimer` 恢复服务。
+
+### 3. 多文件镜像 100% 字节一致性 (SHA256: `c8c19056071644315601cbd9e6ab0c9e963703a413242a2800f43db2d563e1da`)
+- `D:\双工具版本\Tweak.xm`
+- `D:\双工具版本\Tweak.x`
+- `D:\双工具版本\主修实时翻译.txt`
+- `D:\双工具版本\dopamine测试版本.txt`
+- `D:\dopamine测试版本.txt`
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`，Logos `%hook / %end` 严格闭合。

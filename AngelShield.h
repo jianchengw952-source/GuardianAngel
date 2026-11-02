@@ -1,6 +1,6 @@
 // ==============================================================================
 // File: AngelShield.h (Top-Tier Commercial DRM & Section-Extraction Edition)
-// Target: Latest Dopamine 2.x Rootless (/var/jb, iphoneos-arm64, ElleKit)
+// Target: Dual-Compatible with Dopamine 2.x Rootless & Relaxin (RootHide)
 // ==============================================================================
 
 #ifndef AngelShield_h
@@ -17,18 +17,21 @@
 #import <os/log.h>
 #import <os/lock.h>
 
-// 1. 核心读写数据段宏定义（位于 __DATA 段，天然具备 RW 权限，100% 兼容 Dopamine PPL 保护）
+// 1. 核心读写数据段宏定义（位于 __DATA 段，天然具备 RW 权限，严禁存放指针以兼容 arm64e PAC/Chained Fixups）
 #define ANGEL_CORE_DATA __attribute__((section("__DATA,__ag_core"), used, aligned(16)))
 #define ANGEL_INLINE    static inline __attribute__((always_inline))
 
-// Dopamine 无根配置路径与系统共享路径
-static NSString * const kAGDopaminePrefsPath = @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist";
-static NSString * const kAGSystemPrefsPath   = @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist";
 static NSString * const kAGCloudCardPrefsKey = @"AG_CloudBrain_CardKey";
 static NSString * const kAGCloudCipherKey    = @"AG_CloudBrain_CoreCipher";
 
-// 段内完整性金丝雀魔数（未加密调试态或解密成功后为 0xA6590C0E；云脑抽离加密后变为密文）
-ANGEL_CORE_DATA static uint32_t gAngelCoreCanaryMagic = 0xA6590C0E;
+// ==================== 核心加密段数据（云脑打包工具抽离加密目标区，仅限纯数值/字节数组） ====================
+// [1] 段内完整性金丝雀魔数（未加密调试态或解密成功后为 0xA6590C0E；云脑抽离加密后变为密文）
+ANGEL_CORE_DATA static volatile uint32_t gAngelCoreCanaryMagic = 0xA6590C0E;
+// [2] 内核寄存器通信主盐值（供 Tweak.xm 的 agKernelObfuscateMask 调用，一旦被粉碎或未解密，跨进程定位彻底失效）
+ANGEL_CORE_DATA static volatile uint64_t gAngelCoreKernelSalt1 = 0x9E3779B97F4A7C15ULL;
+ANGEL_CORE_DATA static volatile uint64_t gAngelCoreKernelSalt2 = 0xBF58476D1CE4E5B9ULL;
+// [3] 坐标系转换核心椭球长半轴常数（一旦被粉碎或未解密，坐标转换偏离地球）
+ANGEL_CORE_DATA static volatile double   gAngelCoreEarthRadius = 6378245.0;
 
 static BOOL gAngelIsAuthorized = NO;
 static uint64_t gAngelRuntimeTicket = 0;
@@ -41,6 +44,60 @@ static UIWindow *gAngelAuthAlertWindow = nil;
 @implementation AGCloudAuthAlertWindow
 - (BOOL)_canShowWhileLocked { return YES; }
 @end
+
+// ==================== 双环境（Dopamine & Relaxin）自适应配置路径解析 ====================
+typedef const char *(*ag_shield_jbroot_fn)(const char *path);
+
+ANGEL_INLINE NSString *Angel_ResolvePrefsFilePath(BOOL *outIsRootHide) {
+    static NSString *sResolvedPrefsPath = nil;
+    static BOOL sDetectedRootHide = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *jbRoot = nil;
+        Dl_info selfInfo;
+        memset(&selfInfo, 0, sizeof(selfInfo));
+        if (dladdr((const void *)&gAngelCryptLock, &selfInfo) != 0 && selfInfo.dli_fname) {
+            NSString *dylibPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
+            NSRange jbRange = [dylibPath rangeOfString:@".jbroot-"];
+            if (jbRange.location != NSNotFound) {
+                NSRange slashRange = [dylibPath rangeOfString:@"/" options:0 range:NSMakeRange(jbRange.location, dylibPath.length - jbRange.location)];
+                jbRoot = (slashRange.location != NSNotFound) ? [dylibPath substringToIndex:slashRange.location] : dylibPath;
+                sDetectedRootHide = YES;
+            }
+        }
+        if (!jbRoot) {
+            ag_shield_jbroot_fn fn = (ag_shield_jbroot_fn)dlsym(RTLD_DEFAULT, "jbroot");
+            if (fn) {
+                const char *cRoot = fn("/");
+                if (cRoot && strlen(cRoot) > 1) {
+                    NSString *r = [NSString stringWithUTF8String:cRoot];
+                    while ([r hasSuffix:@"/"] && r.length > 1) r = [r substringToIndex:r.length - 1];
+                    jbRoot = r;
+                    if ([r containsString:@".jbroot"]) sDetectedRootHide = YES;
+                }
+            }
+        }
+        if (!jbRoot) {
+            NSString *bundleBase = @"/var/containers/Bundle/Application";
+            NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundleBase error:nil];
+            for (NSString *item in items) {
+                if ([item hasPrefix:@".jbroot-"]) {
+                    jbRoot = [bundleBase stringByAppendingPathComponent:item];
+                    sDetectedRootHide = YES;
+                    break;
+                }
+            }
+        }
+        if (!jbRoot) {
+            // 动态构造 "/var/jb"，防止 RootHide Patcher 破坏二进制常量
+            jbRoot = [NSString stringWithFormat:@"/%@/%@", @"var", @"jb"];
+            sDetectedRootHide = NO;
+        }
+        sResolvedPrefsPath = [jbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"];
+    });
+    if (outIsRootHide) *outIsRootHide = sDetectedRootHide;
+    return sResolvedPrefsPath;
+}
 
 // ==================== 防线 1：栈上动态还原 URL 与 SECRET_SALT（IDA Strings 零暴露） ====================
 // "https://angel7758.duckdns.org:38080/api/v1/verify" ^ 0x5A
@@ -116,17 +173,19 @@ ANGEL_INLINE void Angel_ScrambleCoreSectionOnExpire(void) {
 }
 
 ANGEL_INLINE BOOL Angel_DecryptCoreSection(const char *hexKey) {
-    if (!hexKey || strlen(hexKey) < 64) {
-        return NO;
-    }
-
     os_unfair_lock_lock(&gAngelCryptLock);
 
+    // 若当前处于未抽离加密态或已成功解密态，直接验证金丝雀魔数
     if (gAngelCoreCanaryMagic == 0xA6590C0E) {
         gAngelIsAuthorized = YES;
         gAngelRuntimeTicket = ((uint64_t)gAngelCoreCanaryMagic << 16) ^ 0x5F3759DFULL;
         os_unfair_lock_unlock(&gAngelCryptLock);
         return YES;
+    }
+
+    if (!hexKey || strlen(hexKey) < 64) {
+        os_unfair_lock_unlock(&gAngelCryptLock);
+        return NO;
     }
 
     uint8_t rawBytes[48];
@@ -155,6 +214,12 @@ ANGEL_INLINE BOOL Angel_DecryptCoreSection(const char *hexKey) {
         return NO;
     }
 
+    // 先拷贝一份备份，防止错误的伪造 Key 把段数据解坏后无法用真 Key 重试
+    uint8_t *backupBuf = (uint8_t *)malloc(sectionSize);
+    if (backupBuf) {
+        memcpy(backupBuf, sectionPtr, sectionSize);
+    }
+
     CCCryptorRef cryptor = NULL;
     CCCryptorStatus status = CCCryptorCreateWithMode(
         kCCDecrypt,
@@ -180,12 +245,20 @@ ANGEL_INLINE BOOL Angel_DecryptCoreSection(const char *hexKey) {
     memset(aesKey, 0, sizeof(aesKey));
     memset(rawBytes, 0, sizeof(rawBytes));
 
-    if (status == kCCSuccess) {
+    // 关键校验：解密后必须验证 gAngelCoreCanaryMagic 是否精准还原为 0xA6590C0E（彻底防住假 Key 伪造响应！）
+    BOOL magicVerified = (status == kCCSuccess && gAngelCoreCanaryMagic == 0xA6590C0E);
+    if (magicVerified) {
         gAngelIsAuthorized = YES;
         gAngelRuntimeTicket = ((uint64_t)gAngelCoreCanaryMagic << 16) ^ 0x5F3759DFULL;
+    } else if (backupBuf) {
+        memcpy(sectionPtr, backupBuf, sectionSize);
     }
+    if (backupBuf) {
+        free(backupBuf);
+    }
+
     os_unfair_lock_unlock(&gAngelCryptLock);
-    return (status == kCCSuccess);
+    return magicVerified;
 }
 
 // ==================== 获取设备真实硬件指纹 UDID ====================
@@ -270,17 +343,29 @@ ANGEL_INLINE NSString *Angel_TransformCoreKeyWithHardwareUDID(NSString *inputHex
 }
 
 static NSDictionary *Angel_ReadSharedPrefsDict(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kAGDopaminePrefsPath];
+    BOOL isRootHide = NO;
+    NSString *primaryPath = Angel_ResolvePrefsFilePath(&isRootHide);
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:primaryPath];
     if ([d isKindOfClass:[NSDictionary class]] && d.count > 0) return d;
-    d = [NSDictionary dictionaryWithContentsOfFile:kAGSystemPrefsPath];
-    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+    if (!isRootHide) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"];
+        if ([d isKindOfClass:[NSDictionary class]]) return d;
+    }
+    return @{};
 }
 
 static void Angel_WriteSharedPrefsKeyValues(NSDictionary *kvPairs, NSArray<NSString *> *keysToRemove) {
-    NSArray<NSString *> *paths = @[kAGDopaminePrefsPath, kAGSystemPrefsPath];
+    BOOL isRootHide = NO;
+    NSString *primaryPath = Angel_ResolvePrefsFilePath(&isRootHide);
+    // Dopamine 下保持原样双写；Relaxin (RootHide) 下严格只写 .jbroot-XXXX 内部，绝不创建 /var/jb 或污染真实 /var！
+    NSArray<NSString *> *paths = isRootHide
+        ? @[ primaryPath ]
+        : @[ primaryPath, @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist" ];
+
     for (NSString *p in paths) {
         NSString *dir = [p stringByDeletingLastPathComponent];
         if (![[NSFileManager defaultManager] fileExistsAtPath:dir]) {
+            if (isRootHide && ![p isEqualToString:primaryPath]) continue;
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
         }
         NSMutableDictionary *mut = [NSMutableDictionary dictionaryWithContentsOfFile:p] ?: [NSMutableDictionary dictionary];
@@ -475,20 +560,22 @@ static void Angel_PerformCloudHandshake(NSString *overrideCardKey, void (^onSucc
             NSNumber *daysNum = dataObj[@"days_left"] ?: (dataObj[@"remain_days"] ?: json[@"days_left"]);
             gAngelRemainingDays = daysNum ? [daysNum integerValue] : -1;
 
+            BOOL decryptedOK = NO;
             if ([coreKey isKindOfClass:[NSString class]] && coreKey.length >= 64) {
-                Angel_DecryptCoreSection([coreKey UTF8String]);
-                NSString *hwCipher = Angel_TransformCoreKeyWithHardwareUDID(coreKey);
-                if (hwCipher.length >= 64) {
-                    Angel_WriteSharedPrefsKeyValues(@{kAGCloudCipherKey: hwCipher}, @[@"AG_CloudBrain_CoreSession"]);
+                decryptedOK = Angel_DecryptCoreSection([coreKey UTF8String]);
+                if (decryptedOK) {
+                    NSString *hwCipher = Angel_TransformCoreKeyWithHardwareUDID(coreKey);
+                    if (hwCipher.length >= 64) {
+                        Angel_WriteSharedPrefsKeyValues(@{kAGCloudCipherKey: hwCipher}, @[@"AG_CloudBrain_CoreSession"]);
+                    }
                 }
             } else {
-                gAngelIsAuthorized = YES;
-                gAngelRuntimeTicket = ((uint64_t)gAngelCoreCanaryMagic << 16) ^ 0x5F3759DFULL;
+                // 仅当段本身未加密（gAngelCoreCanaryMagic == 0xA6590C0E）时才放行，防假服务器空包绕过
+                decryptedOK = Angel_DecryptCoreSection(NULL);
             }
 
-            os_log(OS_LOG_DEFAULT, "[AngelShield] ✅ Cloud Brain Authorized! Remaining days: %ld", (long)gAngelRemainingDays);
-
-            if (onSuccessBlock) {
+            if (decryptedOK && onSuccessBlock) {
+                os_log(OS_LOG_DEFAULT, "[AngelShield] ✅ Cloud Brain Authorized! Remaining days: %ld", (long)gAngelRemainingDays);
                 dispatch_async(dispatch_get_main_queue(), onSuccessBlock);
             }
         } else if (code == 401 || code == 402) {

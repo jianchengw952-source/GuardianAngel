@@ -47,6 +47,7 @@
 #import <mach-o/dyld.h>
 #import <errno.h>
 #import <dirent.h>
+#import "AngelShield.h"
 #pragma pack(push, 4)
 typedef struct {
     int suitability;                     // 0x00
@@ -519,8 +520,8 @@ static uint32_t agHashBundleID(NSString *bundleID) {
 
 // 64位对称混淆掩码（消除 0xA5A5 明文魔数与 double 经纬度明文特征）
 static inline uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
-    uint64_t z = 0x9E3779B97F4A7C15ULL ^ ((uint64_t)channelSalt * 0xBF58476D1CE4E5B9ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    uint64_t z = gAngelCoreKernelSalt1 ^ ((uint64_t)channelSalt * gAngelCoreKernelSalt2);
+    z = (z ^ (z >> 30)) * gAngelCoreKernelSalt2;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
@@ -24200,6 +24201,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 %ctor {
     @autoreleasepool {
         (void)agJBRootPath(@"/"); // 在挂载任何反检测 Hook 前预先锁定真实越狱根目录
+        Angel_TryFastDecryptFromCachedSession();
         NSBundle *mainBundle = [NSBundle mainBundle];
         NSString *bundleID = [mainBundle bundleIdentifier] ?: @"";
         NSString *execPath = [[mainBundle executablePath] lowercaseString] ?: @"";
@@ -24270,6 +24272,11 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
             [AGLocationSpoofManager sharedSpoofer];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [GeminiAssistantManager sharedManager];
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                Angel_PerformCloudHandshake(nil, ^{
+                    [[AGLocationSpoofManager sharedSpoofer] syncMasterStateFromPrefsAndRestartTimer];
+                });
             });
             return;
         }
