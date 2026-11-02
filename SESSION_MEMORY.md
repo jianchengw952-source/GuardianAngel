@@ -729,6 +729,43 @@
 - **本地安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+---
+
+## 2026-11-02: 5大步骤精细化调教（配置同步优化/路径放行扩充/arm64e移除clientLocation/Filter安全列表初始化）(Run #41)
+
+### 1. 修改要点 (5 步红线执行全景)
+1. **步骤 1 (Makefile)**: 保持 `THEOS_PACKAGE_SCHEME ?= rootless`，仅在 `roothide` 下注入 `-D__ROOTHIDE__=1`，编译目标 `GeminiSiriOverlay`。
+2. **步骤 2 (layout/DEBIAN/postinst)**:
+   - 仅针对 Relaxin (`.jbroot-*`) 递归初始化 `mobile:mobile` (0777)；
+   - 重置 `$jbdir/.../GeminiSiriOverlay.plist` 为安全初始注入列表（仅注入 SpringBoard, Preferences, WeChat），彻底移除静态 CoreLocation 守护进程注入项；
+   - 绝对不触碰 Dopamine `/var/jb` 环境；源文件 `GeminiSiriOverlay.plist` 严格保持原样。
+3. **步骤 3 (配置同步与动态 Filter 生成)**:
+   - 3.1: `agJBRootPath` 上方保持 `AG_STRIP_PAC` 并在 `#ifdef __ROOTHIDE__` 下优先使用 `dladdr` 内存自定位；
+   - 3.2: `reloadGeminiPrefsCache` 与 `saveGeminiPrefs` 在 `#ifdef __ROOTHIDE__` 下采用 `CFPreferencesCopyAppValue` 与 `CFPreferencesSetAppValue` 极速 IPC；
+   - `agSyncDynamicTweakFilterPlist` 在 `#ifdef __ROOTHIDE__` 下由 SpringBoard 统一安全管理动态 plist 读写（0666）。
+4. **步骤 4 (路径放行扩充)**:
+   - `agIsSuspiciousJailbreakPath` 在 `#ifdef __ROOTHIDE__` 下全面放行 `.jbroot`、`/private/preboot/` 及 `/Cryptexes/`，彻底根除 WebKit/WebKit 内部探测误拦截导致的闪退。
+5. **步骤 5 (arm64e 栈溢出根治)**:
+   - 在 `#ifdef __ROOTHIDE__` 下彻底移除 `clientLocation` 结构体按值返回 Hook（防止破坏 arm64e PAC 签名与栈帧写穿），仅挂载 `BOOL`/`int`/`id` 安全方法与标准属性 Hook；
+   - `#else` 分支原有 Dopamine 逻辑 100% 保持原封不动。
+
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `3EF9217D9A67D39E33D3DAEA62E7B0037816BEC0262212FEA65FB24B24AA2563`)
+- `D:\双工具版本\Tweak.x` (1,348,470 字节)
+- `D:\双工具版本\Tweak.xm` (1,348,470 字节)
+- `D:\双工具版本\主修实时翻译.txt` (1,348,470 字节)
+- `D:\双工具版本\dopamine测试版本.txt` (1,348,470 字节)
+- `D:\dopamine测试版本.txt` (1,348,470 字节)
+- `C:\Users\57132\Desktop\relaxin调教版本.txt` (1,348,470 字节)
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`。
+
+### 3. CI 编译与安装包分发 (Run #41, ID: 41412867793, Commit: eccede5)
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (534,940 字节, SHA256: `27EFBC442E6E281F101D741F2FEEEA9C896B7C1D389A7F24EC84FE7A3D4F7BC6`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (351,872 字节, SHA256: `570C31A640B89857611FADE7CCD16B729F1B7240D483E17CAB2C327C3CA7CD21`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
 - **验证结果**:
   - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
-  - 双架构完美通过 macOS 15 runner 编译。
+  - 双架构均在 macOS 15 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
