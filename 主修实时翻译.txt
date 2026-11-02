@@ -13039,8 +13039,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 微调 2：仅拦截 <= -51.0f dB 的纯静音底噪（可随时微调 -51.0f），保留轻声说话 0ms 瞬时打断！
-                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.60) && (strongSelf.lastActiveMicDB > -51.0f));
+                    // 微调 2：仅拦截 <= -51.0f dB 的纯静音底噪，保留轻声说话 0ms 瞬时打断！
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.85) && (strongSelf.lastActiveMicDB > -51.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
                     if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
@@ -13444,12 +13444,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             return;
         }
 
-        // 双保险分贝兜底打断检测（db > -30.0f && peakDb > -16.5f 满 2 帧即断，与 APPLE_NEURAL_SYLLABLE 形成双保险）
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.45);
+        // 方案 1（轻松自然打断档，Dopamine 与 Relaxin 共同生效）：db > -34.5f && peakDb > -20.5f 满 3 帧（约65ms）即断
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.35);
         if (isAIPlaying && pastEchoGrace) {
-            if (db > -30.0f && peakDb > -16.5f) {
+            if (db > -34.5f && peakDb > -20.5f) {
                 strongSelf.wsBargeInVoiceTicks++;
-                if (strongSelf.wsBargeInVoiceTicks >= 2) {
+                if (strongSelf.wsBargeInVoiceTicks >= 3) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
                 }
             } else {
@@ -13613,11 +13613,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     float peak = [self.audioRecorder peakPowerForChannel:0];
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
 
-    // 1. 当 AI 正在说话或正在流式返回时：支持人声插话打断（采用已验证不自断的稳定阈值 power > -17.5f && peak > -8.0f 连续 5 帧）
+    // 1. 当 AI 正在说话或正在流式返回时：支持人声插话打断（方案 1：power > -24.0f && peak > -13.0f 连续 3 帧）
     if ([self.synthesizer isSpeaking] || self.activeUtteranceCount > 0 || self.currentTask != nil) {
-        if (power > -17.5f && peak > -8.0f) {
+        if (power > -24.0f && peak > -13.0f) {
             self.bargeInVoiceTicks++;
-            if (self.bargeInVoiceTicks >= 5) {
+            if (self.bargeInVoiceTicks >= 3) {
                 self.bargeInVoiceTicks = 0;
                 if (self.currentTask) {
                     [self.currentTask cancel];
