@@ -706,3 +706,38 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526,964 字节, SHA256: `4714c6394320ff87cb924950ba59c9c3a672155f9db204fc5e77fe72b1dd2dd3`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,452 字节, SHA256: `f1494ce5c3d0f09daf3150b12cfd1966356491351571e9824b3d80fa8b3a5787`)
+
+---
+
+## 2026-11-02: 优化微信语音指令匹配、连招豁免、拼音同音容错与锁定普通话回复 (Run #51)
+
+### 1. 修改要点 (3 处精准优化)
+1. **中文字符间多余空格消除与正则与连招豁免优化**:
+   - 在 `tryExecuteDirectLocalCommand:` 中，消除 `gemini-3.1-flash-live-preview` 在汉字与标点符号之间插入的空格（如 `"帮 我 打 开 微 信"` -> `"帮我打开微信"`）。
+   - 更新 `wxPat1`，使其支持“找到/找一下/搜索/给/发给”及连接词“然后/接着/再”。
+   - 在 `multiChainRe` 前增加 `isWeChatCompoundCmd` 豁免，防止“打开微信然后找到xxx”被多指令切分导致截断。
+   - 优化 `0A.` 区块正则与判定时序，优先匹配完整发消息指令，并将打开聊天窗口正则 `wxOpenChatRe` 扩展支持“打开微信然后找到xxx”等句式。
+2. **联系人拼音同音容错与微信多窗口导航栈定位**:
+   - 在 `agExecuteWeChatCommandDict` 中，使用 `CFStringTransform`（转换为 Latin 音标并去除声调修饰）实现联系人备注名与昵称的拼音同音模糊匹配，解决语音识别将“心有阳光”识别为“新友阳光/辛酉阳光”等同音字导致的找不到联系人问题。
+   - 遍历 `[UIApplication sharedApplication].windows` 所有可见窗口多级深度查找 `UINavigationController`，并在未就绪时增加带延时的递归重试机制；在 `open_chat` 成功后显式 `return`，防止下穿进入发消息分支。
+3. **严格锁定普通话语音输出**:
+   - 在 WebSocket 握手开流的 `sysInstruction` 系统提示词中增加严苛普通话指令锁定：“除非用户明确要求翻译外语，否则无论听到任何杂音都必须始终只用中文普通话回答，绝对禁止使用法语、西班牙语等外语回复”，杜绝模型突发外语回复。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,340,406 字节
+- SHA256 校验和：`79835bfedbdbd6d0d98aec56fd05872026df600f0221b526ea6b89ca71da4756`
+
+### 3. CI 构建与产物
+- 提交哈希：`a8368b5`
+- GitHub Actions CI Run #51 (ID: 41476228902) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (524944 字节, SHA256: `8510dee4fc141ea91c6cfde4136a6d23c67f20d93e9cbd5eb7976ae97976d6a0`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (344800 字节, SHA256: `14e2eb83b6c991dbe3792d75a78327d7de6fd9817e0a0a16f76b667806d58cfa`)
