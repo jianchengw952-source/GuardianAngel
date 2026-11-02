@@ -769,3 +769,40 @@
 - **验证结果**:
   - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
   - 双架构均在 macOS 15 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
+
+---
+
+## 2026-11-02: 100% 还原原版防检测与客户端 Hook 逻辑 (Run #43)
+
+### 1. 修改要点 (原版防检测逻辑 100% 严格复原)
+1. **`agIsSuspiciousJailbreakPath` 完整复原**:
+   - 彻底移除 `#ifdef __ROOTHIDE__` 特征放行分支，100% 还原为原版 19 个越狱特征路径判定列表（包含 `/var/jb`, `.jbroot`, `/private/preboot/`, `procursus`, `MobileSubstrate` 等）。
+2. **`agInstallAntiDetectionCHooksIfNeeded` 完整复原**:
+   - 彻底移除针对 RootHide 的直接 return 绕过，完整复原原生 `MSHookFunction`（`dladdr`, `_dyld_get_image_name`, `CNCopyCurrentNetworkInfo`）挂钩。
+3. **`agSyncClientHooksWithCurrentState` 完整复原**:
+   - 彻底移除双轨宏包裹与动态热插拔差异，统一复原为原生单轨逻辑；
+   - 移除 `agInitStealthLocationClientHooksGroup` 间接调用函数，直接在 `agSyncClientHooksWithCurrentState` 内部单次调用 `%init(StealthLocationClientHooks);`；
+   - 杜绝 Logos 宏展开前静态扫描导致的 `re-%init` 命名空间报错。
+4. **受保护业务逻辑 100% 未动**:
+   - `Makefile`、`postinst`、`agJBRootPath` 及配置读写（`reloadGeminiPrefsCache` / `saveGeminiPrefs` / `agSyncDynamicTweakFilterPlist`）的 Relaxin 路径兼容性完整保留；
+   - `tryExecuteDirectLocalCommand` 及其他任何业务功能代码 100% 未触碰；`GeminiSiriOverlay.plist` 严格保持原样。
+
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `3bb756d40ec5f21f8114600b283c8764bab62b83882ba469b87bde1010f3b980`)
+- `D:\双工具版本\Tweak.x` (1,348,018 字节)
+- `D:\双工具版本\Tweak.xm` (1,348,018 字节)
+- `D:\双工具版本\主修实时翻译.txt` (1,348,018 字节)
+- `D:\双工具版本\dopamine测试版本.txt` (1,348,018 字节)
+- `D:\dopamine测试版本.txt` (1,348,018 字节)
+- `C:\Users\57132\Desktop\relaxin调教版本.txt` (1,348,018 字节)
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 6`。
+
+### 3. CI 编译与安装包分发 (Run #43, ID: 41419820112, Commit: 8c06874)
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (535,752 字节, SHA256: `efeace28231d03341546fc74190e1a9b73e136b87b781f69671a755c6516b058`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352,648 字节, SHA256: `b8f1ca5dc96d87ca179e3ea07d8876758ee4aa308fb3334ac44753fa365b7f27`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+- **验证结果**:
+  - `ar -t` 结果包含且仅包含: `debian-binary`, `control.tar.xz`, `data.tar.xz`。
+  - 双架构均在 macOS 15 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
