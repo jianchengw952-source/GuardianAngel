@@ -149,6 +149,7 @@ typedef struct {
 
 
 static BOOL agIsAntiDetectionShieldActive(void);
+static BOOL agIsEnvironmentStealthActive(void);
 
 extern char **environ;
 
@@ -910,8 +911,9 @@ static void agSyncDynamicTweakFilterPlist(BOOL isActive, NSInteger scopeMode, NS
     }
 
     NSDictionary *filterDict = nil;
+#if !ROOTHIDE
     if (!isActive) {
-        // 虚拟定位总开关关闭时：仅注入桌面、设置与微信，从其他所有软件内存中物理消失，100% 保留其他全部功能
+        // Dopamine 下：虚拟定位总开关关闭时仅注入桌面、设置与微信
         filterDict = @{
             @"Filter": @{
                 @"Bundles": @[
@@ -921,8 +923,9 @@ static void agSyncDynamicTweakFilterPlist(BOOL isActive, NSInteger scopeMode, NS
                 ]
             }
         };
-    } else if (scopeMode == 1) {
-        // 白名单模式：仅注入桌面、设置、微信 + 用户勾选的目标软件（未勾选的软件彻底不注入）
+    } else
+#endif
+    if (scopeMode == 1) {
         NSMutableArray<NSString *> *bundles = [NSMutableArray arrayWithObjects:
             @"com.apple.springboard",
             @"com.apple.Preferences",
@@ -1749,6 +1752,39 @@ static BOOL agIsAntiDetectionShieldActive(void) {
         return (kActive && kShield);
     }
     return NO;
+}
+
+// 纯越狱环境隐身判定：Dopamine 下与防检测开关完全一致；Relaxin (ROOTHIDE) 下在第三方受控 App 内保持隐藏 .jbroot 与 ellekit
+static BOOL agIsEnvironmentStealthActive(void) {
+#if ROOTHIDE
+    static BOOL sIsClientApp = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+        NSString *lowerBID = [bid lowercaseString];
+        NSString *execPath = [[[NSBundle mainBundle] executablePath] lowercaseString] ?: @"";
+        if (bid.length > 0 &&
+            ![execPath containsString:@".appex/"] &&
+            ![bid isEqualToString:@"com.apple.springboard"] &&
+            ![bid isEqualToString:@"com.apple.Preferences"] &&
+            ![bid hasPrefix:@"com.apple."] &&
+            ![lowerBID containsString:@"tunnel"] &&
+            ![lowerBID containsString:@"shadowrocket"] &&
+            ![lowerBID containsString:@"quantumult"] &&
+            ![lowerBID containsString:@"surge"] &&
+            ![lowerBID containsString:@"clash"] &&
+            ![lowerBID containsString:@"stash"] &&
+            ![lowerBID containsString:@"loon"] &&
+            ![lowerBID containsString:@"singbox"] &&
+            ![lowerBID containsString:@"v2ray"] &&
+            ![lowerBID containsString:@"vpn"]) {
+            sIsClientApp = YES;
+        }
+    });
+    return sIsClientApp;
+#else
+    return agIsAntiDetectionShieldActive();
+#endif
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
@@ -23097,9 +23133,20 @@ static BOOL agIsSuspiciousJailbreakPath(const char *path) {
 static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
-    if (ret != 0 && info && info->dli_fname && agIsAntiDetectionShieldActive()) {
-        if ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
-            agIsSuspiciousJailbreakPath(info->dli_fname)) {
+    if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
+        BOOL shouldMask = NO;
+        if (agIsAntiDetectionShieldActive()) {
+            shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
+                          agIsSuspiciousJailbreakPath(info->dli_fname));
+        } else {
+            // 未开启虚拟定位时：仅隐藏本插件自身与底层加载器，绝不干扰微信等 App 内的其他插件通过 dladdr 读取自身资源
+            shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
+                          strstr(info->dli_fname, "AngelGuardian") != NULL ||
+                          strstr(info->dli_fname, "ellekit") != NULL ||
+                          strstr(info->dli_fname, "libroothide") != NULL ||
+                          strstr(info->dli_fname, "MobileSubstrate.dylib") != NULL);
+        }
+        if (shouldMask) {
             BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr);
             info->dli_fname = gCoreLocationPath;
             uintptr_t addrHash = ((uintptr_t)addr >> 4) & 0x7;
@@ -23118,7 +23165,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
 static const char *hooked_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
-    if (name && agIsAntiDetectionShieldActive()) {
+    if (name && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
             static char sSafeSysPaths[32][128];
             uint32_t slot = image_index & 31;
@@ -23136,7 +23183,7 @@ static const char *hooked_dyld_get_image_name(uint32_t image_index) {
 static const char *(*orig_class_getImageName)(Class cls) = NULL;
 static const char *hooked_class_getImageName(Class cls) {
     const char *name = orig_class_getImageName ? orig_class_getImageName(cls) : NULL;
-    if (name && agIsAntiDetectionShieldActive()) {
+    if (name && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
             return gCoreLocationPath;
         }
@@ -23147,7 +23194,7 @@ static const char *hooked_class_getImageName(Class cls) {
 static const char * _Nonnull * _Nonnull (*orig_objc_copyImageNames)(unsigned int *outCount) = NULL;
 static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int *outCount) {
     const char **names = orig_objc_copyImageNames ? orig_objc_copyImageNames(outCount) : NULL;
-    if (names && outCount && *outCount > 0 && agIsAntiDetectionShieldActive()) {
+    if (names && outCount && *outCount > 0 && agIsEnvironmentStealthActive()) {
         unsigned int writeIdx = 0;
         unsigned int total = *outCount;
         for (unsigned int i = 0; i < total; i++) {
@@ -23164,7 +23211,7 @@ static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int 
 static const char *(*orig_dyld_image_path_containing_address)(const void *addr) = NULL;
 static const char *hooked_dyld_image_path_containing_address(const void *addr) {
     const char *name = orig_dyld_image_path_containing_address ? orig_dyld_image_path_containing_address(addr) : NULL;
-    if (name && agIsAntiDetectionShieldActive()) {
+    if (name && agIsEnvironmentStealthActive()) {
         if ((gSelfDylibBase != NULL && addr == gSelfDylibBase) || agIsSuspiciousJailbreakPath(name)) {
             return gCoreLocationPath;
         }
@@ -23174,7 +23221,7 @@ static const char *hooked_dyld_image_path_containing_address(const void *addr) {
 
 static int (*orig_access)(const char *path, int amode) = NULL;
 static int hooked_access(const char *path, int amode) {
-    if (path && agIsAntiDetectionShieldActive() && agIsSuspiciousJailbreakPath(path)) {
+    if (path && agIsEnvironmentStealthActive() && agIsSuspiciousJailbreakPath(path)) {
         errno = ENOENT;
         return -1;
     }
@@ -23235,7 +23282,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 %hook UIApplication
 
 - (BOOL)canOpenURL:(NSURL *)url {
-    if (url && agIsAntiDetectionShieldActive()) {
+    if (url && agIsEnvironmentStealthActive()) {
         NSString *scheme = [[url scheme] lowercaseString];
         if (scheme.length > 0) {
             if ([scheme isEqualToString:@"cydia"] ||
@@ -23258,7 +23305,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    if (!sIsInternalPrefsFileRead && path && agIsAntiDetectionShieldActive()) {
+    if (!sIsInternalPrefsFileRead && path && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath([path UTF8String])) {
             return NO;
         }
@@ -23267,7 +23314,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
-    if (!sIsInternalPrefsFileRead && path && agIsAntiDetectionShieldActive()) {
+    if (!sIsInternalPrefsFileRead && path && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath([path UTF8String])) {
             return NO;
         }
@@ -23665,32 +23712,32 @@ static IMP gOrig_AMap_setDetectRisk = NULL;
 static Method gDynMethod_AMap_setDetectRisk = NULL;
 
 static BOOL agDyn_SrcInfo_isSimSoft(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsEnvironmentStealthActive()) return NO;
     return gOrig_SrcInfo_isSimSoft ? ((BOOL(*)(id, SEL))gOrig_SrcInfo_isSimSoft)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_SrcInfo_isProdAcc(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsEnvironmentStealthActive()) return NO;
     return gOrig_SrcInfo_isProdAcc ? ((BOOL(*)(id, SEL))gOrig_SrcInfo_isProdAcc)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_CLLoc_isSim1(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsEnvironmentStealthActive()) return NO;
     return gOrig_CLLoc_isSim1 ? ((BOOL(*)(id, SEL))gOrig_CLLoc_isSim1)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_CLLoc_isSim2(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsEnvironmentStealthActive()) return NO;
     return gOrig_CLLoc_isSim2 ? ((BOOL(*)(id, SEL))gOrig_CLLoc_isSim2)(self, _cmd) : NO;
 }
 
 static BOOL agDyn_AMap_detectRisk(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsEnvironmentStealthActive()) return NO;
     return gOrig_AMap_detectRisk ? ((BOOL(*)(id, SEL))gOrig_AMap_detectRisk)(self, _cmd) : NO;
 }
 
 static void agDyn_AMap_setDetectRisk(id self, SEL _cmd, BOOL detectRisk) {
-    if (agIsAntiDetectionShieldActive()) {
+    if (agIsEnvironmentStealthActive()) {
         detectRisk = NO; // 强制将高德定位 SDK 内部成员变量 _detectRiskOfFakeLocation 锁定为 NO
     }
     if (gOrig_AMap_setDetectRisk) {
@@ -23928,8 +23975,9 @@ static void agSyncClientHooksWithCurrentState(void) {
     os_unfair_lock_lock(&gHookSyncLock);
     BOOL spoofActive = agIsCurrentProcessTargetedForLocSpoof();
     BOOL shieldActive = spoofActive && agIsAntiDetectionShieldActive();
+    BOOL envStealthActive = agIsEnvironmentStealthActive();
 
-    if (!spoofActive && !gHasInitializedObjCHooks) {
+    if (!spoofActive && !envStealthActive && !gHasInitializedObjCHooks) {
         os_unfair_lock_unlock(&gHookSyncLock);
         return;
     }
@@ -24046,7 +24094,11 @@ static void agSyncClientHooksWithCurrentState(void) {
         if (!m || !gClientHookTable[i].origIMP || !gClientHookTable[i].hookedIMP) continue;
 
         BOOL shouldEnableThisHook = NO;
-        if (spoofActive) {
+        // 前 3 项 (UIApplication.canOpenURL: 与 NSFileManager.fileExistsAtPath:) 属于纯环境防探测，随 envStealthActive 开启
+        if (i < 3) {
+            shouldEnableThisHook = (shieldActive || envStealthActive);
+        } else if (spoofActive) {
+            // 其余定位坐标、虚拟 Wi-Fi、传感器伪装仅在开启虚拟定位 (spoofActive) 时才启用，关闭定位立即还原为 origIMP！
             shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
         }
         IMP targetIMP = shouldEnableThisHook ? gClientHookTable[i].hookedIMP : gClientHookTable[i].origIMP;
@@ -24055,26 +24107,27 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
     }
 
+    BOOL simFlagStealth = (shieldActive || envStealthActive);
     if (gDynMethod_SrcInfo_isSimSoft && gOrig_SrcInfo_isSimSoft) {
-        IMP t = shieldActive ? (IMP)agDyn_SrcInfo_isSimSoft : gOrig_SrcInfo_isSimSoft;
+        IMP t = simFlagStealth ? (IMP)agDyn_SrcInfo_isSimSoft : gOrig_SrcInfo_isSimSoft;
         if (method_getImplementation(gDynMethod_SrcInfo_isSimSoft) != t) {
             method_setImplementation(gDynMethod_SrcInfo_isSimSoft, t);
         }
     }
     if (gDynMethod_SrcInfo_isProdAcc && gOrig_SrcInfo_isProdAcc) {
-        IMP t = shieldActive ? (IMP)agDyn_SrcInfo_isProdAcc : gOrig_SrcInfo_isProdAcc;
+        IMP t = simFlagStealth ? (IMP)agDyn_SrcInfo_isProdAcc : gOrig_SrcInfo_isProdAcc;
         if (method_getImplementation(gDynMethod_SrcInfo_isProdAcc) != t) {
             method_setImplementation(gDynMethod_SrcInfo_isProdAcc, t);
         }
     }
     if (gDynMethod_CLLoc_isSim1 && gOrig_CLLoc_isSim1) {
-        IMP t = shieldActive ? (IMP)agDyn_CLLoc_isSim1 : gOrig_CLLoc_isSim1;
+        IMP t = simFlagStealth ? (IMP)agDyn_CLLoc_isSim1 : gOrig_CLLoc_isSim1;
         if (method_getImplementation(gDynMethod_CLLoc_isSim1) != t) {
             method_setImplementation(gDynMethod_CLLoc_isSim1, t);
         }
     }
     if (gDynMethod_CLLoc_isSim2 && gOrig_CLLoc_isSim2) {
-        IMP t = shieldActive ? (IMP)agDyn_CLLoc_isSim2 : gOrig_CLLoc_isSim2;
+        IMP t = simFlagStealth ? (IMP)agDyn_CLLoc_isSim2 : gOrig_CLLoc_isSim2;
         if (method_getImplementation(gDynMethod_CLLoc_isSim2) != t) {
             method_setImplementation(gDynMethod_CLLoc_isSim2, t);
         }
@@ -24098,19 +24151,19 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
     }
     if (gDynMethod_AMap_detectRisk && gOrig_AMap_detectRisk) {
-        IMP t = shieldActive ? (IMP)agDyn_AMap_detectRisk : gOrig_AMap_detectRisk;
+        IMP t = simFlagStealth ? (IMP)agDyn_AMap_detectRisk : gOrig_AMap_detectRisk;
         if (method_getImplementation(gDynMethod_AMap_detectRisk) != t) {
             method_setImplementation(gDynMethod_AMap_detectRisk, t);
         }
     }
     if (gDynMethod_AMap_setDetectRisk && gOrig_AMap_setDetectRisk) {
-        IMP t = shieldActive ? (IMP)agDyn_AMap_setDetectRisk : gOrig_AMap_setDetectRisk;
+        IMP t = simFlagStealth ? (IMP)agDyn_AMap_setDetectRisk : gOrig_AMap_setDetectRisk;
         if (method_getImplementation(gDynMethod_AMap_setDetectRisk) != t) {
             method_setImplementation(gDynMethod_AMap_setDetectRisk, t);
         }
     }
 
-    if (shieldActive) {
+    if (shieldActive || envStealthActive) {
         agInstallAntiDetectionCHooksIfNeeded();
     }
     os_unfair_lock_unlock(&gHookSyncLock);
