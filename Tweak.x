@@ -820,8 +820,7 @@ static void reloadGeminiPrefsCache(void) {
     sIsInternalPrefsFileRead = YES;
 #if ROOTHIDE
     NSArray<NSString *> *paths = @[
-        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
-        MyRootfsPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")
     ];
 #else
     NSArray<NSString *> *paths = @[
@@ -1005,16 +1004,14 @@ static void saveGeminiPrefs(NSDictionary *dict) {
 sIsInternalPrefsFileRead = YES;
     NSString *detectedRoot = MyJBPath(@"/");
 #if ROOTHIDE
-    // Relaxin/RootHide 下：仅写入 .jbroot 内部，并主动清理外部 rootfs 残留的配置文件，防止被扫描
     NSArray<NSString *> *writePaths = @[
         MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")
     ];
     [[NSFileManager defaultManager] removeItemAtPath:MyRootfsPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist") error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:MyRootfsPath(@"/tmp/com.custom.geminisirioverlay.plist") error:nil];
 #else
-    // Dopamine 下：与改动前 100% 一致
     NSArray<NSString *> *writePaths = @[
-        agJBRootPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
+        MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"),
         @"/var/jb/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist",
         @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"
     ];
@@ -23097,28 +23094,10 @@ static BOOL agIsSuspiciousJailbreakPath(const char *path) {
             strstr(path, "ag_live_diagnostic") != NULL);
 }
 
-static inline BOOL agShouldHideSelfInProcess(void) {
-#if ROOTHIDE
-    // Relaxin 下：只要本 dylib 已注入当前第三方 App，即使关闭了虚拟定位与防检测，也必须始终隐藏自身的 .jbroot 镜像路径
-    static BOOL sIsThirdPartyApp = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-        sIsThirdPartyApp = (bid.length > 0 &&
-                            ![bid isEqualToString:@"com.apple.springboard"] &&
-                            ![bid isEqualToString:@"com.apple.Preferences"]);
-    });
-    return sIsThirdPartyApp;
-#else
-    // Dopamine 下：与改动前 100% 一致
-    return agIsAntiDetectionShieldActive();
-#endif
-}
-
 static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
-    if (ret != 0 && info && info->dli_fname && agShouldHideSelfInProcess()) {
+    if (ret != 0 && info && info->dli_fname && agIsAntiDetectionShieldActive()) {
         if ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
             agIsSuspiciousJailbreakPath(info->dli_fname)) {
             BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr);
@@ -23139,7 +23118,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
 static const char *hooked_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
-    if (name && agShouldHideSelfInProcess()) {
+    if (name && agIsAntiDetectionShieldActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
             static char sSafeSysPaths[32][128];
             uint32_t slot = image_index & 31;
@@ -23157,7 +23136,7 @@ static const char *hooked_dyld_get_image_name(uint32_t image_index) {
 static const char *(*orig_class_getImageName)(Class cls) = NULL;
 static const char *hooked_class_getImageName(Class cls) {
     const char *name = orig_class_getImageName ? orig_class_getImageName(cls) : NULL;
-    if (name && agShouldHideSelfInProcess()) {
+    if (name && agIsAntiDetectionShieldActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
             return gCoreLocationPath;
         }
@@ -23168,7 +23147,7 @@ static const char *hooked_class_getImageName(Class cls) {
 static const char * _Nonnull * _Nonnull (*orig_objc_copyImageNames)(unsigned int *outCount) = NULL;
 static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int *outCount) {
     const char **names = orig_objc_copyImageNames ? orig_objc_copyImageNames(outCount) : NULL;
-    if (names && outCount && *outCount > 0 && agShouldHideSelfInProcess()) {
+    if (names && outCount && *outCount > 0 && agIsAntiDetectionShieldActive()) {
         unsigned int writeIdx = 0;
         unsigned int total = *outCount;
         for (unsigned int i = 0; i < total; i++) {
@@ -23185,7 +23164,7 @@ static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int 
 static const char *(*orig_dyld_image_path_containing_address)(const void *addr) = NULL;
 static const char *hooked_dyld_image_path_containing_address(const void *addr) {
     const char *name = orig_dyld_image_path_containing_address ? orig_dyld_image_path_containing_address(addr) : NULL;
-    if (name && agShouldHideSelfInProcess()) {
+    if (name && agIsAntiDetectionShieldActive()) {
         if ((gSelfDylibBase != NULL && addr == gSelfDylibBase) || agIsSuspiciousJailbreakPath(name)) {
             return gCoreLocationPath;
         }
@@ -23195,7 +23174,7 @@ static const char *hooked_dyld_image_path_containing_address(const void *addr) {
 
 static int (*orig_access)(const char *path, int amode) = NULL;
 static int hooked_access(const char *path, int amode) {
-    if (path && agShouldHideSelfInProcess() && agIsSuspiciousJailbreakPath(path)) {
+    if (path && agIsAntiDetectionShieldActive() && agIsSuspiciousJailbreakPath(path)) {
         errno = ENOENT;
         return -1;
     }
@@ -23949,13 +23928,6 @@ static void agSyncClientHooksWithCurrentState(void) {
     os_unfair_lock_lock(&gHookSyncLock);
     BOOL spoofActive = agIsCurrentProcessTargetedForLocSpoof();
     BOOL shieldActive = spoofActive && agIsAntiDetectionShieldActive();
-
-#if ROOTHIDE
-    // Relaxin 下：若本 dylib 已被加载进第三方 App，即使未开虚拟定位，也必须挂载 dladdr / _dyld_get_image_name 隐藏自身的 .jbroot 路径
-    if (agShouldHideSelfInProcess()) {
-        agInstallAntiDetectionCHooksIfNeeded();
-    }
-#endif
 
     if (!spoofActive && !gHasInitializedObjCHooks) {
         os_unfair_lock_unlock(&gHookSyncLock);
