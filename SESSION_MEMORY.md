@@ -521,3 +521,47 @@
    - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,592 字节, SHA256: `fcceedf2cb4576569aead0257e3f992523ec848a1455b471002bbf1b630cc773`)；
    - 纯 XZ 格式结构 (`ar -t`) 校验完全通过 (`control.tar.xz`, `data.tar.xz`)；
    - 本地安装包落地至 `D:\双工具版本\`。
+
+---
+
+## 2026-11-02: 6 大代码块 ROOTHIDE 条件编译隔离封装 (Run #46)
+
+### 1. 修改要点 (6 处代码块精准隔离)
+1. **替换块 1 (路径底层统一封装)**:
+   - 引入 `MyJBPath`、`MyJBCPath`、`MyRootfsPath`、`MyRootfsCPath`；
+   - 在 `#if ROOTHIDE` 下优先使用 `jbrootpath` / `rootfspath` 动态转换，`#else` 分支下严格保持原版 Dopamine `/var/jb` 逻辑不变；
+   - 原 `agJBRootPath` 保持外部兼容，内部统一走 `MyJBPath`。
+2. **替换块 2 (TCC 授权与守护进程清理)**:
+   - `ensureSpringBoardTCCGranted` 中 `TCC.framework` 与 `TCC.db` 路径使用 `MyRootfsCPath`，`AngelCameraHelper` 授权路径使用 `MyJBPath`；
+   - `killZombieCameraHelpers` 中 `#if ROOTHIDE` 使用 `MyJBPath` 与 `MyRootfsPath`，`#else` 保持 Dopamine 原版路径。
+3. **替换块 3 (配置文件读写与 AI 永久记忆路径)**:
+   - `reloadGeminiPrefsCache` 中的 `paths` 数组按 `ROOTHIDE` 精准分流；
+   - `saveGeminiPrefs` 中的 `writePaths` 数组及 `/tmp` 路径清理完成替换；
+   - `agPermanentMemoryFilePaths` 记忆文件路径按 `ROOTHIDE` 分流。
+4. **替换块 4 (微信跨进程通信与崩溃取证)**:
+   - `agGetGlobalSharedDir` 共享目录分流；
+   - `agRespringLedgerFilePath`、`agDynamicLibrariesDirs` 与 `agResolveHumanPluginNameForDylib` 中 `dpkgBaseDirs` 完成替换。
+5. **替换块 5 (相机守护进程 helperPaths)**:
+   - 守护进程拉起路径完成 `#if ROOTHIDE` / `#else` 条件隔离。
+6. **替换块 6 (越狱商店缓存与临时目录清理)**:
+   - `debCacheDirs` 中的 APT/Sileo/Zebra 缓存路径完成条件隔离。
+
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `65a030cae1a4c5b1ddeb5ca4cfb138863d1307d390c19e95fe4aef60e36bc45f`)
+- `D:\双工具版本\Tweak.x` (1,333,700 字节)
+- `D:\双工具版本\Tweak.xm` (1,333,700 字节)
+- `D:\双工具版本\主修实时翻译.txt` (1,333,700 字节)
+- `D:\双工具版本\dopamine测试版本.txt` (1,333,700 字节)
+- `D:\dopamine测试版本.txt` (1,333,700 字节)
+- `C:\Users\57132\Desktop\relaxin调教版本.txt` (1,333,700 字节)
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 6`。
+
+### 3. CI 编译与安装包分发 (Run #46, ID: 41448185713, Commit: 89363da)
+- **Deb 校验 (Pure XZ, 0% Zstandard, 100% Sileo 兼容)**:
+  - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526,636 字节, SHA256: `321a312980946380c21e36680c42a5fc4f9859e64fee921508e7de8d84881e7f`)
+  - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,576 字节, SHA256: `a87080674977b9fd68ec7675459c00ac33a912595c734e4a0d594c1bcd9983d9`)
+- **本地安装包落地路径**:
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
+  - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+- **验证结果**:
+  - `ar -t` 结果包含且仅包含: `control.tar.xz`, `data.tar.xz`。
+  - 双架构均在 macOS 14 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
