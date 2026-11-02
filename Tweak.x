@@ -13039,10 +13039,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 微调 2：仅拦截 <= -51.0f dB 的纯静音底噪，保留轻声说话 0ms 瞬时打断！
-                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.85) && (strongSelf.lastActiveMicDB > -51.0f));
+                    // 微调 2：仅拦截 <= -54.0f dB 的纯静音底噪，保留轻声说话 0ms 瞬时打断！
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.85) && (strongSelf.lastActiveMicDB > -54.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
-                    if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.25)) {
+                    if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.20)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
                 }
@@ -13395,18 +13395,35 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                           (long)firstFrameMs, (unsigned int)inFrames, inSampleRate, db);
         }
 
-        if (db > -51.0f) {
+        if (db > -54.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
         }
         BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || nowTs < strongSelf.aiPlaybackEndTime);
 
         if (!isAIPlaying) {
-            if (db > -44.0f) {
-                [strongSelf setWaveBarsLevel:MAX(0.24, MIN(1.0, (db + 46.0f) / 26.0f))];
+            if (db > -46.0f) {
+                [strongSelf setWaveBarsLevel:MAX(0.24, MIN(1.0, (db + 48.0f) / 26.0f))];
             } else {
                 [strongSelf setWaveBarsLevel:0.0];
             }
+        }
+
+        // 先执行破硬件压制打断检测：AI 播音时 iOS 硬件回声消除会将喇叭回声压至 -100dB 以下，同时将人声压低至 -43dB 左右
+        // 因此 db > -46.0f && peakDb > -29.0f 满 2 帧（约 42ms）即可 100% 确认为真人开口并瞬间切断喇叭释放压制！
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.28);
+        if (isAIPlaying && pastEchoGrace) {
+            if (db > -46.0f && peakDb > -29.0f) {
+                strongSelf.wsBargeInVoiceTicks++;
+                if (strongSelf.wsBargeInVoiceTicks >= 2) {
+                    [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
+                    isAIPlaying = NO;
+                }
+            } else {
+                strongSelf.wsBargeInVoiceTicks = 0;
+            }
+        } else {
+            strongSelf.wsBargeInVoiceTicks = 0;
         }
 
         double targetRate = strongSelf.isGoogleBidiProtocol ? 16000.0 : 24000.0;
@@ -13414,19 +13431,23 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         NSUInteger outFrames = (NSUInteger)((double)inFrames / ratio);
         if (outFrames == 0) return;
 
+        // 当处于 AI 播音双讲期、或刚触发打断后的 0.85 秒硬件回声压制恢复期内，对人声做 1.85 倍动态增益补偿，防止打断时的头两个字因被硬件压低而被云端听成外语碎词
+        BOOL needBargeInGainBoost = (isAIPlaying || (nowTs - strongSelf.bargeInMuteTimestamp < 0.85));
+        float gainFactor = needBargeInGainBoost ? 1.85f : 1.0f;
+
         NSMutableData *pcm16Chunk = [NSMutableData dataWithLength:outFrames * sizeof(int16_t)];
         int16_t *outPtr = (int16_t *)pcm16Chunk.mutableBytes;
         for (NSUInteger i = 0; i < outFrames; i++) {
             double srcIdx = (double)i * ratio;
             NSUInteger idx0 = (NSUInteger)srcIdx;
             float sample = 0.0f;
-            // 3 点均值抗混叠滤波（48kHz -> 16kHz），完整保留中文平翘舌与字头清辅音高频细节，去除 tanhf 非线性谐波失真
             if (ratio >= 2.5 && (idx0 + 2) < (NSUInteger)inFrames) {
                 sample = (floatSamples[idx0] + floatSamples[idx0 + 1] + floatSamples[idx0 + 2]) / 3.0f;
             } else {
                 NSUInteger idx1 = MIN(idx0 + 1, (NSUInteger)(inFrames - 1));
                 sample = (float)((1.0 - (srcIdx - idx0)) * floatSamples[idx0] + (srcIdx - idx0) * floatSamples[idx1]);
             }
+            sample *= gainFactor;
             if (sample > 1.0f) sample = 1.0f;
             else if (sample < -1.0f) sample = -1.0f;
             outPtr[i] = (int16_t)(sample * 32767.0f);
@@ -13442,21 +13463,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 }
             }
             return;
-        }
-
-        // 方案 1（轻松自然打断档，Dopamine 与 Relaxin 共同生效）：db > -34.5f && peakDb > -20.5f 满 3 帧（约65ms）即断
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.35);
-        if (isAIPlaying && pastEchoGrace) {
-            if (db > -34.5f && peakDb > -20.5f) {
-                strongSelf.wsBargeInVoiceTicks++;
-                if (strongSelf.wsBargeInVoiceTicks >= 3) {
-                    [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
-                }
-            } else {
-                strongSelf.wsBargeInVoiceTicks = 0;
-            }
-        } else {
-            strongSelf.wsBargeInVoiceTicks = 0;
         }
 
         // 恒定 3200B (100ms) 匀速发送，绝不跳变包长吞掉说话第一个字的字头声母
@@ -13615,9 +13621,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
     // 1. 当 AI 正在说话或正在流式返回时：支持人声插话打断（方案 1：power > -24.0f && peak > -13.0f 连续 3 帧）
     if ([self.synthesizer isSpeaking] || self.activeUtteranceCount > 0 || self.currentTask != nil) {
-        if (power > -24.0f && peak > -13.0f) {
+        if (power > -32.0f && peak > -18.0f) {
             self.bargeInVoiceTicks++;
-            if (self.bargeInVoiceTicks >= 3) {
+            if (self.bargeInVoiceTicks >= 2) {
                 self.bargeInVoiceTicks = 0;
                 if (self.currentTask) {
                     [self.currentTask cancel];
