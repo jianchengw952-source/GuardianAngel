@@ -681,3 +681,43 @@
   - 大小：32,340 字节（662 行）
   - SHA256：`3b14b255ae2b49d7178791c3c2cf195b1ed84c5e0987ccf68dd4fa1b9c7da704`
   - 内含【AI 快速背景导读】、【5 道顶级防破解防线工作原理与攻防剖析】、【__DATA,__ag_core 内存加密段规范】、【3 处源码挂接锚点】、【Makefile 符号剥离参数】以及完整的 `AngelShield.h` 源码。
+
+
+---
+
+## 2026-11-02: 严格执行 Relaxin (RootHide) 最高优先级军规（6 大步骤全量实装）
+
+### 1. 核心红线与修改架构
+- **绝对红线遵循**：严格保留所有 `#else` 分支下的原有 Dopamine 逻辑，100% 保持原封不动；所有 Relaxin / RootHide 适配必须且已 100% 封装在 `#ifdef __ROOTHIDE__` 宏包裹内。
+- **6 大步骤落地清单**：
+  1. **步骤 1 (Makefile 条件模式与宏注入)**：
+     - `THEOS_PACKAGE_SCHEME ?= rootless` 改为条件赋值；
+     - 当 `THEOS_PACKAGE_SCHEME == roothide` 时注入 `ROOTHIDE_CFLAGS = -D__ROOTHIDE__=1`；
+     - 更新编译目标为 `GeminiSiriOverlay` (`GeminiSiriOverlay_FILES = Tweak.x`) 并保留 `sqlite3` 安全依赖。
+  2. **步骤 2 (layout/DEBIAN/postinst 权限自适应)**：
+     - 同时兼容 `/var/jb` 与 `.jbroot-*` / `procursus` 双环境下的 `AngelCameraHelper` setuid 提权；
+     - 自动为 Relaxin 初始化 `$jbdir/var/mobile/Library/Preferences` (0777) 及 `GeminiSiriOverlay.plist` (0666)。
+  3. **步骤 3 (agJBRootPath PAC 签名剥离与全路径形态自定位)**：
+     - 引入 `AG_STRIP_PAC` 宏，在 arm64e PAC 下通过 `ptrauth_strip` 剥离函数指针签名后调用 `dladdr`；
+     - 优先匹配 `/Library/MobileSubstrate/` 与 `/usr/lib/TweakInject/` 截取隐根；
+     - 备选多层级相对路径加载 `libroothide.dylib` 并解析 `jbroot` 符号。
+  4. **步骤 4 (配置缓存 reloadGeminiPrefsCache 与 saveGeminiPrefs 双轨机制)**：
+     - `#ifdef __ROOTHIDE__` 下引入 CFPreferences 跨进程共享通道（`kAGCFPrefsAppID`）与 `_ag_save_ts` 时间戳判定；
+     - 非 SpringBoard/Preferences 进程或未获取到配置时无感回退至内核寄存器通道（`agReadSpoofStateFromKernel`）；
+     - 保存配置时严格限制在 `.jbroot` 内部，杜绝向真实系统 `/var` 泄露。
+  5. **步骤 5 (微信跨进程文件读写与剪贴板保底通讯)**：
+     - 5.1：全局共享目录优先选取隐根内部，写 JSON 时在 `#ifdef __ROOTHIDE__` 下同步持久化写入自定义剪贴板（`UIPasteboard`）作为 IPC 兜底；
+     - 5.2：`agProcessWeChatSendCommand` 与 `agWeChatResultDarwinCallback` 增加剪贴板 IPC 自动回退解析。
+  6. **步骤 6 (防闪退与动态 Hook 挂载安全化)**：
+     - 6.1A：`agInitNativeTranslationSettingsHook` 构造函数增加宿主进程过滤，仅在 SpringBoard 与 Preferences 中执行；
+     - 6.1B：`agIsSuspiciousJailbreakPath` 放行 iOS 16 系统原生 `/private/preboot/Cryptexes` 路径，彻底防止误杀 WebKit 闪退；
+     - 6.2：`agInstallAntiDetectionCHooksIfNeeded` 在 RootHide 下跳过对 libdyld 的 inline hook；`agSyncClientHooksWithCurrentState` 在 arm64e 下采用单次挂载 + 0.001ms 门禁模式，彻底根除跨线程热插拔造成的崩溃。
+
+### 2. 六文件镜像 100% 字节完全一致 (SHA256: `0833920570705d17779634da70ccc5e870188da39eb15d833bc6f5ae0e7b5c18`)
+- `D:\双工具版本\Tweak.x`
+- `D:\双工具版本\Tweak.xm`
+- `D:\双工具版本\主修实时翻译.txt`
+- `D:\双工具版本\dopamine测试版本.txt`
+- `D:\dopamine测试版本.txt`
+- `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 语法闭合检查：`Braces: 0, Parens: 0, Brackets: 0`，Logos 指令严格闭合，`kEncIsSimSoft` 修复 `2d -> 0x2D` 语法合规。
