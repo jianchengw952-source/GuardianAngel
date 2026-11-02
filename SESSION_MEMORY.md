@@ -741,3 +741,34 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (524944 字节, SHA256: `8510dee4fc141ea91c6cfde4136a6d23c67f20d93e9cbd5eb7976ae97976d6a0`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (344800 字节, SHA256: `14e2eb83b6c991dbe3792d75a78327d7de6fd9817e0a0a16f76b667806d58cfa`)
+
+---
+
+## 2026-11-03: 语音打断调整为【方案 1（轻松自然打断档）】(Run #52)
+
+### 1. 修改要点 (3 处打断阈值调整，全平台双环境同时生效)
+1. **放宽本地神经引擎音节打断时间窗**:
+   - 在 `startNativeAppleNeuralVADIfNeeded` 内部，将 `lastActiveMicDBTime <= 0.60` 放宽至 `0.85`，确保轻声说话时本地神经引擎离线识别出第一个音节瞬间能 100% 顺利触发打断。
+2. **调整 WebSocket 实时流分贝打断为方案 1**:
+   - 在 `processMicrophoneInputPCMBuffer:` 中，将兜底分贝判定调整为 `db > -34.5f && peakDb > -20.5f`，连续判定 `3` 帧（约 65ms），回声保护窗从 0.45s 优化为 `0.35s`，实现自然轻声打断且完全杜绝扬声器自断。
+3. **放宽备用录音机模式打断阈值**:
+   - 在 `updateAudioMeters` 中，将插话打断条件由 `power > -17.5f && peak > -8.0f (5帧)` 优化为 `power > -24.0f && peak > -13.0f (3帧)`。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,340,355 字节
+- SHA256 校验和：`f040a060aee08ea125a65bbd955b9a112b64897c70b30e7871bb037fbdb7ec03`
+
+### 3. CI 构建与产物
+- 提交哈希：`12b8756`
+- GitHub Actions CI Run #52 (ID: 41482705708) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (524992 字节, SHA256: `75005b807403be28727178e74aaa6ebc139480a0f55bdbf7d8629e79ba196d1f`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (345012 字节, SHA256: `251e078cae26f060d38b1f3e916af226d7d39b94d22cad0700ebaa8b406172ce`)
