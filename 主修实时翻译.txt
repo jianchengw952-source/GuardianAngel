@@ -917,8 +917,7 @@ static void reloadGeminiPrefsCache(void) {
     NSString *myBID = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
     BOOL isSysHost = ([myBID isEqualToString:@"com.apple.springboard"] || [myBID isEqualToString:@"com.apple.Preferences"]);
     if (isSysHost) {
-        CFPreferencesSynchronize(kAGCFPrefsAppID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        CFPropertyListRef cfDict = CFPreferencesCopyValue(CFSTR("AG_RH_SharedPrefsDict"), kAGCFPrefsAppID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPropertyListRef cfDict = CFPreferencesCopyAppValue(CFSTR("AG_RH_SharedPrefsDict"), kAGCFPrefsAppID);
         if (cfDict) {
             if (CFGetTypeID(cfDict) == CFDictionaryGetTypeID()) {
                 NSDictionary *rhDict = (__bridge NSDictionary *)cfDict;
@@ -993,21 +992,29 @@ static NSMutableDictionary *loadGeminiPrefs(void) {
 static BOOL gIsSavingFromSettingsUI = NO;
 
 static void agSyncDynamicTweakFilterPlist(BOOL isActive, NSInteger scopeMode, NSArray<NSString *> *targetApps) {
-#ifdef __ROOTHIDE__
-    (void)isActive; (void)scopeMode; (void)targetApps;
-    return;
-#else
     NSString *myBID = [[NSBundle mainBundle] bundleIdentifier];
     if (![myBID isEqualToString:@"com.apple.springboard"] && ![myBID isEqualToString:@"com.apple.Preferences"]) {
         return;
     }
     Dl_info selfInfo;
+#ifdef __ROOTHIDE__
+    if (dladdr(AG_STRIP_PAC(&agSyncDynamicTweakFilterPlist), &selfInfo) == 0 || !selfInfo.dli_fname) {
+        return;
+    }
+#else
     if (dladdr((const void *)&agSyncDynamicTweakFilterPlist, &selfInfo) == 0 || !selfInfo.dli_fname) {
         return;
     }
+#endif
     NSString *dylibPath = [NSString stringWithUTF8String:selfInfo.dli_fname];
     NSString *plistPath = [[dylibPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"plist"];
+#ifdef __ROOTHIDE__
+    sIsInternalPrefsFileRead = YES;
+#endif
     if (![[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+#ifdef __ROOTHIDE__
+        sIsInternalPrefsFileRead = NO;
+#endif
         return;
     }
 
@@ -1058,6 +1065,8 @@ static void agSyncDynamicTweakFilterPlist(BOOL isActive, NSInteger scopeMode, NS
         chmod([plistPath UTF8String], 0666);
         [plistData writeToFile:plistPath atomically:NO];
     }
+#ifdef __ROOTHIDE__
+    sIsInternalPrefsFileRead = NO;
 #endif
 }
 
@@ -1100,8 +1109,8 @@ static void saveGeminiPrefs(NSDictionary *dict) {
     agSyncDynamicTweakFilterPlist(isActive, scopeMode, targetApps);
 
 #ifdef __ROOTHIDE__
-    CFPreferencesSetValue(CFSTR("AG_RH_SharedPrefsDict"), (__bridge CFPropertyListRef)immutableCopy, kAGCFPrefsAppID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(kAGCFPrefsAppID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSetAppValue(CFSTR("AG_RH_SharedPrefsDict"), (__bridge CFPropertyListRef)immutableCopy, kAGCFPrefsAppID);
+    CFPreferencesAppSynchronize(kAGCFPrefsAppID);
 #else
     static dispatch_once_t sCleanGlobalPrefsToken;
     dispatch_once(&sCleanGlobalPrefsToken, ^{
@@ -23271,8 +23280,10 @@ static const char * const kAGNativeCLSymbolPool[] = {
 static BOOL agIsSuspiciousJailbreakPath(const char *path) {
     if (!path) return NO;
 #ifdef __ROOTHIDE__
-    // [RootHide 防闪退修复] 放行 iOS 16 系统原生 Cryptexes 组件路径 (/private/preboot/Cryptexes)，防止误杀 WebKit/UIKit 系统资源导致 App 闪退！
-    if (strstr(path, "/Cryptexes/") != NULL || strstr(path, "/cryptexes/") != NULL) {
+    if (strstr(path, "/Cryptexes/") != NULL ||
+        strstr(path, "/cryptexes/") != NULL ||
+        strstr(path, ".jbroot") != NULL ||
+        strstr(path, "/private/preboot/") != NULL) {
         return NO;
     }
 #endif
@@ -24170,13 +24181,12 @@ static void agSyncClientHooksWithCurrentState(void) {
         agInitStealthLocationClientHooksGroup();
 
         static const uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-        static const uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2D,0x3b,0x28,0x3f};
+        static const uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f};
         static const uint8_t kEncIsProdAcc[] = {0x33,0x29,0x0a,0x28,0x35,0x3e,0x2f,0x39,0x3f,0x3e,0x18,0x23,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23};
         static const uint8_t kEncIsSim1[]    = {0x05,0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
         static const uint8_t kEncIsSim2[]    = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
         static const uint8_t kEncSrcInfo[]   = {0x29,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
         static const uint8_t kEncType[]      = {0x2e,0x23,0x2a,0x3f};
-        static const uint8_t kEncClientLoc[] = {0x39,0x36,0x33,0x3f,0x34,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34};
 
         Class srcInfoCls = NSClassFromString(agDecodeObfuscatedCStr(kEncSrcCls, sizeof(kEncSrcCls), 0x5A));
         if (srcInfoCls) {
@@ -24230,14 +24240,6 @@ static void agSyncClientHooksWithCurrentState(void) {
                 if (gDynMethod_CLLoc_type) {
                     gOrig_CLLoc_type = method_getImplementation(gDynMethod_CLLoc_type);
                     method_setImplementation(gDynMethod_CLLoc_type, (IMP)agDyn_CLLoc_type);
-                }
-            }
-            SEL selClientLoc = agDecodeSelector(kEncClientLoc, sizeof(kEncClientLoc), 0x5A);
-            if (selClientLoc) {
-                gDynMethod_CLLoc_clientLoc = class_getInstanceMethod(clLocCls, selClientLoc);
-                if (gDynMethod_CLLoc_clientLoc) {
-                    gOrig_CLLoc_clientLoc = method_getImplementation(gDynMethod_CLLoc_clientLoc);
-                    method_setImplementation(gDynMethod_CLLoc_clientLoc, (IMP)agDyn_CLLoc_clientLoc);
                 }
             }
         }

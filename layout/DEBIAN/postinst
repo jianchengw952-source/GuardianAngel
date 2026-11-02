@@ -1,5 +1,5 @@
 #!/bin/sh
-# 同时兼容 Dopamine (Rootless /var/jb) 与 Relaxin (RootHide .jbroot-* / procursus)
+# 1. 同时兼容 Dopamine (Rootless /var/jb) 与 Relaxin (RootHide .jbroot-*) 的相机辅助权限
 for helper in /usr/bin/AngelCameraHelper /var/jb/usr/bin/AngelCameraHelper /var/containers/Bundle/Application/.jbroot-*/usr/bin/AngelCameraHelper /private/preboot/*/jb-*/procursus/usr/bin/AngelCameraHelper; do
     if [ -f "$helper" ]; then
         chown root:wheel "$helper" 2>/dev/null || true
@@ -7,13 +7,27 @@ for helper in /usr/bin/AngelCameraHelper /var/jb/usr/bin/AngelCameraHelper /var/
     fi
 done
 
-# 为 Relaxin (RootHide) 初始化跨进程共享配置目录与动态 Filter Plist 权限
-for jbdir in /var/containers/Bundle/Application/.jbroot-* /private/preboot/*/jb-*/procursus; do
+# 2. 仅针对 Relaxin (RootHide .jbroot-*) 初始化配置目录权限与初始安全注入列表（绝不触碰 Dopamine /var/jb）
+for jbdir in /var/containers/Bundle/Application/.jbroot-*; do
     if [ -d "$jbdir" ]; then
         mkdir -p "$jbdir/var/mobile/Library/Preferences" 2>/dev/null || true
+        chown -R mobile:mobile "$jbdir/var/mobile/Library/Preferences" 2>/dev/null || true
         chmod 0777 "$jbdir/var/mobile/Library/Preferences" 2>/dev/null || true
-        if [ -f "$jbdir/Library/MobileSubstrate/DynamicLibraries/GeminiSiriOverlay.plist" ]; then
-            chmod 0666 "$jbdir/Library/MobileSubstrate/DynamicLibraries/GeminiSiriOverlay.plist" 2>/dev/null || true
+        plist="$jbdir/Library/MobileSubstrate/DynamicLibraries/GeminiSiriOverlay.plist"
+        if [ -f "$plist" ]; then
+            cat > "$plist" << 'EOF'
+{
+    Filter = {
+        Bundles = (
+            "com.apple.springboard",
+            "com.apple.Preferences",
+            "com.tencent.xin"
+        );
+    };
+}
+EOF
+            chown mobile:mobile "$plist" 2>/dev/null || true
+            chmod 0666 "$plist" 2>/dev/null || true
         fi
     fi
 done
