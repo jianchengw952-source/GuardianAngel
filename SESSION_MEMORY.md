@@ -498,3 +498,26 @@
 - **安装包落地路径**:
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb`
   - `D:\双工具版本\com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb`
+
+
+---
+
+## 2026-11-02: 方案 1 执行——安全回退至 Run #29 基线 (Rebuild Run #45)
+
+### 1. 执行要点 (方案 1 规范执行全景)
+1. **进度安全归档**:
+   - 将回退前的最新代码（Run #44 状态，包含 Relaxin 满血防检测与 arm64e PAC 修正）完整归档至独立远端分支 `backup-run44-relaxin` (Commit `872c0c0`)；
+   - 随时可通过切换分支完整复原此前所有调谐排查代码。
+2. **主分支基线重置**:
+   - `main` 分支硬重置回 Run #29 源码基线 Commit `d5808e5` (`fix: stealth location combo and standalone switch, fix pay trigger false positives, and dingtalk homophones`)；
+   - 强制推送到 GitHub 远端 `origin/main`。
+3. **六大代码镜像 100% 绝对一致同步**:
+   - 全部 6 处代码副本已对齐至 Run #29 源码基线；
+   - **SHA256 校验码 100% 绝对一致**: `5bece87cbb42caa78e03864c62fa0e43fec163f3e32c62e3c444bfec3f15da3b`；
+   - 对应文件: `D:\双工具版本\Tweak.x`、`Tweak.xm`、`主修实时翻译.txt`、`dopamine测试版本.txt`、`D:\dopamine测试版本.txt`、`C:\Users\57132\Desktop\relaxin调教版本.txt`。
+4. **CI 重新构建与安装包分发 (Run #45, ID: 41438449290, Commit: d5808e5)**:
+   - macOS-14 Runner 双架构 100% 编译成功；
+   - **Rootless (arm64)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (529,128 字节, SHA256: `0e48f343cab544d0bfa06e1c341de40943881c85b2e8f182d7fbec466a490409`)；
+   - **RootHide (arm64e)**: `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,592 字节, SHA256: `fcceedf2cb4576569aead0257e3f992523ec848a1455b471002bbf1b630cc773`)；
+   - 纯 XZ 格式结构 (`ar -t`) 校验完全通过 (`control.tar.xz`, `data.tar.xz`)；
+   - 本地安装包落地至 `D:\双工具版本\`。
