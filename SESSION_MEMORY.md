@@ -636,3 +636,44 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (525,800 字节, SHA256: `c0a997f9624cf1b14df18402424c1273fcab68982475e84a92124fb480bef283`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,552 字节, SHA256: `e46899202d6fec623a3fce1e4a463d44b1a0c00ebe80154ee464f84bb15302b1`)
+
+---
+
+## 2026-11-02: 纯越狱环境隐身护盾 agIsEnvironmentStealthActive 与精准分发 (Run #49)
+
+### 1. 修改要点 (4 处精确隔离修改)
+1. **修改 1：agSyncDynamicTweakFilterPlist**:
+   - 在 `#if !ROOTHIDE` (Dopamine) 下：关闭定位时保持仅注入桌面、设置与微信；
+   - 在 `#if ROOTHIDE` (Relaxin) 下：关闭定位时保持当前范围注入（白名单或全局 UIKit），以让纯环境隐身护盾持续保护第三方受控 App。
+2. **修改 2：新增 agIsEnvironmentStealthActive**:
+   - 在 `#if ROOTHIDE` 下：判定第三方受控 App（排除 SpringBoard、Preferences、Apple 系统组件与 VPN 扩展等代理进程），只要本插件注入，始终保持隐藏 `.jbroot` 与 `ellekit`；
+   - 在 `#else` (Dopamine) 下：100% 返回 `agIsAntiDetectionShieldActive()`，0 行为变化。
+3. **修改 3：镜像隐藏与文件/URL防探测钩子**:
+   - `hooked_dladdr`：未开启虚拟定位时仅隐藏本插件自身 (`gSelfDylibBase`) 与底层加载器 (`ellekit`, `libroothide`, `MobileSubstrate.dylib`)，绝不干扰微信等 App 内其他插件通过 `dladdr` 读取自身资源；开启防检测时拦截全部可疑越狱路径；
+   - `hooked_dyld_get_image_name`、`hooked_class_getImageName`、`hooked_objc_copyImageNames`、`hooked_dyld_image_path_containing_address`、`hooked_access` 切换为 `agIsEnvironmentStealthActive()`；
+   - `UIApplication.canOpenURL:` 与 `NSFileManager.fileExistsAtPath:` 切换为 `agIsEnvironmentStealthActive()`；
+   - 6 个 `agDyn_` 高德/系统模拟标志函数切换为 `agIsEnvironmentStealthActive()`；
+   - CLLocation 坐标、CLLocationManager、CLGeocoder、CNCopyCurrentNetworkInfo、NEHotspotNetwork、CMMotionActivity、CMPedometerData、CMAltitudeData 保持原样不变，关闭定位 100% 还原真实硬件数据。
+4. **修改 4：agSyncClientHooksWithCurrentState 开关分发**:
+   - 开头新增 `BOOL envStealthActive = agIsEnvironmentStealthActive();`，在 `!spoofActive && !envStealthActive && !gHasInitializedObjCHooks` 时安全退出；
+   - 方法表中前 3 项 (URL/文件防探测) 随 `shieldActive || envStealthActive` 开启；其余定位坐标、Wi-Fi、传感器 Hook 仅在 `spoofActive` 为真时启用；
+   - 底部按需挂载 C 钩子：`if (shieldActive || envStealthActive) { agInstallAntiDetectionCHooksIfNeeded(); }`。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,334,635 字节
+- SHA256 校验和：`4c5e6df04bcc9ab8d56f30570fd9d4317865c44493205af64d825506ccefa2e5`
+
+### 3. CI 构建与产物
+- 提交哈希：`fd6608b`
+- GitHub Actions CI Run #49 (ID: 41470822133) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (527,380 字节, SHA256: `b48f24f8c860e0dda8b1bff29cc5af7d0c9a984528cb52fe5013d85aee5e5a89`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,728 字节, SHA256: `483b8a5e482e3feef7e521fd360c6494d2abdf54e1372b086b6c26eb8bc036ef`)
