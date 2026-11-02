@@ -23279,14 +23279,6 @@ static const char * const kAGNativeCLSymbolPool[] = {
 
 static BOOL agIsSuspiciousJailbreakPath(const char *path) {
     if (!path) return NO;
-#ifdef __ROOTHIDE__
-    if (strstr(path, "/Cryptexes/") != NULL ||
-        strstr(path, "/cryptexes/") != NULL ||
-        strstr(path, ".jbroot") != NULL ||
-        strstr(path, "/private/preboot/") != NULL) {
-        return NO;
-    }
-#endif
     return (strstr(path, "/var/jb") != NULL ||
             strstr(path, ".jbroot") != NULL ||
             strstr(path, "/private/preboot/") != NULL ||
@@ -24142,10 +24134,7 @@ static void agInstallAntiDetectionCHooksIfNeeded(void) {
     if (gHasInstalledCHooks) return;
     gHasInstalledCHooks = YES;
 
-#ifdef __ROOTHIDE__
-    // [RootHide 防闪退核心修复] RootHide 底层已自带 dyld/dladdr 隐匿；在 arm64e 下严禁对 libdyld 极短 PAC 桩函数调用 MSHookFunction，彻底根除打开 App 闪退！
-    return;
-#else
+    // 仅挂钩函数体大于 64 字节的标准 C 函数，严禁对 8~12 字节的极短 syscall/objc 桩函数 (access / class_getImageName) 使用 MSHookFunction 防止 16 字节跳板越界引发 CPU 100% 死循环发烫！
     MSHookFunction((void *)dladdr, (void *)hooked_dladdr, (void **)&orig_dladdr);
     MSHookFunction((void *)_dyld_get_image_name, (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
 
@@ -24156,11 +24145,6 @@ static void agInstallAntiDetectionCHooksIfNeeded(void) {
             MSHookFunction(cnSym, (void *)hooked_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
         }
     }
-#endif
-}
-
-static void agInitStealthLocationClientHooksGroup(void) {
-    %init(StealthLocationClientHooks);
 }
 
 static void agSyncClientHooksWithCurrentState(void) {
@@ -24173,98 +24157,6 @@ static void agSyncClientHooksWithCurrentState(void) {
         return;
     }
 
-#ifdef __ROOTHIDE__
-    // [RootHide (arm64e) 防闪退核心修复]
-    // 1. 仅执行一次初始化挂载，保留原生 method_setImplementation 以 100% 保护 clientLocation 的 x8 大结构体返回寄存器不被破坏；
-    // 2. 挂载后不再跨线程反复热插拔 IMP 指针，由各 Hook 内部首行的 0.001ms 门禁安全控制开关状态，彻底消除 arm64e 多线程竞态闪退！
-    if (!gHasInitializedObjCHooks) {
-        agInitStealthLocationClientHooksGroup();
-
-        static const uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-        static const uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f};
-        static const uint8_t kEncIsProdAcc[] = {0x33,0x29,0x0a,0x28,0x35,0x3e,0x2f,0x39,0x3f,0x3e,0x18,0x23,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23};
-        static const uint8_t kEncIsSim1[]    = {0x05,0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
-        static const uint8_t kEncIsSim2[]    = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
-        static const uint8_t kEncSrcInfo[]   = {0x29,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
-        static const uint8_t kEncType[]      = {0x2e,0x23,0x2a,0x3f};
-
-        Class srcInfoCls = NSClassFromString(agDecodeObfuscatedCStr(kEncSrcCls, sizeof(kEncSrcCls), 0x5A));
-        if (srcInfoCls) {
-            SEL selIsSimSoft = agDecodeSelector(kEncIsSimSoft, sizeof(kEncIsSimSoft), 0x5A);
-            if (selIsSimSoft) {
-                gDynMethod_SrcInfo_isSimSoft = class_getInstanceMethod(srcInfoCls, selIsSimSoft);
-                if (gDynMethod_SrcInfo_isSimSoft) {
-                    gOrig_SrcInfo_isSimSoft = method_getImplementation(gDynMethod_SrcInfo_isSimSoft);
-                    method_setImplementation(gDynMethod_SrcInfo_isSimSoft, (IMP)agDyn_SrcInfo_isSimSoft);
-                }
-            }
-            SEL selIsProdAcc = agDecodeSelector(kEncIsProdAcc, sizeof(kEncIsProdAcc), 0x5A);
-            if (selIsProdAcc) {
-                gDynMethod_SrcInfo_isProdAcc = class_getInstanceMethod(srcInfoCls, selIsProdAcc);
-                if (gDynMethod_SrcInfo_isProdAcc) {
-                    gOrig_SrcInfo_isProdAcc = method_getImplementation(gDynMethod_SrcInfo_isProdAcc);
-                    method_setImplementation(gDynMethod_SrcInfo_isProdAcc, (IMP)agDyn_SrcInfo_isProdAcc);
-                }
-            }
-        }
-
-        Class clLocCls = objc_getClass("CLLocation");
-        if (clLocCls) {
-            SEL selSim1 = agDecodeSelector(kEncIsSim1, sizeof(kEncIsSim1), 0x5A);
-            if (selSim1) {
-                gDynMethod_CLLoc_isSim1 = class_getInstanceMethod(clLocCls, selSim1);
-                if (gDynMethod_CLLoc_isSim1) {
-                    gOrig_CLLoc_isSim1 = method_getImplementation(gDynMethod_CLLoc_isSim1);
-                    method_setImplementation(gDynMethod_CLLoc_isSim1, (IMP)agDyn_CLLoc_isSim1);
-                }
-            }
-            SEL selSim2 = agDecodeSelector(kEncIsSim2, sizeof(kEncIsSim2), 0x5A);
-            if (selSim2) {
-                gDynMethod_CLLoc_isSim2 = class_getInstanceMethod(clLocCls, selSim2);
-                if (gDynMethod_CLLoc_isSim2) {
-                    gOrig_CLLoc_isSim2 = method_getImplementation(gDynMethod_CLLoc_isSim2);
-                    method_setImplementation(gDynMethod_CLLoc_isSim2, (IMP)agDyn_CLLoc_isSim2);
-                }
-            }
-            SEL selSrc = agDecodeSelector(kEncSrcInfo, sizeof(kEncSrcInfo), 0x5A);
-            if (selSrc) {
-                gDynMethod_CLLoc_srcInfo = class_getInstanceMethod(clLocCls, selSrc);
-                if (gDynMethod_CLLoc_srcInfo) {
-                    gOrig_CLLoc_srcInfo = method_getImplementation(gDynMethod_CLLoc_srcInfo);
-                    method_setImplementation(gDynMethod_CLLoc_srcInfo, (IMP)agDyn_CLLoc_srcInfo);
-                }
-            }
-            SEL selType = agDecodeSelector(kEncType, sizeof(kEncType), 0x5A);
-            if (selType) {
-                gDynMethod_CLLoc_type = class_getInstanceMethod(clLocCls, selType);
-                if (gDynMethod_CLLoc_type) {
-                    gOrig_CLLoc_type = method_getImplementation(gDynMethod_CLLoc_type);
-                    method_setImplementation(gDynMethod_CLLoc_type, (IMP)agDyn_CLLoc_type);
-                }
-            }
-        }
-
-        Class amapCls = objc_getClass("AMapLocationManager");
-        if (amapCls) {
-            SEL selRisk = sel_registerName("detectRiskOfFakeLocation");
-            gDynMethod_AMap_detectRisk = class_getInstanceMethod(amapCls, selRisk);
-            if (gDynMethod_AMap_detectRisk) {
-                gOrig_AMap_detectRisk = method_getImplementation(gDynMethod_AMap_detectRisk);
-                method_setImplementation(gDynMethod_AMap_detectRisk, (IMP)agDyn_AMap_detectRisk);
-            }
-            SEL selSetRisk = sel_registerName("setDetectRiskOfFakeLocation:");
-            gDynMethod_AMap_setDetectRisk = class_getInstanceMethod(amapCls, selSetRisk);
-            if (gDynMethod_AMap_setDetectRisk) {
-                gOrig_AMap_setDetectRisk = method_getImplementation(gDynMethod_AMap_setDetectRisk);
-                method_setImplementation(gDynMethod_AMap_setDetectRisk, (IMP)agDyn_AMap_setDetectRisk);
-            }
-        }
-        gHasInitializedObjCHooks = YES;
-    }
-    os_unfair_lock_unlock(&gHookSyncLock);
-    return;
-#else
-    // ==================== Dopamine 原版逻辑，100% 保持原封不动 ====================
     if (!gHasInitializedObjCHooks) {
         for (size_t i = 0; i < kAGClientHookTableCount; i++) {
             Class cls = objc_getClass(gClientHookTable[i].clsName);
@@ -24282,7 +24174,7 @@ static void agSyncClientHooksWithCurrentState(void) {
                 gClientHookTable[i].origIMP = method_getImplementation(m);
             }
         }
-        agInitStealthLocationClientHooksGroup();
+        %init(StealthLocationClientHooks);
         for (size_t i = 0; i < kAGClientHookTableCount; i++) {
             if (gClientHookTable[i].methodObj) {
                 gClientHookTable[i].hookedIMP = method_getImplementation(gClientHookTable[i].methodObj);
@@ -24444,7 +24336,6 @@ static void agSyncClientHooksWithCurrentState(void) {
         agInstallAntiDetectionCHooksIfNeeded();
     }
     os_unfair_lock_unlock(&gHookSyncLock);
-#endif
 }
 
 static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
