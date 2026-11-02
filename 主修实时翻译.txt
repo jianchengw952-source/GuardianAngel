@@ -24148,6 +24148,10 @@ static void agInstallAntiDetectionCHooksIfNeeded(void) {
 #endif
 }
 
+static void agInitStealthLocationClientHooksGroup(void) {
+    %init(StealthLocationClientHooks);
+}
+
 static void agSyncClientHooksWithCurrentState(void) {
     os_unfair_lock_lock(&gHookSyncLock);
     BOOL spoofActive = agIsCurrentProcessTargetedForLocSpoof();
@@ -24163,7 +24167,7 @@ static void agSyncClientHooksWithCurrentState(void) {
     // 1. 仅执行一次初始化挂载，保留原生 method_setImplementation 以 100% 保护 clientLocation 的 x8 大结构体返回寄存器不被破坏；
     // 2. 挂载后不再跨线程反复热插拔 IMP 指针，由各 Hook 内部首行的 0.001ms 门禁安全控制开关状态，彻底消除 arm64e 多线程竞态闪退！
     if (!gHasInitializedObjCHooks) {
-        %init(StealthLocationClientHooks);
+        agInitStealthLocationClientHooksGroup();
 
         static const uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
         static const uint8_t kEncIsSimSoft[] = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2D,0x3b,0x28,0x3f};
@@ -24276,7 +24280,7 @@ static void agSyncClientHooksWithCurrentState(void) {
                 gClientHookTable[i].origIMP = method_getImplementation(m);
             }
         }
-        %init(StealthLocationClientHooks);
+        agInitStealthLocationClientHooksGroup();
         for (size_t i = 0; i < kAGClientHookTableCount; i++) {
             if (gClientHookTable[i].methodObj) {
                 gClientHookTable[i].hookedIMP = method_getImplementation(gClientHookTable[i].methodObj);
