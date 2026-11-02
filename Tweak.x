@@ -7295,6 +7295,33 @@ static void agExecuteWeChatCommandDict(NSDictionary *dict, NSInteger retryCount)
                         } @catch (NSException *ex) {}
                     }
                 }
+                // 同音字拼音容错：解决语音将“心有阳光”识别为“新友阳光/辛酉阳光”的问题
+                if (!targetContact && cleanTarget.length >= 2) {
+                    NSMutableString *targetPyMut = [cleanTarget mutableCopy];
+                    CFStringTransform((__bridge CFMutableStringRef)targetPyMut, NULL, kCFStringTransformToLatin, false);
+                    CFStringTransform((__bridge CFMutableStringRef)targetPyMut, NULL, kCFStringTransformStripCombiningMarks, false);
+                    NSString *targetPy = [[targetPyMut componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+                    if (targetPy.length >= 4) {
+                        for (id c in allContacts) {
+                            @try {
+                                NSString *remark = [[c valueForKey:@"m_nsRemark"] lowercaseString];
+                                NSString *nick = [[c valueForKey:@"m_nsNickName"] lowercaseString];
+                                for (NSString *cand in @[remark ?: @"", nick ?: @""]) {
+                                    if (cand.length < 2) continue;
+                                    NSMutableString *cPyMut = [cand mutableCopy];
+                                    CFStringTransform((__bridge CFMutableStringRef)cPyMut, NULL, kCFStringTransformToLatin, false);
+                                    CFStringTransform((__bridge CFMutableStringRef)cPyMut, NULL, kCFStringTransformStripCombiningMarks, false);
+                                    NSString *cPy = [[cPyMut componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+                                    if ([cPy isEqualToString:targetPy] || (cleanTarget.length >= 3 && [cPy containsString:targetPy])) {
+                                        targetContact = c;
+                                        break;
+                                    }
+                                }
+                                if (targetContact) break;
+                            } @catch (NSException *ex) {}
+                        }
+                    }
+                }
             }
 
             if (!targetContact) {
@@ -7313,17 +7340,37 @@ static void agExecuteWeChatCommandDict(NSDictionary *dict, NSInteger retryCount)
             if ([cmdAction isEqualToString:@"open_chat"]) {
                 Class logicMgrCls = objc_getClass("MMMsgLogicManager");
                 id logicMgr = (ctx && [ctx respondsToSelector:@selector(getService:)]) ? [ctx getService:logicMgrCls] : (logicMgrCls ? [sc getService:logicMgrCls] : nil);
-                UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
-                UINavigationController *nav = [rootVC isKindOfClass:[UINavigationController class]] ? (UINavigationController *)rootVC : rootVC.navigationController;
-                if ([rootVC isKindOfClass:[UITabBarController class]]) {
-                    UIViewController *sel = ((UITabBarController *)rootVC).selectedViewController;
-                    if ([sel isKindOfClass:[UINavigationController class]]) nav = (UINavigationController *)sel;
+                UINavigationController *nav = nil;
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    if (w.hidden || !w.rootViewController) continue;
+                    UIViewController *r = w.rootViewController;
+                    if ([r isKindOfClass:[UINavigationController class]]) { nav = (UINavigationController *)r; break; }
+                    if ([r isKindOfClass:[UITabBarController class]]) {
+                        UIViewController *s = ((UITabBarController *)r).selectedViewController;
+                        if ([s isKindOfClass:[UINavigationController class]]) { nav = (UINavigationController *)s; break; }
+                    }
+                    if (r.navigationController) { nav = r.navigationController; break; }
+                }
+                if (!nav && retryCount < 6) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        agExecuteWeChatCommandDict(dict, retryCount + 1);
+                    });
+                    return;
                 }
                 if (logicMgr && nav && [logicMgr respondsToSelector:@selector(PushOtherBaseMsgControllerByContact:navigationController:animated:)]) {
                     [logicMgr PushOtherBaseMsgControllerByContact:targetContact navigationController:nav animated:YES];
-                    agWriteWeChatResult(YES, [NSString stringWithFormat:@"已打开与「%@」的微信对话窗", targetName]);
-                    return;
+                    NSString *showName = targetName;
+                    @try {
+                        NSString *r = [targetContact valueForKey:@"m_nsRemark"];
+                        NSString *n = [targetContact valueForKey:@"m_nsNickName"];
+                        if (r.length > 0) showName = r;
+                        else if (n.length > 0) showName = n;
+                    } @catch (NSException *ex) {}
+                    agWriteWeChatResult(YES, [NSString stringWithFormat:@"已打开与「%@」的微信对话窗", showName]);
+                } else {
+                    agWriteWeChatResult(NO, @"微信导航栏未就绪，请进入微信首页后重试");
                 }
+                return;
             }
 
             // 构造消息对象（修复双重 init 导致对象损坏的 Bug）
@@ -12120,7 +12167,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     NSString *fullModelPath = [NSString stringWithFormat:@"models/%@", rawModel];
 
     NSString *sysInstruction = [NSString stringWithFormat:
-        @"请用自然、亲切、简练的中文直接与用户实时语音对话。你的真实官方身份是 %@（模型：%@）。\n"
+        @"请用自然、亲切、简练的中文直接与用户实时语音对话。你的真实官方身份是 %@（模型：%@）。除非用户明确要求翻译外语，否则无论听到任何杂音都必须始终只用中文普通话回答，绝对禁止使用法语、西班牙语等外语回复。\n"
         @"【重要听音准则】用户全程仅使用中文（普通话）说话，所有接收到的麦克风语音均为中文发音（或夹杂常见英文App名），请务必按中文普通话语境理解与转写，严禁将用户的中文语音误判或转写为韩语、越南语、印地语、西班牙语、葡萄牙语、德语或荷兰语等外语。\n"
         @"【设备控制指令规则】当用户明确要求控制手机或执行具体操作时，请在回答末尾附带标准指令标记（支持连续输出多个 [ACTION:{...}] 组合连招，系统将按时序自动依次执行）：\n"
         @"1. 打开应用：[ACTION:{\"type\":\"open_app\",\"app\":\"应用名\"}]\n"
@@ -13892,7 +13939,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         // 3. 倒装点击句式正则（如：“打开我屏幕上面现在有一个按钮是电池。让我点击”）
         invertedTapRe = [NSRegularExpression regularExpressionWithPattern:@"(?:按钮|图标|选项|文字|数字|地方)(?:是|叫|为)[“\"'「]?([^”\"'」，。！？,.!?]+?)[”\"'」]?(?:，|,|。|\\s)*(?:让我|帮我|给我|你)?(?:点击|点一下|点开|点选|点|打开)" options:0 error:nil];
 
-        wxPat1 = [NSRegularExpression regularExpressionWithPattern:@"(?:打开微信|在微信|用微信|微信)(?:里|中)?(?:给|向|跟|发给|告诉|对)(.+?)(?:发消息|发信息|发一句话|发个消息|发条微信|发微信|发|说|留言)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
+        wxPat1 = [NSRegularExpression regularExpressionWithPattern:@"(?:打开微信|在微信|用微信|微信)(?:里|中|上)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|给|向|跟|发给|告诉|对|找)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:跟他说|跟她说|对他说|对她说|发消息|发信息|发一句话|发个消息|发条微信|发微信|发|说|留言)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         wxPat2 = [NSRegularExpression regularExpressionWithPattern:@"(?:给|向|跟|对)(.+?)(?:发微信|发条微信|发个微信|发微信消息|微信留言|微信说)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         wxPat3 = [NSRegularExpression regularExpressionWithPattern:@"(?:发微信|发条微信|微信发消息)(?:给|发给|向)(.+?)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         numRe = [NSRegularExpression regularExpressionWithPattern:@"(\\d{1,3})" options:0 error:nil];
@@ -13911,6 +13958,13 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     [trimSet formUnionWithCharacterSet:[NSCharacterSet characterSetWithCharactersInString:@"。！？，、,.!?；;：:“”\"'"]];
     NSString *cmd = [[cmdText stringByTrimmingCharactersInSet:trimSet] lowercaseString];
     if (cmd.length == 0) return NO;
+    // 消除 gemini-3.1-flash-live-preview 在每个汉字与标点之间插入的空格（如 '帮 我 打 开 微 信' -> '帮我打开微信'）
+    static NSRegularExpression *sCJKSpaceRegex = nil;
+    static dispatch_once_t sCJKSpaceOnce;
+    dispatch_once(&sCJKSpaceOnce, ^{
+        sCJKSpaceRegex = [NSRegularExpression regularExpressionWithPattern:@"(?<=[\\u4e00-\\u9fa5，。！？、：；,.!?])\\s+|\\s+(?=[\\u4e00-\\u9fa5，。！？、：；,.!?])" options:0 error:nil];
+    });
+    cmd = [sCJKSpaceRegex stringByReplacingMatchesInString:cmd options:0 range:NSMakeRange(0, cmd.length) withTemplate:@""];
 
     static NSArray<NSString *> *sQueryNegativeKeywords = nil;
     static dispatch_once_t sQueryOnce;
@@ -13971,7 +14025,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     // 0.2 匹配任意含“然后 / 接着 / 再去”的多步复合连招（绝不再被后面的单步点击截胡！）
     BOOL isLocAndShieldCombo = (([cleanCmd containsString:@"定位"] || [cleanCmd containsString:@"位置"] || [cleanCmd containsString:@"丁维"]) &&
                                 ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] || [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] || [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"网检车"]));
-    NSTextCheckingResult *chainMatch = isLocAndShieldCombo ? nil : [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
+    BOOL isWeChatCompoundCmd = ([cleanCmd containsString:@"微信"] &&
+                                ([cleanCmd containsString:@"找到"] || [cleanCmd containsString:@"找一下"] || [cleanCmd containsString:@"聊天"] || [cleanCmd containsString:@"对话"] || [cleanCmd containsString:@"发"] || [cleanCmd containsString:@"说"] || [cleanCmd containsString:@"留言"] || [cleanCmd containsString:@"未读"] || [cleanCmd containsString:@"扫"] || [cleanCmd containsString:@"付"] || [cleanCmd containsString:@"收"] || [cleanCmd containsString:@"圈"]));
+    NSTextCheckingResult *chainMatch = (isLocAndShieldCombo || isWeChatCompoundCmd) ? nil : [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (chainMatch && chainMatch.numberOfRanges >= 3) {
         NSString *step1Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         NSString *step2Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
@@ -14080,19 +14136,10 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
 
-    // 0A. 💬 微信未读消息检查、打开指定好友聊天窗与发消息
+    // 0A. 💬 微信未读消息检查、发消息与打开指定好友聊天窗
     if ([cleanCmd containsString:@"微信"] && ([cleanCmd containsString:@"未读"] || [cleanCmd containsString:@"谁给我发"] || [cleanCmd containsString:@"新消息"])) {
         [self executeActionDictionary:@{@"type": @"wechat_read_unread"}];
         return YES;
-    }
-    NSRegularExpression *wxOpenChatRe = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|进入|调出|切到|看看)(?:微信)?(?:里|中|上)?[。，,.、\\s]*(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天)" options:0 error:nil];
-    NSTextCheckingResult *wxOpenMatch = [wxOpenChatRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
-    if (wxOpenMatch && wxOpenMatch.numberOfRanges > 1) {
-        NSString *chatTarget = [[cleanCmd substringWithRange:[wxOpenMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
-        if (chatTarget.length > 0) {
-            [self executeActionDictionary:@{@"type": @"wechat_open_chat", @"target": chatTarget}];
-            return YES;
-        }
     }
     NSTextCheckingResult *wxMatch = [wxPat1 firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (!wxMatch) wxMatch = [wxPat2 firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
@@ -14106,6 +14153,20 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         if (target.length > 0 && content.length > 0) {
             [self executeActionDictionary:@{@"type": @"wechat_message", @"target": target, @"content": content}];
             return YES;
+        }
+    }
+    NSRegularExpression *wxOpenChatRe = [NSRegularExpression regularExpressionWithPattern:@"(?:(?:打开|进入|调出|切到|看看|在|去|用)微信(?:里|中|上)?[。，,.、\\s]*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|打开|进入|看看)?(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天)?$)|(?:(?:打开|进入|调出|切到|看看)(?:微信)?(?:里|中|上)?[。，,.、\\s]*(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天))" options:0 error:nil];
+    NSTextCheckingResult *wxOpenMatch = [wxOpenChatRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
+    if (wxOpenMatch) {
+        NSRange r1 = ([wxOpenMatch numberOfRanges] > 1) ? [wxOpenMatch rangeAtIndex:1] : NSMakeRange(NSNotFound, 0);
+        NSRange r2 = ([wxOpenMatch numberOfRanges] > 2) ? [wxOpenMatch rangeAtIndex:2] : NSMakeRange(NSNotFound, 0);
+        NSRange targetRange = (r1.location != NSNotFound && r1.length > 0) ? r1 : r2;
+        if (targetRange.location != NSNotFound && targetRange.length > 0) {
+            NSString *chatTarget = [[cleanCmd substringWithRange:targetRange] stringByTrimmingCharactersInSet:trimSet];
+            if (chatTarget.length > 0 && ![chatTarget isEqualToString:@"微信"] && ![chatTarget containsString:@"扫一扫"] && ![chatTarget containsString:@"付款"] && ![chatTarget containsString:@"收款"] && ![chatTarget containsString:@"朋友圈"]) {
+                [self executeActionDictionary:@{@"type": @"wechat_open_chat", @"target": chatTarget}];
+                return YES;
+            }
         }
     }
 
