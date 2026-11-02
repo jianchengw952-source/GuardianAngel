@@ -565,3 +565,41 @@
 - **验证结果**:
   - `ar -t` 结果包含且仅包含: `control.tar.xz`, `data.tar.xz`。
   - 双架构均在 macOS 14 runner 上 100% 成功编译并通过 Sileo 纯 XZ 格式校验。
+
+---
+
+## 2026-11-02: Relaxin 配置文件防扫描与进程自隐身增强 (Run #47)
+
+### 1. 修改要点 (3 处精准更新)
+1. **第 1 处：保存 GeminiPrefs (saveGeminiPrefs)**:
+   - `#if ROOTHIDE` 下：仅向 `.jbroot` 内部写入，并主动删除外部系统 `MyRootfsPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")` 与 `MyRootfsPath(@"/tmp/com.custom.geminisirioverlay.plist")`，防止 App 扫出残留配置文件痕迹；
+   - `#else` 下：保持 Dopamine 原版多路径写入与 `@"/tmp/..."` 清理 100% 不变；
+   - 目录创建判断扩展 `([detectedRoot containsString:@".jbroot-"] || [wp hasPrefix:detectedRoot])`。
+2. **第 2 处：镜像自隐身函数 (hooked_dladdr / hooked_dyld_get_image_name 等)**:
+   - 新增 `agShouldHideSelfInProcess()`：
+     - 在 `#if ROOTHIDE` 下，检测如果为第三方 App（排除 SpringBoard 和 Preferences），无论是否开启虚拟定位和防检测，始终隐藏自身 `.jbroot-XXXX` 路径；
+     - 在 `#else` (Dopamine) 下，100% 等同于原有 `agIsAntiDetectionShieldActive()`；
+   - `hooked_dladdr`、`hooked_dyld_get_image_name`、`hooked_class_getImageName`、`hooked_objc_copyImageNames`、`hooked_dyld_image_path_containing_address`、`hooked_access` 均改用 `agShouldHideSelfInProcess()`。
+3. **第 3 处：agSyncClientHooksWithCurrentState**:
+   - 在 `#if ROOTHIDE` 下，若 `agShouldHideSelfInProcess()` 为真，即使未开启虚拟定位 (`spoofActive == NO`)，也确保调用一次 `agInstallAntiDetectionCHooksIfNeeded()` 安装底层 C 函数镜像自隐身，确保第三方 App 内存中永不暴露 `.jbroot-XXXX` 路径。
+   - 所有定位、Wi-Fi、传感器 Hook 逻辑在关闭定位时依然 100% 还原为硬件真实数据。
+   - 在 Dopamine (`#else`) 下完全不受影响。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,333,307 字节
+- SHA256 校验和：`04013dacf1b7d8487d0e40ef74487242623929a091be39f39e76f6e36e75b5b3`
+
+### 3. CI 构建与产物
+- 提交哈希：`0d8187f`
+- GitHub Actions CI Run #47 (ID: 41464578778) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526,896 字节, SHA256: `a507bf1a9dd0c1946e5f5fff09045178a05049aaf7f3d8cdb783b8a13ae0d116`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (343,400 字节, SHA256: `bc3d1d6d8d4775a37f45618a113e44045c3d88d03a3e88c07ad93794034a460c`)
