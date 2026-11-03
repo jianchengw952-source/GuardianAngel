@@ -1039,3 +1039,49 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (564,204 字节, SHA256: `1f4cd4177e082853ecd0e0e87b24011fc521015ba7ecbdcef25d5e13d46356ca`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (363,036 字节, SHA256: `478e1147fc9dcbf6ae124edb0482ea39466955bb783fc93c523068e027a582a5`)
+
+
+---
+
+## 2026-11-03: 越狱双环境自动定位全插件 + 插件占用率与降温急救升级 + 4 项全功能诊断预热 (Run #62 / #63)
+
+### 1. 修改要点 (4 大核心实现)
+1. **升级 `MyJBPath` 自动兼容 Dopamine (/var/jb) 与 Relaxin (.jbroot-XXXX)**:
+   - 优先通过 `dladdr((const void *)&MyJBPath, &selfInfo)` 从本插件在内存中的物理路径动态提取 `.jbroot-XXXX` 根目录（Relaxin/RootHide 100% 命中）；
+   - 动态调用 `jbroot("/")` 符号辅助解析；
+   - 扫描 `/var/containers/Bundle/Application/.jbroot-*` 进行环境兜底；
+   - Dopamine 标准无根越狱环境默认返回 `/var/jb`，实现双端零死角自动兼容。
+2. **升级 `agAnalyze24HourTweakPowerDrain` 与 `agPerformThermalCooldownAndReport`**:
+   - 结合 `AppleSmartBattery` 真实放电电流（mA）与温度（℃），扫描 `agDynamicLibrariesDirs()` 下全部已装插件常驻映射体积计算 24h 耗电与常驻占用排行；
+   - 发热降温急救模块融合插件常驻代码段映射占用检测，按占用权重输出前三名活跃插件；
+   - 抑制 `isCharging` 编译器未引用告警，并在 Makefile 中加入 `-Wno-unused-but-set-variable`。
+3. **开机与 WebSocket 4 项全功能诊断预热**:
+   - 在 `agRecordSpringBoardBootEventAndWarmupCache` 内部补齐预热调用：
+     - `agAnalyzeRecentCrashesAndResprings(nil, nil, nil);`
+     - `agAnalyze24HourTweakPowerDrain(nil, nil, nil);`
+     - `agAnalyze24HourTweakNetworkTraffic(nil, nil, nil);`
+     - `agAnalyze24HourRadarInterceptions(nil, nil, nil);`
+   - 在 `URLSession:webSocketTask:didOpenWithProtocol:` 中将 `gCachedRadarSpeechStr` 实时防检测雷达拦截实测数据注入 `sysInstruction`。
+4. **口语指令与大模型工具拦截打通**:
+   - 在 `tryExecuteDirectLocalCommand:` 的 `7F.` 降温指令中扩充“插件占用 / 占用检测 / 哪个插件占用”口语触发；
+   - 在 `isPureStatusQuery` 与 `isSystemDiagQuery` 中添加插件占用免拦截；
+   - 在 Gemini 与 OpenAI WebSocket 的 `TOOL_INTERCEPT` 发烫/降温分支中，将真实插件占用排行数据返回给大模型口语播报。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,438,513 字节
+- SHA256 校验和：`8ba8264f0b60644ae33202af435eb3ea386e54fa6c4bcf838991bd50026ccca5`
+
+### 3. CI 构建与产物
+- 提交哈希：`c951193` (先 `4bdcf5b` 后 `c951193`)
+- GitHub Actions CI Run #63 (ID: 41627688657) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`debian-binary`, `control.tar.xz`, `data.tar.xz`，0% Zstandard)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (566,048 字节, SHA256: `8062377960f59177bdb70c87db329ccae554bde87c072996d0eaabc4de4b3fdb`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,292 字节, SHA256: `0e96595992c5d1e09f17a0ff7c695dc5cd9ab36af3ae550a3c81bb8e78f55b9e`)
