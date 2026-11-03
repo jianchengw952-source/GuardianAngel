@@ -1100,3 +1100,36 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (566,104 字节, SHA256: `57fb7c6baf483e71a62aac5392237b1c0ecda46a4627b4c2198eec6082e2dc92`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,308 字节, SHA256: `7632ad34c06a3e6926a866b64106b10201c67dae964edacfaa255f09f4e64049`)
+
+---
+
+## 2026-11-04: 严格隔离防检测参数与底层标记，纯定位模式与防检测专属Hook拆分 (Run #74)
+
+### 1. 核心改进点
+1. **修改 1：`-[CLLocation coordinate]` 标记防串台**：
+   - 将内部 `setReferenceFrame:1` 调用严格收敛进 `if (agIsAntiDetectionShieldActive())` 判断中。在不开防检测时绝不主动篡改内部参考系标记。
+2. **修改 2：`agDyn_CLLoc_clientLoc` 纯定位分流**：
+   - 关闭防检测开关时：仅替换核心经纬度（若处于移动模式则同步速度与航向），保留 iOS 原生时间戳。
+   - 海拔、精度、硬件源类型 (`raw.type = 1`)、`referenceFrame = 1` 等全部收进 `if (shieldOn)` 内部，杜绝不开防检测时污染底层数据。
+3. **修改 3：`gClientHookTable` 专属隔离与 C-Hook 解耦**：
+   - 将 `ellipsoidalAltitude`、`speedAccuracy`、`courseAccuracy`、`description`、`accuracyAuthorization` 等伪装方法全部标记为 `isShieldOnly = YES`（仅开启防检测开关时挂载）。
+   - 将纯越狱环境隐身 C-Hook (`agInstallEnvStealthCHooksIfNeeded`: `dladdr`, `_dyld_get_image_name`) 与防检测 Wi-Fi C-Hook (`agInstallWiFiShieldCHooksIfNeeded`: `CNCopyCurrentNetworkInfo`) 彻底拆开。
+   - 在 `agSyncClientHooksWithCurrentState()` 中分别按 `envStealthActive` 与 `shieldActive` 按需独立挂载。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,439,630 字节
+- SHA256 校验和：`463152792d85525b36c416938d44831e1fa9a3c3f198ec7c9a2ec3e45a5c18ce`
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `d953ed1`
+- GitHub Actions CI Run #74 (ID: 41675260345) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (565,968 字节, SHA256: `4ef9a4e44650dc3f3028da7a57fee35e5d03f4f01e2c25a5d5182b036d34992d`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,248 字节, SHA256: `2637c18dd8a1d1b4109bf20141141250ac1d68afdd63fb86f4d78ec27536560f`)
