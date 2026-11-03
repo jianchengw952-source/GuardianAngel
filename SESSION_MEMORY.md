@@ -1168,3 +1168,36 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (567,676 字节, SHA256: `308b06b73c5bd494d269af42964a673fef73694b201c153b40583f5102adc3d7`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,300 字节, SHA256: `2bd4ebb6578aabfbac82528ba7000adad3251db6259fc3a00b9697d4ebf8bf7d`)
+
+---
+
+## 2026-11-04: 全面以内核寄存器为准并由SpringBoard无沙盒写回磁盘 (Run #76)
+
+### 1. 核心改进点
+1. **修改 1：`reloadGeminiPrefsCache` 去除 `if (!newestDict)` 限制**：
+   - 彻底解除仅沙盒受限 App 才读内核寄存器的分支阻隔。
+   - 任何进程（包括 SpringBoard、Preferences 等）在收到跨进程通知刷新配置时，强制置位 `sForceInvalidateKernelCache = YES;`，一律以最新的 `agReadSpoofStateFromKernel` 为权威准则。
+   - 彻底解决《设置》App 因沙盒限制无法直接覆写 `.jbroot` 磁盘文件、导致 1 秒后被 SpringBoard 定时器旧状态反弹覆盖的问题。
+2. **修改 2：`saveGeminiPrefs` 权限强化与容错写入**：
+   - 写入路径父级目录设置为 `0777` 权限，文件写入后设置为 `0666` 权限。
+   - 增加 `if (![immutableCopy writeToFile:wp atomically:YES]) { [immutableCopy writeToFile:wp atomically:NO]; }` 容错兜底写入机制。
+3. **修改 3：`syncMasterStateFromPrefsAndRestartTimer` SpringBoard 权威回写机制**：
+   - SpringBoard 收到设置开关变动通知时，由拥有最高无沙盒权限的 SpringBoard 顺手将最新内核状态落盘写入 `MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist")`，并设置 `chmod 0666`，确保持久化与内核运行态 100% 绝对一致。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,440,676 字节
+- SHA256 校验和：`0658185cf17522b7b7f84b01f6b16135c47b6cc2a89532d206b92068a63e86e9`
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `28c287b`
+- GitHub Actions CI Run #76 (ID: 41682031945) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (561,008 字节, SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,408 字节, SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
