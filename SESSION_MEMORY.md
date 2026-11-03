@@ -1085,3 +1085,18 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (566,048 字节, SHA256: `8062377960f59177bdb70c87db329ccae554bde87c072996d0eaabc4de4b3fdb`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,292 字节, SHA256: `0e96595992c5d1e09f17a0ff7c695dc5cd9ab36af3ae550a3c81bb8e78f55b9e`)
+
+---
+
+## 2026-11-04: 重新编译并打包 #63 稳定版发布产物 (Run #73)
+
+### 1. 编译背景
+- 触发方式：基于纯净无损的 #63 稳定源码（1,438,513 字节，SHA256: `8ba8264f0b60644ae33202af435eb3ea386e54fa6c4bcf838991bd50026ccca5`）执行官方打包流水线。
+- 目标平台：Dopamine (Rootless arm64) & Relaxin (RootHide arm64e PAC) 双架构。
+
+### 2. CI 构建与安装包信息
+- Git Commit: `fe1bc22`
+- GitHub Actions CI Run #73 (ID: 41669490986) - 100% 构建成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (566,104 字节, SHA256: `57fb7c6baf483e71a62aac5392237b1c0ecda46a4627b4c2198eec6082e2dc92`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,308 字节, SHA256: `7632ad34c06a3e6926a866b64106b10201c67dae964edacfaa255f09f4e64049`)
