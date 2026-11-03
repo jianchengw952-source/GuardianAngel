@@ -916,3 +916,48 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (538124 字节, SHA256: `8989f62a1ca1a9787d73aefff69773d15ec8aa86a4e6f4081cf9428b65e92942`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352608 字节, SHA256: `ee205d2daa49cc4d6584f83a821021352db8e95667e1fe8bc00b248cdd9fff0b`)
+
+---
+
+## 2026-11-03: 第二批升级（⭐虚拟定位可编辑收藏夹 + 🛡️App防检测24h雷达 + 联网工具拦截本机真实诊断数据）(Run #58)
+
+### 1. 修改要点 (5 处核心升级全景)
+1. **修改 1：🛡️ App 越狱与定位检测雷达 24h 统计引擎与客户端信标上报**:
+   - 新增 `agReportAntiDetectionInterceptFromClient(uint32_t detectType)` 客户端纯 C 零开销拦截事件上报（限流每 2 秒最多上报 1 次，0 文件 I/O，0 对象分配）；
+   - 在 SpringBoard 注册 Darwin 通知 `com.apple.coremedia.spatial.radar`，`agSpringBoardRadarHitCallback` 接收信标反查 App 中文名并记录进近 24 小时滚动账本 `ag_radar_24h.json`（最多保留 1000 条）；
+   - 实现 `agAnalyze24HourRadarInterceptions` 按需生成 24h 防检测雷达报告，输出 Pill、Card 详情与口语化语音播报，采用全局强引用变量规避野指针；
+   - 在 `%ctor` 针对第三方应用分支初始化 `gCurrentProcessBundleHash`；并在 `hooked_dyld_get_image_name`（type 1）、`agDyn_SrcInfo_isSimSoft` 与 `agDyn_AMap_detectRisk`（type 2）、`hooked_CNCopyCurrentNetworkInfo`（type 3）、`canOpenURL:`（type 4）全面接入拦截上报。
+2. **修改 2：⭐ AGLocationSpoofManager 匹配收藏夹预设与 0 秒一键切换**:
+   - 在 `resolvePlaceAndPin:completion:` 开头优先匹配用户自定义收藏夹 `AG_LocSpoof_Favorites`；
+   - 匹配成功自动恢复收藏点绑定的坐标、专属伪装 Wi-Fi (SSID/BSSID)、防检测满配护盾开关、移动方式与生效软件名单，并在 0 秒内同步内核生效。
+3. **修改 3：AGLocationSpoofSettingsViewController 导航栏「⭐ 收藏夹」UI 主控**:
+   - 导航栏右上角新增 `⭐ 收藏夹` 按钮；
+   - 实现 `openFavoritesMenuTapped`（展示常用收藏列表与当前选点快速入库）、`showActionsForFavoriteAtIndex:item:`（0秒秒切、编辑、用当前中心点与设置覆盖、删除）、`showAddOrEditFavoriteDialogAtIndex:existingItem:`（输入名称、专属 SSID/BSSID、坐标并自动绑定当前生效软件名单）。
+4. **修改 4：语音控制收藏夹、点名软件自动加白名单与雷达语音查询**:
+   - 在 `tryExecuteDirectLocalCommand:` 中支持“把当前定位收藏为XX”直接将当前经纬度与设置存入收藏夹；
+   - 支持“把[某软件]定位到[某地]”（自动将目标软件加入白名单并秒切定位）；
+   - 增加 7E 规则支持查询防检测雷达拦截记录（“雷达/检测记录/探测记录/拦截记录/谁在查我”）；
+   - 在 `executeActionDictionary:` 中分发 `radar_intercept_report`；并在 `isSystemDiagQuery` 与 `isPureStatusQuery` 判定中加入“拦截/检测记录”。
+5. **修改 5：TOOL_INTERCEPT 本地硬件诊断拦截（终止大模型盲目网页搜索）**:
+   - 在 WebSocket 工具拦截层拦截大模型发起的 `google_search`；
+   - 当检索词包含“耗电/费电”、“流量/偷跑”、“注销/崩溃/闪退/死机”、“拦截/检测记录”时，直接调用本机实测诊断引擎（`agAnalyze24HourTweakPowerDrain`、`agAnalyze24HourTweakNetworkTraffic`、`agAnalyzeRecentCrashesAndResprings`、`agAnalyze24HourRadarInterceptions`）；
+   - 直接把本机真实诊断结果返回给大模型让 AI 亲切口语念出，并下发卡片与胶囊，严禁再次发起外部搜索。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,411,491 字节
+- SHA256 校验和：`db811d0d00bb20c74d3dfdf239f171caa9e2c517c4c82c9431f3ecc16515035c`
+
+### 3. CI 构建与产物
+- 提交哈希：`6cf1b4e`
+- GitHub Actions CI Run #58 (ID: 41617491839) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (551,692 字节, SHA256: `9e697a47e6330d9dbd427fcc0039191c2408774570fa74bf5a93b3f9c49175a4`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (363,000 字节, SHA256: `462ebc2f424f1b45f4578408e9d1bd002cc5bb601343810fb1eab8a2ffe8c30d`)
