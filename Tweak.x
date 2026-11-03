@@ -898,22 +898,29 @@ static void reloadGeminiPrefsCache(void) {
         [merged addEntriesFromDictionary:newestDict];
     }
 
-    // 仅当进程无法读取磁盘 plist (newestDict == nil，如受沙盒限制的第三方 App) 时，才用内核寄存器状态填充；
-    // SpringBoard 与 Preferences 永远以磁盘最新 plist 为唯一权威源，杜绝定时器旧状态反向覆盖关闭指令！
-    if (!newestDict) {
-        BOOL kActive = NO, kShield = NO;
-        NSInteger kScope = 0, kWiFi = 0;
-        double kLat = 0.0, kLon = 0.0;
-        if (agReadSpoofStateFromKernel(&kActive, &kScope, &kShield, &kWiFi, &kLat, &kLon, NULL, NULL, NULL)) {
-            merged[@"AG_LocSpoof_Active"] = @(kActive);
-            merged[@"AG_LocSpoof_ScopeMode"] = @(kScope);
-            merged[@"AG_AntiDet_ShieldEnabled"] = @(kShield);
-            merged[@"AG_AntiDet_HideSimFlag"] = @(kShield);
-            merged[@"AG_AntiDet_WiFiMode"] = @(kWiFi);
-            if (fabs(kLat) > 0.001 || fabs(kLon) > 0.001) {
-                merged[@"AG_LocSpoof_Lat"] = @(kLat);
-                merged[@"AG_LocSpoof_Lon"] = @(kLon);
-            }
+    // 关键修复：无论磁盘 plist 是否存在，定位与防检测的核心开关状态一律实时同步自 notifyd 内核寄存器！
+    // 彻底解决《设置》App 因沙盒限制无法直接覆写 .jbroot 磁盘文件、导致 1 秒后被 SpringBoard 定时器旧状态反弹覆盖的 Bug！
+    BOOL kActive = NO, kShield = NO;
+    NSInteger kScope = 0, kWiFi = 0;
+    double kLat = 0.0, kLon = 0.0;
+    sForceInvalidateKernelCache = YES;
+    if (agReadSpoofStateFromKernel(&kActive, &kScope, &kShield, &kWiFi, &kLat, &kLon, NULL, NULL, NULL)) {
+        merged[@"AG_LocSpoof_Active"] = @(kActive);
+        merged[@"AG_LocSpoof_ScopeMode"] = @(kScope);
+        merged[@"AG_AntiDet_ShieldEnabled"] = @(kShield);
+        merged[@"AG_AntiDet_HideSimFlag"] = @(kShield);
+        merged[@"AG_AntiDet_MotionSync"] = @(kShield);
+        merged[@"AG_AntiDet_HideHookPtr"] = @(kShield);
+        merged[@"AG_LocSpoof_JitterEnabled"] = @(kShield);
+        merged[@"AG_AntiDet_WiFiMode"] = @(kWiFi);
+        if (fabs(kLat) > 0.001 || fabs(kLon) > 0.001) {
+            merged[@"AG_LocSpoof_Lat"] = @(kLat);
+            merged[@"AG_LocSpoof_Lon"] = @(kLon);
+        }
+        NSString *kSSID = nil, *kBSSID = nil;
+        if (kWiFi == 2 && agReadCustomWiFiFromKernel(&kSSID, &kBSSID)) {
+            merged[@"AG_AntiDet_FakeSSID"] = kSSID;
+            merged[@"AG_AntiDet_FakeBSSID"] = kBSSID;
         }
     }
 
@@ -1073,8 +1080,11 @@ sIsInternalPrefsFileRead = YES;
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
         }
         if ([[NSFileManager defaultManager] fileExistsAtPath:dir]) {
-            [immutableCopy writeToFile:wp atomically:YES];
-            chmod([wp UTF8String], 0644);
+            chmod([dir UTF8String], 0777);
+            if (![immutableCopy writeToFile:wp atomically:YES]) {
+                [immutableCopy writeToFile:wp atomically:NO];
+            }
+            chmod([wp UTF8String], 0666);
         }
     }
     sIsInternalPrefsFileRead = NO;
@@ -2176,6 +2186,12 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
 - (void)syncMasterStateFromPrefsAndRestartTimer {
     reloadGeminiPrefsCache();
     NSDictionary *p = agReadOnlyPrefs();
+    // 由拥有完整无沙盒权限的 SpringBoard 将最新内核状态同步落盘到 .jbroot，确保持久化一致
+    if (agIsSpringBoardProcess() && p.count > 0) {
+        NSString *sbPlistPath = MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist");
+        [p writeToFile:sbPlistPath atomically:YES];
+        chmod([sbPlistPath UTF8String], 0666);
+    }
     BOOL active = [p[@"AG_LocSpoof_Active"] boolValue];
     NSInteger scopeMode = p[@"AG_LocSpoof_ScopeMode"] ? [p[@"AG_LocSpoof_ScopeMode"] integerValue] : 0;
     NSInteger moveMode  = p[@"AG_LocSpoof_MoveMode"] ? [p[@"AG_LocSpoof_MoveMode"] integerValue] : 0;
