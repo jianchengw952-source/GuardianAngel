@@ -4086,28 +4086,35 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     NSArray<NSDictionary *> *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? p[@"AG_LocSpoof_Favorites"] : @[];
 
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"⭐ 常用位置与打卡收藏夹"
-                                                                   message:@"每个收藏点自动绑定：坐标 + 移动方式 + 专属伪装Wi-Fi + 防检测开关 + 已勾选的生效软件名单（点击即可 0 秒切换或编辑）"
+                                                                   message:@"每个收藏点自动绑定：自定义名称 + 坐标 + 专属伪装Wi-Fi + 防检测开关 + 已勾选的生效软件名单"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    if (@available(iOS 13.0, *)) {
+        sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    }
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"➕ 将当前地图选点与设置加入收藏" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self showAddOrEditFavoriteDialogAtIndex:-1 existingItem:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showAddOrEditFavoriteDialogAtIndex:-1 existingItem:nil];
+        });
     }]];
 
     for (NSUInteger i = 0; i < favs.count; i++) {
         NSDictionary *item = favs[i];
         if (![item isKindOfClass:[NSDictionary class]]) continue;
         NSString *name = agSafeStr(item[@"name"]);
-        if (name.length == 0) name = @"未命名地点";
+        if (name.length == 0) name = [NSString stringWithFormat:@"收藏位置 %lu", (unsigned long)(i + 1)];
         BOOL shield = (item[@"shieldOn"] == nil) ? YES : [item[@"shieldOn"] boolValue];
         NSString *ssid = agSafeStr(item[@"ssid"]);
         NSInteger scope = [agSafeNum(item[@"scopeMode"]) integerValue];
         NSArray *apps = [item[@"targetApps"] isKindOfClass:[NSArray class]] ? item[@"targetApps"] : @[];
         NSString *scopeTag = (scope == 0) ? @"全机软件" : [NSString stringWithFormat:@"%lu款软件", (unsigned long)apps.count];
         NSString *wifiTag = (ssid.length > 0) ? [NSString stringWithFormat:@"🛜%@", ssid] : (shield ? @"🛡️防检测" : @"⚡纯定位");
-        NSString *btnTitle = [NSString stringWithFormat:@"📍 %@（%@ · %@）", name, wifiTag, scopeTag];
+        NSString *btnTitle = [NSString stringWithFormat:@"⭐ %@（%@ · %@）", name, wifiTag, scopeTag];
 
         [sheet addAction:[UIAlertAction actionWithTitle:btnTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [self showActionsForFavoriteAtIndex:i item:item];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showActionsForFavoriteAtIndex:i item:item];
+            });
         }]];
     }
 
@@ -4121,16 +4128,21 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 - (void)showActionsForFavoriteAtIndex:(NSUInteger)idx item:(NSDictionary *)item {
     NSString *name = agSafeStr(item[@"name"]) ?: @"收藏点";
+    NSString *addr = agSafeStr(item[@"address"]);
     double lat = [agSafeNum(item[@"lat"]) doubleValue];
     double lon = [agSafeNum(item[@"lon"]) doubleValue];
     NSString *ssid = agSafeStr(item[@"ssid"]);
     NSString *bssid = agSafeStr(item[@"bssid"]);
-    NSString *detailMsg = [NSString stringWithFormat:@"坐标：%.5f, %.5f\n伪装Wi-Fi：%@\n点击下方选项可立即切换或编辑此收藏：",
-                           lat, lon, (ssid.length > 0 ? [NSString stringWithFormat:@"%@ (%@)", ssid, bssid] : @"未绑定特定Wi-Fi")];
+    NSString *addrLine = (addr.length > 0 && ![addr isEqualToString:name]) ? [NSString stringWithFormat:@"地图位置：%@\n", addr] : @"";
+    NSString *detailMsg = [NSString stringWithFormat:@"%@坐标：%.5f, %.5f\n伪装Wi-Fi：%@\n语音指令：直接说「定位到%@」即可0秒切换",
+                           addrLine, lat, lon, (ssid.length > 0 ? [NSString stringWithFormat:@"%@ (%@)", ssid, bssid] : @"未绑定特定Wi-Fi"), name];
 
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"⭐ %@", name]
                                                                   message:detailMsg
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    if (@available(iOS 13.0, *)) {
+        menu.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    }
 
     [menu addAction:[UIAlertAction actionWithTitle:@"⚡ 立即切换到此收藏位置 (0秒生效)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [[AGLocationSpoofManager sharedSpoofer] resolvePlaceAndPin:name completion:^(BOOL ok, NSString *summary) {
@@ -4142,11 +4154,13 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
         }];
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"✏️ 编辑此收藏 (改名称 / 改Wi-Fi / 改坐标)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self showAddOrEditFavoriteDialogAtIndex:(NSInteger)idx existingItem:item];
+    [menu addAction:[UIAlertAction actionWithTitle:@"✏️ 自定义收藏名称 / 编辑 Wi-Fi 与坐标" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showAddOrEditFavoriteDialogAtIndex:(NSInteger)idx existingItem:item];
+        });
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图中心点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+    [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图选点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         NSMutableDictionary *p = loadGeminiPrefs();
         NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (idx < favs.count) {
@@ -4154,6 +4168,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             NSMutableDictionary *updated = [item mutableCopy];
             updated[@"lat"] = @(curCenter.latitude);
             updated[@"lon"] = @(curCenter.longitude);
+            updated[@"address"] = self.previewPlaceName ?: @"";
             updated[@"scopeMode"] = p[@"AG_LocSpoof_ScopeMode"] ?: @0;
             updated[@"targetApps"] = p[@"AG_LocSpoof_TargetApps"] ?: @[];
             updated[@"moveMode"] = p[@"AG_LocSpoof_MoveMode"] ?: @0;
@@ -4191,37 +4206,49 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     NSDictionary *p = agReadOnlyPrefs();
     CLLocationCoordinate2D mapCenter = self.mapView.centerCoordinate;
 
-    NSString *initName = isEdit ? agSafeStr(existing[@"name"]) : (self.previewPlaceName ?: (p[@"AG_LocSpoof_Name"] ?: @"公司"));
+    NSString *mapAddr = self.previewPlaceName ?: (p[@"AG_LocSpoof_Name"] ?: @"地图选点");
+    NSString *initName = isEdit ? agSafeStr(existing[@"name"]) : @"";
     NSString *initSSID = isEdit ? agSafeStr(existing[@"ssid"]) : agSafeStr(p[@"AG_AntiDet_FakeSSID"]);
     NSString *initBSSID = isEdit ? agSafeStr(existing[@"bssid"]) : agSafeStr(p[@"AG_AntiDet_FakeBSSID"]);
     double initLat = isEdit ? [agSafeNum(existing[@"lat"]) doubleValue] : mapCenter.latitude;
     double initLon = isEdit ? [agSafeNum(existing[@"lon"]) doubleValue] : mapCenter.longitude;
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(isEdit ? @"✏️ 编辑收藏点" : @"➕ 新增收藏点")
-                                                                   message:@"可自定义名称、专属伪装 Wi-Fi (选填) 及坐标，并自动绑定当前已勾选的生效软件名单："
+    NSString *msg = [NSString stringWithFormat:@"📍 当前街道：%@\n请输入好记的自定义名称（如：公司 / 家里），保存后可直接对语音助手说「定位到XX」秒切！", mapAddr];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(isEdit ? @"✏️ 自定义名称与编辑收藏" : @"➕ 新增常用位置收藏")
+                                                                   message:msg
                                                             preferredStyle:UIAlertControllerStyleAlert];
+    if (@available(iOS 13.0, *)) {
+        alert.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    }
 
     [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
-        tf.placeholder = @"收藏名称 (如: 公司 / 家里 / 分部)";
+        tf.placeholder = @"🏷️ 请输入自定义收藏名称 (如: 公司 / 家里)";
         tf.text = initName;
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+        tf.returnKeyType = UIReturnKeyNext;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
-        tf.placeholder = @"专属伪装 Wi-Fi 名称 SSID (选填，如 Office-5G)";
+        tf.placeholder = @"🛜 专属伪装 Wi-Fi 名称 SSID (选填)";
         tf.text = initSSID;
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+        tf.returnKeyType = UIReturnKeyNext;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
-        tf.placeholder = @"专属路由器 MAC 地址 BSSID (选填，如 a4:50:46:12:34:56)";
+        tf.placeholder = @"🔗 专属路由器 MAC 地址 BSSID (选填)";
         tf.text = initBSSID;
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+        tf.returnKeyType = UIReturnKeyNext;
     }];
     [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
-        tf.placeholder = @"GCJ02 纬度,经度";
+        tf.placeholder = @"📍 GCJ02 纬度,经度";
         tf.text = [NSString stringWithFormat:@"%.6f, %.6f", initLat, initLon];
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+        tf.returnKeyType = UIReturnKeyDone;
     }];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"💾 保存收藏" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         NSString *newName = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (newName.length == 0) newName = @"常用收藏点";
         NSString *newSSID = [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
         NSString *newBSSID = [alert.textFields[2].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
         NSString *coordStr = alert.textFields[3].text ?: @"";
@@ -4234,10 +4261,14 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
         NSMutableDictionary *mp = loadGeminiPrefs();
         NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
+        if (newName.length == 0) {
+            newName = (mapAddr.length > 0 && mapAddr.length <= 10) ? mapAddr : [NSString stringWithFormat:@"常用地点%lu", (unsigned long)(favs.count + 1)];
+        }
 
         BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? YES : [existing[@"shieldOn"] boolValue]) : ([mp[@"AG_AntiDet_ShieldEnabled"] boolValue] || newSSID.length > 0);
         NSDictionary *newEntry = @{
             @"name": newName,
+            @"address": (isEdit && [agSafeStr(existing[@"address"]) length] > 0) ? existing[@"address"] : mapAddr,
             @"lat": @(finalLat),
             @"lon": @(finalLon),
             @"ssid": newSSID,
@@ -4255,7 +4286,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
         }
         mp[@"AG_LocSpoof_Favorites"] = favs;
         saveGeminiPrefs(mp);
-        [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"⭐ 已保存收藏点「%@」", newName]];
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"⭐ 已保存收藏点：「%@」", newName]];
     }]];
 
     [self presentViewController:alert animated:YES completion:nil];
