@@ -701,6 +701,8 @@ static BOOL agReadCustomWiFiFromKernel(NSString **outSSID, NSString **outBSSID) 
     return NO;
 }
 
+static volatile BOOL sForceInvalidateKernelCache = YES;
+
 // ====== 防卡顿替换 1 开始（替换 agReadSpoofStateFromKernel 函数） ======
 static BOOL agReadSpoofStateFromKernel(BOOL *outActive, NSInteger *outScopeMode, BOOL *outShieldOn, NSInteger *outWiFiMode, double *outLat, double *outLon, double *outCourse, double *outSpeed, BOOL *outIsTargetAppMatch) {
     static int sTokState = 0, sTokLat = 0, sTokLon = 0, sTokMotion = 0;
@@ -729,8 +731,8 @@ static BOOL agReadSpoofStateFromKernel(BOOL *outActive, NSInteger *outScopeMode,
 
     NSTimeInterval now = CFAbsoluteTimeGetCurrent();
     os_unfair_lock_lock(&sKernelCacheLock);
-    // 0.20 秒高速内存缓存：将每秒上万次的 notify_get_state 跨进程调用削减 99.9%，彻底消除地图渲染卡顿！
-    if (now - sLastKernelReadTime < 0.20 && sLastKernelReadTime > 0) {
+    // 0.20 秒高速内存缓存（当收到开关切换通知 sForceInvalidateKernelCache=YES 时立即强制刷新，绝不读旧缓存！）
+    if (!sForceInvalidateKernelCache && now - sLastKernelReadTime < 0.20 && sLastKernelReadTime > 0) {
         if (outActive) *outActive = sCachedActive;
         if (outScopeMode) *outScopeMode = sCachedScope;
         if (outShieldOn) *outShieldOn = sCachedShield;
@@ -743,6 +745,7 @@ static BOOL agReadSpoofStateFromKernel(BOOL *outActive, NSInteger *outScopeMode,
         os_unfair_lock_unlock(&sKernelCacheLock);
         return YES;
     }
+    sForceInvalidateKernelCache = NO;
 
     uint64_t rawState = 0;
     if (notify_get_state(sTokState, &rawState) != NOTIFY_STATUS_OK) {
@@ -1943,6 +1946,10 @@ static double agGaussianRandom(void) {
 static void agStepKalmanSmoothDrift(BOOL enableJitter, double *ioLat, double *ioLon, double *outAlt, double *outHAcc, double *outVAcc) {
     double baseAlt = agEstimatedBaseAltitudeForCoord(*ioLat, *ioLon);
     if (!enableJitter) {
+        // 防检测关闭时，彻底清零所有漂移残留值
+        sOUDriftLatM = 0.0;
+        sOUDriftLonM = 0.0;
+        sOUDriftAltM = 0.0;
         if (outAlt)  *outAlt  = baseAlt;
         if (outHAcc) *outHAcc = 5.0;
         if (outVAcc) *outVAcc = 3.5;
@@ -24986,7 +24993,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
                 objc_setAssociatedObject(self, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 return origCoord;
             }
-            // 仅在开启「防检测开关」时才修改内部 ReferenceFrame 标记
             if (agIsAntiDetectionShieldActive()) {
                 static SEL sSetRefSel = NULL;
                 static dispatch_once_t onceToken;
@@ -25004,7 +25010,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationDistance)altitude {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.alt;
     }
@@ -25012,7 +25018,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationDistance)ellipsoidalAltitude {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
@@ -25022,7 +25028,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationAccuracy)horizontalAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.hAcc;
     }
@@ -25030,7 +25036,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationAccuracy)verticalAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.vAcc;
     }
@@ -25040,7 +25046,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 - (CLLocationDirection)course {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
-        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.course;
+        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid && (tel.speed > 0.1 || agIsAntiDetectionShieldActive())) {
+            return tel.course;
+        }
     }
     return %orig;
 }
@@ -25048,43 +25056,36 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 - (CLLocationSpeed)speed {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
-        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.speed;
+        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid && (tel.speed > 0.1 || agIsAntiDetectionShieldActive())) {
+            return tel.speed;
+        }
     }
     return %orig;
 }
 
 - (CLLocationSpeedAccuracy)speedAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.spdAcc;
         }
     }
-    CLLocationSpeedAccuracy orig = %orig;
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && orig < 0.0) {
-        return 0.19;
-    }
-    return orig;
+    return %orig;
 }
 
 - (CLLocationDirectionAccuracy)courseAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.crsAcc;
         }
     }
-    CLLocationDirectionAccuracy orig = %orig;
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self)) {
-        if ([self course] < 0.0) return -1.0;
-        return (orig > 0.0) ? orig : 13.6;
-    }
-    return orig;
+    return %orig;
 }
 
 - (NSDate *)timestamp {
     NSDate *origDate = %orig;
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self)) {
         if (origDate && fabs([origDate timeIntervalSinceNow]) < 30.0) {
             return origDate;
         }
@@ -25111,7 +25112,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (NSString *)description {
-    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self)) {
+    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self)) {
         CLLocationCoordinate2D c = [self coordinate];
         return [NSString stringWithFormat:@"<+%.8f,+%.8f> +/- %.2fm (speed %.2f mps / course %.2f) @ %@",
                 c.latitude, c.longitude, [self horizontalAccuracy], [self speed], [self course], [self timestamp]];
@@ -25133,7 +25134,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLAccuracyAuthorization)accuracyAuthorization {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
+    if (agIsAntiDetectionShieldActive()) {
         return CLAccuracyAuthorizationFullAccuracy;
     }
     return %orig;
@@ -25782,6 +25783,12 @@ static void agSyncClientHooksWithCurrentState(void) {
 }
 
 static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    // 关键修复：收到设置开关变更通知瞬间，强制废除 0.20s 内核缓存，确保 100% 读到最新开关状态并立即卸载/挂载 Hook！
+    sForceInvalidateKernelCache = YES;
+    sOUDriftLatM = 0.0;
+    sOUDriftLonM = 0.0;
+    sOUDriftAltM = 0.0;
+
     os_unfair_lock_lock(&sTelemetryCacheLock);
     sLastTelemetry.valid = NO;
     sLastTelemetryTime = 0;
