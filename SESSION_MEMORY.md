@@ -961,3 +961,37 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (551,692 字节, SHA256: `9e697a47e6330d9dbd427fcc0039191c2408774570fa74bf5a93b3f9c49175a4`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (363,000 字节, SHA256: `462ebc2f424f1b45f4578408e9d1bd002cc5bb601343810fb1eab8a2ffe8c30d`)
+
+---
+
+## 2026-11-03: 优化常用位置收藏夹弹窗 UX (空白名称/一键清空/主线程异步弹窗) (Run #59)
+
+### 1. 修改要点 (3 大交互细节打磨)
+1. **新增收藏名称默认空白并提示自定义**:
+   - 新增常用位置收藏时，第 1 个输入框（自定义收藏名称）保持空白（`tf.text = @""`），方便用户直接输入好记的别名（如“公司”、“家里”）；若未输入则自动回退至街道名（<=10字）或“常用地点N”；
+   - 将原地图街道地址单独保存在 `address` 字段中持久化。
+2. **所有输入框开启一键清空 ✕ 模式**:
+   - 4 个输入框均设置 `tf.clearButtonMode = UITextFieldViewModeAlways`，支持一键清空旧内容；
+   - 前 3 个输入框设置键盘 `UIReturnKeyNext`，坐标输入框设置 `UIReturnKeyDone`。
+3. **主线程异步防动画冲突与深色模式自适应**:
+   - 在 ActionSheet 点击回调中使用 `dispatch_async(dispatch_get_main_queue(), ...)` 弹出下级弹窗，彻底规避 iOS 上 ActionSheet 收起与 Alert 弹窗出现的动画重叠冲突；
+   - 弹窗全面适配 iOS 13+ 深色模式 (`overrideUserInterfaceStyle = UIUserInterfaceStyleDark`)。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,413,125 字节
+- SHA256 校验和：`70cf92c8a15fdbdbe2de5fd74f0a6b296a9f561a4fb863cdb6a42aebe16aca4b`
+
+### 3. CI 构建与产物
+- 提交哈希：`7fdb9ac`
+- GitHub Actions CI Run #59 (ID: 41619745186) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (552120 字节, SHA256: `a9f1dd604d4189a3e77fd2147f88d23bbc23053da6b0a3fab9b39a4be286c1de`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (364060 字节, SHA256: `b0cea47cae5e9769cad9f4c7aa9df723c1b0a0e21bcce594829ef42c6b450e52`)
