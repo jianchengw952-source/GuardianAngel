@@ -883,3 +883,36 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (536988 字节, SHA256: `fe58520928f4ce2e3acd52bfe2cee0f95c83e69651770ad4c909fc089b7a6bdf`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352620 字节, SHA256: `dd371f19527b3f3fe92aa93636c7e4f0b58069c343202fc77fbafcd76da78b0d`)
+
+---
+
+## 2026-11-03: 修复 24h 耗电与流量 @autoreleasepool 外部强引用规避野指针 (Run #57)
+
+### 1. 修改要点 (彻底根除出池释放野指针隐患)
+1. **Pill/Card/Speech 强引用缓存扩展**:
+   - 新增 `gCachedPowerPillStr`、`gCachedPowerCardStr`、`gCachedTrafficPillStr`、`gCachedTrafficCardStr` 4 个全局静态强引用指针；
+   - 并在 `agAnalyze24HourTweakPowerDrain` 与 `agAnalyze24HourTweakNetworkTraffic` 计算完成时，在 `os_unfair_lock` 锁内执行 `[copy]` 赋值。
+2. **严格外部安全解引用 (铁律执行)**:
+   - 遵循 `agAnalyzeRecentCrashesAndResprings` 架构设计规范，将 `*outPillText`、`*outCardReport`、`*outVoiceSpeech` 的赋值移至 `@autoreleasepool` 大括号外部；
+   - 彻底解决出池瞬间自动释放池对象被提前释放导致调用方访问悬挂野指针（Dangling Pointer）引发桌面注销的隐患。
+3. **定位状态读取去中心化**:
+   - 在耗电分析中直接调用 `agReadSpoofStateFromKernel` 读取物理内核虚拟定位状态，解除对 SpringBoard 主控单例 `AGLocationSpoofManager` 的强耦合。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,368,599 字节
+- SHA256 校验和：`a8aeb89249373919ed787a1e046127e7e33757fc44587081a4514797da9974e8`
+
+### 3. CI 构建与产物
+- 提交哈希：`0735d89`
+- GitHub Actions CI Run #57 (ID: 41612943360) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (538124 字节, SHA256: `8989f62a1ca1a9787d73aefff69773d15ec8aa86a4e6f4081cf9428b65e92942`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352608 字节, SHA256: `ee205d2daa49cc4d6584f83a821021352db8e95667e1fe8bc00b248cdd9fff0b`)
