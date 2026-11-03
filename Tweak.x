@@ -1987,6 +1987,14 @@ static void agSpringBoardLocAppHookLogCallback(CFNotificationCenterRef center, v
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
 }
 
+static inline NSString *agSafeStr(id obj) {
+    return [obj isKindOfClass:[NSString class]] ? (NSString *)obj : @"";
+}
+
+static inline NSNumber *agSafeNum(id obj) {
+    return [obj isKindOfClass:[NSNumber class]] ? (NSNumber *)obj : nil;
+}
+
 // ==================== 核心引擎：AGLocationSpoofManager (仅 SpringBoard 唯一主控，彻底根除双进程互相覆盖) ====================
 @interface AGLocationSpoofManager : NSObject
 @property (nonatomic, strong) id simManager;
@@ -2743,6 +2751,45 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
         return;
     }
 
+    // 优先匹配用户自定义的「⭐ 常用位置收藏夹」（一键恢复坐标 + 专属Wi-Fi + 防检测 + 生效软件名单）
+    NSDictionary *curPrefs = agReadOnlyPrefs();
+    NSArray<NSDictionary *> *favList = [curPrefs[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? curPrefs[@"AG_LocSpoof_Favorites"] : @[];
+    for (NSDictionary *fav in favList) {
+        if (![fav isKindOfClass:[NSDictionary class]]) continue;
+        NSString *favName = [agSafeStr(fav[@"name"]) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (favName.length > 0 && ([cleanPlace isEqualToString:favName] || [cleanPlace hasSuffix:favName] || [favName isEqualToString:[cleanPlace stringByReplacingOccurrencesOfString:@"收藏的" withString:@""]])) {
+            double fLat = [agSafeNum(fav[@"lat"]) doubleValue];
+            double fLon = [agSafeNum(fav[@"lon"]) doubleValue];
+            if (fabs(fLat) > 0.001 || fabs(fLon) > 0.001) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSMutableDictionary *mp = loadGeminiPrefs();
+                    if (fav[@"scopeMode"] != nil) mp[@"AG_LocSpoof_ScopeMode"] = fav[@"scopeMode"];
+                    if ([fav[@"targetApps"] isKindOfClass:[NSArray class]]) mp[@"AG_LocSpoof_TargetApps"] = fav[@"targetApps"];
+                    if (fav[@"moveMode"] != nil) mp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
+                    BOOL shieldOn = (fav[@"shieldOn"] == nil) ? YES : [fav[@"shieldOn"] boolValue];
+                    mp[@"AG_AntiDet_ShieldEnabled"] = @(shieldOn);
+                    mp[@"AG_AntiDet_HideSimFlag"] = @(shieldOn);
+                    mp[@"AG_AntiDet_MotionSync"] = @(shieldOn);
+                    mp[@"AG_AntiDet_HideHookPtr"] = @(shieldOn);
+                    mp[@"AG_LocSpoof_JitterEnabled"] = @(shieldOn);
+                    NSString *fSSID = agSafeStr(fav[@"ssid"]);
+                    NSString *fBSSID = agSafeStr(fav[@"bssid"]);
+                    if (fSSID.length > 0 && fBSSID.length > 0) {
+                        mp[@"AG_AntiDet_FakeSSID"] = fSSID;
+                        mp[@"AG_AntiDet_FakeBSSID"] = fBSSID;
+                        mp[@"AG_AntiDet_WiFiMode"] = @2;
+                    } else {
+                        mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @1 : @0;
+                    }
+                    saveGeminiPrefs(mp);
+                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
+                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(含专属设置)", favName]);
+                });
+                return;
+            }
+        }
+    }
+
     NSDictionary *landmarks = [self builtinFamousLandmarksGCJ02];
     NSString *exactMatchedKey = nil;
     if (landmarks[cleanPlace]) {
@@ -3236,6 +3283,9 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 @property (nonatomic, strong) UITextField *ssidInputField;
 @property (nonatomic, strong) UITextField *bssidInputField;
 - (void)onRealtimeLocTickUpdate;
+- (void)openFavoritesMenuTapped;
+- (void)showActionsForFavoriteAtIndex:(NSUInteger)idx item:(NSDictionary *)item;
+- (void)showAddOrEditFavoriteDialogAtIndex:(NSInteger)editIndex existingItem:(NSDictionary *)existing;
 @end
 
 static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
@@ -3258,7 +3308,8 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     self.reverseGeocoder = [[CLGeocoder alloc] init];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleDone target:self action:@selector(dismissSelf)];
-    self.navigationItem.rightBarButtonItem = closeItem;
+    UIBarButtonItem *favItem = [[UIBarButtonItem alloc] initWithTitle:@"⭐ 收藏夹" style:UIBarButtonItemStylePlain target:self action:@selector(openFavoritesMenuTapped)];
+    self.navigationItem.rightBarButtonItems = @[closeItem, favItem];
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -4026,6 +4077,188 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     [textField resignFirstResponder];
     [self wifiTextFieldEdited];
     return YES;
+}
+
+- (void)openFavoritesMenuTapped {
+    [self.view endEditing:YES];
+    reloadGeminiPrefsCache();
+    NSDictionary *p = agReadOnlyPrefs();
+    NSArray<NSDictionary *> *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? p[@"AG_LocSpoof_Favorites"] : @[];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"⭐ 常用位置与打卡收藏夹"
+                                                                   message:@"每个收藏点自动绑定：坐标 + 移动方式 + 专属伪装Wi-Fi + 防检测开关 + 已勾选的生效软件名单（点击即可 0 秒切换或编辑）"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"➕ 将当前地图选点与设置加入收藏" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self showAddOrEditFavoriteDialogAtIndex:-1 existingItem:nil];
+    }]];
+
+    for (NSUInteger i = 0; i < favs.count; i++) {
+        NSDictionary *item = favs[i];
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSString *name = agSafeStr(item[@"name"]);
+        if (name.length == 0) name = @"未命名地点";
+        BOOL shield = (item[@"shieldOn"] == nil) ? YES : [item[@"shieldOn"] boolValue];
+        NSString *ssid = agSafeStr(item[@"ssid"]);
+        NSInteger scope = [agSafeNum(item[@"scopeMode"]) integerValue];
+        NSArray *apps = [item[@"targetApps"] isKindOfClass:[NSArray class]] ? item[@"targetApps"] : @[];
+        NSString *scopeTag = (scope == 0) ? @"全机软件" : [NSString stringWithFormat:@"%lu款软件", (unsigned long)apps.count];
+        NSString *wifiTag = (ssid.length > 0) ? [NSString stringWithFormat:@"🛜%@", ssid] : (shield ? @"🛡️防检测" : @"⚡纯定位");
+        NSString *btnTitle = [NSString stringWithFormat:@"📍 %@（%@ · %@）", name, wifiTag, scopeTag];
+
+        [sheet addAction:[UIAlertAction actionWithTitle:btnTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            [self showActionsForFavoriteAtIndex:i item:item];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = self.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width - 80, 44, 60, 30);
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showActionsForFavoriteAtIndex:(NSUInteger)idx item:(NSDictionary *)item {
+    NSString *name = agSafeStr(item[@"name"]) ?: @"收藏点";
+    double lat = [agSafeNum(item[@"lat"]) doubleValue];
+    double lon = [agSafeNum(item[@"lon"]) doubleValue];
+    NSString *ssid = agSafeStr(item[@"ssid"]);
+    NSString *bssid = agSafeStr(item[@"bssid"]);
+    NSString *detailMsg = [NSString stringWithFormat:@"坐标：%.5f, %.5f\n伪装Wi-Fi：%@\n点击下方选项可立即切换或编辑此收藏：",
+                           lat, lon, (ssid.length > 0 ? [NSString stringWithFormat:@"%@ (%@)", ssid, bssid] : @"未绑定特定Wi-Fi")];
+
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"⭐ %@", name]
+                                                                  message:detailMsg
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"⚡ 立即切换到此收藏位置 (0秒生效)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [[AGLocationSpoofManager sharedSpoofer] resolvePlaceAndPin:name completion:^(BOOL ok, NSString *summary) {
+            CLLocationCoordinate2D gcj = CLLocationCoordinate2DMake(lat, lon);
+            [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(gcj, 700, 700) animated:YES];
+            [self updateConfirmButtonAppearance];
+            [self updateLiveMapBlueDotAndRoute];
+            [self.tableView reloadData];
+        }];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"✏️ 编辑此收藏 (改名称 / 改Wi-Fi / 改坐标)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self showAddOrEditFavoriteDialogAtIndex:(NSInteger)idx existingItem:item];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图中心点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSMutableDictionary *p = loadGeminiPrefs();
+        NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
+        if (idx < favs.count) {
+            CLLocationCoordinate2D curCenter = self.mapView.centerCoordinate;
+            NSMutableDictionary *updated = [item mutableCopy];
+            updated[@"lat"] = @(curCenter.latitude);
+            updated[@"lon"] = @(curCenter.longitude);
+            updated[@"scopeMode"] = p[@"AG_LocSpoof_ScopeMode"] ?: @0;
+            updated[@"targetApps"] = p[@"AG_LocSpoof_TargetApps"] ?: @[];
+            updated[@"moveMode"] = p[@"AG_LocSpoof_MoveMode"] ?: @0;
+            updated[@"shieldOn"] = p[@"AG_AntiDet_ShieldEnabled"] ?: @NO;
+            updated[@"ssid"] = p[@"AG_AntiDet_FakeSSID"] ?: @"";
+            updated[@"bssid"] = p[@"AG_AntiDet_FakeBSSID"] ?: @"";
+            favs[idx] = updated;
+            p[@"AG_LocSpoof_Favorites"] = favs;
+            saveGeminiPrefs(p);
+            [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"✅ 已更新收藏点「%@」的坐标与设置", name]];
+        }
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"🗑️ 删除此收藏" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        NSMutableDictionary *p = loadGeminiPrefs();
+        NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
+        if (idx < favs.count) {
+            [favs removeObjectAtIndex:idx];
+            p[@"AG_LocSpoof_Favorites"] = favs;
+            saveGeminiPrefs(p);
+            [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"🗑️ 已删除收藏点「%@」", name]];
+        }
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"返回" style:UIAlertActionStyleCancel handler:nil]];
+    if (menu.popoverPresentationController) {
+        menu.popoverPresentationController.sourceView = self.view;
+        menu.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width * 0.5, self.view.bounds.size.height * 0.5, 1, 1);
+    }
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)showAddOrEditFavoriteDialogAtIndex:(NSInteger)editIndex existingItem:(NSDictionary *)existing {
+    BOOL isEdit = (editIndex >= 0 && existing != nil);
+    NSDictionary *p = agReadOnlyPrefs();
+    CLLocationCoordinate2D mapCenter = self.mapView.centerCoordinate;
+
+    NSString *initName = isEdit ? agSafeStr(existing[@"name"]) : (self.previewPlaceName ?: (p[@"AG_LocSpoof_Name"] ?: @"公司"));
+    NSString *initSSID = isEdit ? agSafeStr(existing[@"ssid"]) : agSafeStr(p[@"AG_AntiDet_FakeSSID"]);
+    NSString *initBSSID = isEdit ? agSafeStr(existing[@"bssid"]) : agSafeStr(p[@"AG_AntiDet_FakeBSSID"]);
+    double initLat = isEdit ? [agSafeNum(existing[@"lat"]) doubleValue] : mapCenter.latitude;
+    double initLon = isEdit ? [agSafeNum(existing[@"lon"]) doubleValue] : mapCenter.longitude;
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(isEdit ? @"✏️ 编辑收藏点" : @"➕ 新增收藏点")
+                                                                   message:@"可自定义名称、专属伪装 Wi-Fi (选填) 及坐标，并自动绑定当前已勾选的生效软件名单："
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
+        tf.placeholder = @"收藏名称 (如: 公司 / 家里 / 分部)";
+        tf.text = initName;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
+        tf.placeholder = @"专属伪装 Wi-Fi 名称 SSID (选填，如 Office-5G)";
+        tf.text = initSSID;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
+        tf.placeholder = @"专属路由器 MAC 地址 BSSID (选填，如 a4:50:46:12:34:56)";
+        tf.text = initBSSID;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull tf) {
+        tf.placeholder = @"GCJ02 纬度,经度";
+        tf.text = [NSString stringWithFormat:@"%.6f, %.6f", initLat, initLon];
+    }];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"💾 保存收藏" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSString *newName = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (newName.length == 0) newName = @"常用收藏点";
+        NSString *newSSID = [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+        NSString *newBSSID = [alert.textFields[2].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+        NSString *coordStr = alert.textFields[3].text ?: @"";
+        NSArray *parts = [coordStr componentsSeparatedByString:@","];
+        double finalLat = (parts.count >= 2) ? [parts[0] doubleValue] : initLat;
+        double finalLon = (parts.count >= 2) ? [parts[1] doubleValue] : initLon;
+        if (fabs(finalLat) < 0.001 && fabs(finalLon) < 0.001) {
+            finalLat = initLat; finalLon = initLon;
+        }
+
+        NSMutableDictionary *mp = loadGeminiPrefs();
+        NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
+
+        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? YES : [existing[@"shieldOn"] boolValue]) : ([mp[@"AG_AntiDet_ShieldEnabled"] boolValue] || newSSID.length > 0);
+        NSDictionary *newEntry = @{
+            @"name": newName,
+            @"lat": @(finalLat),
+            @"lon": @(finalLon),
+            @"ssid": newSSID,
+            @"bssid": newBSSID,
+            @"shieldOn": @(shieldVal),
+            @"scopeMode": (isEdit && existing[@"scopeMode"]) ? existing[@"scopeMode"] : (mp[@"AG_LocSpoof_ScopeMode"] ?: @0),
+            @"targetApps": (isEdit && [existing[@"targetApps"] isKindOfClass:[NSArray class]]) ? existing[@"targetApps"] : (mp[@"AG_LocSpoof_TargetApps"] ?: @[]),
+            @"moveMode": (isEdit && existing[@"moveMode"]) ? existing[@"moveMode"] : (mp[@"AG_LocSpoof_MoveMode"] ?: @0)
+        };
+
+        if (isEdit && editIndex < (NSInteger)favs.count) {
+            favs[editIndex] = newEntry;
+        } else {
+            [favs addObject:newEntry];
+        }
+        mp[@"AG_LocSpoof_Favorites"] = favs;
+        saveGeminiPrefs(mp);
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"⭐ 已保存收藏点「%@」", newName]];
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end
@@ -8279,14 +8512,6 @@ static inline void agAddSelfNetworkTrafficBytes(int64_t txBytes, int64_t rxBytes
     __atomic_fetch_add(&gPendingSelfNetHits, 1, __ATOMIC_RELAXED);
 }
 
-static inline NSString *agSafeStr(id obj) {
-    return [obj isKindOfClass:[NSString class]] ? (NSString *)obj : @"";
-}
-
-static inline NSNumber *agSafeNum(id obj) {
-    return [obj isKindOfClass:[NSNumber class]] ? (NSNumber *)obj : nil;
-}
-
 static NSString *agRespringLedgerFilePath(void) {
 #if ROOTHIDE
     return MyJBPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json");
@@ -9325,10 +9550,252 @@ static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString 
     if (outVoiceSpeech) *outVoiceSpeech = safeSpeech;
 }
 
+static NSString *gCachedRadarPillStr = nil;
+static NSString *gCachedRadarCardStr = nil;
+static NSString *gCachedRadarSpeechStr = nil;
+static uint32_t gCurrentProcessBundleHash = 0;
+
+static NSString *agRadar24hFilePath(void) {
+#if ROOTHIDE
+    return MyJBPath(@"/var/mobile/Library/Preferences/ag_radar_24h.json");
+#else
+    return @"/var/mobile/Library/Preferences/ag_radar_24h.json";
+#endif
+}
+
+// 客户端纯 C 零开销上报防检测拦截事件（限流每 2 秒最多上报 1 次，0 文件 I/O，0 对象分配）
+// detectType: 1=扫描越狱路径/动态库镜像, 2=探测高德/系统假定位标记, 3=探测路由器Wi-Fi(BSSID), 4=探测越狱URL协议
+static void agReportAntiDetectionInterceptFromClient(uint32_t detectType) {
+    if (gCurrentProcessBundleHash == 0) return;
+    static NSTimeInterval sLastReportTime[5] = {0};
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (detectType > 4) detectType = 1;
+    if (now - sLastReportTime[detectType] < 2.0) return;
+    sLastReportTime[detectType] = now;
+
+    static int sRadarToken = 0;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        notify_register_check("com.apple.coremedia.spatial.rd", &sRadarToken);
+    });
+    if (sRadarToken != 0) {
+        uint64_t payload = (((uint64_t)gCurrentProcessBundleHash) << 32) | ((uint64_t)(detectType & 0xFF));
+        notify_set_state(sRadarToken, payload ^ agKernelObfuscateMask(0x505));
+        notify_post("com.apple.coremedia.spatial.radar");
+    }
+}
+
+// SpringBoard 端接收客户端拦截信标并记入 24 小时滚动雷达账本
+static void agSpringBoardRadarHitCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    if (!agIsSpringBoardProcess()) return;
+    static int sRadarToken = 0;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        notify_register_check("com.apple.coremedia.spatial.rd", &sRadarToken);
+    });
+    uint64_t raw = 0;
+    if (notify_get_state(sRadarToken, &raw) != NOTIFY_STATUS_OK) return;
+    uint64_t payload = raw ^ agKernelObfuscateMask(0x505);
+    uint32_t bHash = (uint32_t)(payload >> 32);
+    uint32_t dType = (uint32_t)(payload & 0xFF);
+    if (bHash == 0 || dType == 0 || dType > 4) return;
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool {
+            @try {
+                // 反查 hash 对应的应用中文名
+                NSString *matchedAppName = nil;
+                NSDictionary *knownApps = @{
+                    @"com.laiwang.DingTalk": @"钉钉",
+                    @"com.tencent.wework": @"企业微信",
+                    @"com.bytedance.ee.lark": @"飞书",
+                    @"com.electron.lark": @"飞书",
+                    @"com.tencent.xin": @"微信",
+                    @"com.autonavi.amap": @"高德地图",
+                    @"com.baidu.BaiduMobileMap": @"百度地图",
+                    @"com.meituan.imeituan": @"美团",
+                    @"com.ss.iphone.ugc.Aweme": @"抖音",
+                    @"com.xingin.discover": @"小红书"
+                };
+                for (NSString *bid in knownApps) {
+                    if (agHashBundleID(bid) == bHash) {
+                        matchedAppName = knownApps[bid];
+                        break;
+                    }
+                }
+                if (!matchedAppName) {
+                    NSDictionary *snap = nil;
+                    Class mgrClass = objc_getClass("AGSystemVoiceCoordinator");
+                    if (mgrClass && [mgrClass respondsToSelector:@selector(sharedManager)]) {
+                        id mgr = [mgrClass performSelector:@selector(sharedManager)];
+                        if (mgr) {
+                            @try {
+                                NSDictionary *apps = [mgr valueForKey:@"cachedInstalledApps"];
+                                if ([apps isKindOfClass:[NSDictionary class]]) {
+                                    snap = [apps copy];
+                                }
+                            } @catch (NSException *e) {}
+                        }
+                    }
+                    for (NSString *locName in snap) {
+                        NSString *bid = snap[locName];
+                        if (agHashBundleID(bid) == bHash) {
+                            matchedAppName = locName;
+                            break;
+                        }
+                    }
+                }
+                if (!matchedAppName) matchedAppName = [NSString stringWithFormat:@"受控应用(%08X)", bHash];
+
+                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                NSString *path = agRadar24hFilePath();
+                NSMutableArray *events = [NSMutableArray array];
+                NSData *data = [NSData dataWithContentsOfFile:path];
+                if (data) {
+                    NSArray *saved = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                    if ([saved isKindOfClass:[NSArray class]]) {
+                        for (id item in saved) {
+                            if ([item isKindOfClass:[NSDictionary class]]) {
+                                NSTimeInterval ts = [agSafeNum(item[@"ts"]) doubleValue];
+                                if (now - ts <= 86400.0) {
+                                    [events addObject:item];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                [events addObject:@{
+                    @"ts": @(now),
+                    @"app": matchedAppName,
+                    @"type": @(dType)
+                }];
+
+                // 最多保留近 1000 条拦截信标
+                if (events.count > 1000) {
+                    [events removeObjectsInRange:NSMakeRange(0, events.count - 1000)];
+                }
+                NSData *outData = [NSJSONSerialization dataWithJSONObject:events options:0 error:nil];
+                if (outData) {
+                    [outData writeToFile:path atomically:YES];
+                }
+            } @catch (NSException *e) {}
+        }
+    });
+}
+
+// 🛡️ 按需生成「近 24 小时越狱与定位探测拦截雷达报告」
+static void agAnalyze24HourRadarInterceptions(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
+    @autoreleasepool {
+        @try {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            NSString *path = agRadar24hFilePath();
+            NSData *data = [NSData dataWithContentsOfFile:path];
+            NSArray *events = nil;
+            if (data) {
+                events = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            }
+
+            NSMutableDictionary<NSString *, NSMutableDictionary *> *appStats = [NSMutableDictionary dictionary];
+            NSInteger grandTotal = 0;
+
+            if ([events isKindOfClass:[NSArray class]]) {
+                for (id item in events) {
+                    if (![item isKindOfClass:[NSDictionary class]]) continue;
+                    NSTimeInterval ts = [agSafeNum(item[@"ts"]) doubleValue];
+                    if (now - ts > 86400.0) continue;
+
+                    NSString *app = agSafeStr(item[@"app"]);
+                    if (app.length == 0) app = @"未知软件";
+                    uint32_t t = [agSafeNum(item[@"type"]) unsignedIntValue];
+
+                    NSMutableDictionary *st = appStats[app];
+                    if (!st) {
+                        st = [NSMutableDictionary dictionaryWithDictionary:@{
+                            @"app": app,
+                            @"total": @0,
+                            @"t1": @0, // dyld/jb rootfs
+                            @"t2": @0, // sim loc flag
+                            @"t3": @0, // wifi bssid
+                            @"t4": @0  // url scheme
+                        }];
+                        appStats[app] = st;
+                    }
+                    st[@"total"] = @([st[@"total"] integerValue] + 1);
+                    if (t == 1) st[@"t1"] = @([st[@"t1"] integerValue] + 1);
+                    else if (t == 2) st[@"t2"] = @([st[@"t2"] integerValue] + 1);
+                    else if (t == 3) st[@"t3"] = @([st[@"t3"] integerValue] + 1);
+                    else if (t == 4) st[@"t4"] = @([st[@"t4"] integerValue] + 1);
+                    grandTotal++;
+                }
+            }
+
+            NSArray *sortedList = [appStats.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
+                return [obj2[@"total"] compare:obj1[@"total"]];
+            }];
+
+            NSMutableString *card = [NSMutableString string];
+            [card appendString:@"🛡️【近 24 小时 App 越狱与定位检测雷达报告】\n"];
+            [card appendFormat:@"📊 24 小时内累计拦截探测：%ld 次\n", (long)grandTotal];
+            [card appendString:@"------------------------------------\n"];
+
+            if (sortedList.count == 0) {
+                [card appendString:@"✅ 过去 24 小时内无任何受控应用尝试探测越狱或定位伪装环境，护盾隐身状态极佳！\n"];
+            } else {
+                for (NSUInteger i = 0; i < MIN((NSUInteger)6, sortedList.count); i++) {
+                    NSDictionary *it = sortedList[i];
+                    NSMutableArray<NSString *> *details = [NSMutableArray array];
+                    if ([it[@"t1"] integerValue] > 0) [details addObject:[NSString stringWithFormat:@"扫描动态库/越狱目录 %ld 次", (long)[it[@"t1"] integerValue]]];
+                    if ([it[@"t2"] integerValue] > 0) [details addObject:[NSString stringWithFormat:@"检测模拟定位标记 %ld 次", (long)[it[@"t2"] integerValue]]];
+                    if ([it[@"t3"] integerValue] > 0) [details addObject:[NSString stringWithFormat:@"读取路由器 BSSID %ld 次", (long)[it[@"t3"] integerValue]]];
+                    if ([it[@"t4"] integerValue] > 0) [details addObject:[NSString stringWithFormat:@"探测越狱协议 %ld 次", (long)[it[@"t4"] integerValue]]];
+                    NSString *detailStr = details.count > 0 ? [details componentsJoinedByString:@"、"] : @"常规环境扫描";
+
+                    [card appendFormat:@"\n%lu️⃣ 【%@】累计拦截 %ld 次\n", (unsigned long)(i + 1), it[@"app"], (long)[it[@"total"] integerValue]];
+                    [card appendFormat:@"   🔍 探测行为：%@\n", detailStr];
+                    [card appendString:@"   🛡️ 拦截结果：✅ 已 100% 伪装放行，未暴露真实环境"];
+                }
+            }
+
+            NSString *topApp = sortedList.count > 0 ? sortedList.firstObject[@"app"] : @"无";
+            NSString *pill = (grandTotal > 0)
+                ? [NSString stringWithFormat:@"🛡️24h已拦截%ld次探测｜最频繁:%@", (long)grandTotal, topApp]
+                : @"🛡️24h防检测雷达正常｜0次高危探测";
+            NSString *speech = (grandTotal > 0)
+                ? [NSString stringWithFormat:@"为您查询了最近 24 小时的防检测雷达记录：护盾累计为您成功拦截并伪装了 %ld 次应用探测。探测最频繁的应用是：%@，所有越狱路径、动态库镜像与虚拟定位标记均已 100%%%% 伪装拦截。", (long)grandTotal, topApp]
+                : @"为您查询了最近 24 小时的防检测雷达记录：暂未发现有软件触发越狱或虚拟定位风险探测，护盾运行正常。";
+
+            os_unfair_lock_lock(&gCrashCacheLock);
+            gCachedRadarPillStr   = [pill copy];
+            gCachedRadarCardStr   = [card copy];
+            gCachedRadarSpeechStr = [speech copy];
+            os_unfair_lock_unlock(&gCrashCacheLock);
+        } @catch (NSException *e) {}
+    }
+
+    // 铁律：在 @autoreleasepool 外部从全局强引用缓存中拷贝赋值给输出指针！
+    os_unfair_lock_lock(&gCrashCacheLock);
+    NSString *safePill   = [gCachedRadarPillStr copy];
+    NSString *safeCard   = [gCachedRadarCardStr copy];
+    NSString *safeSpeech = [gCachedRadarSpeechStr copy];
+    os_unfair_lock_unlock(&gCrashCacheLock);
+
+    if (outPillText)    *outPillText    = safePill;
+    if (outCardReport)  *outCardReport  = safeCard;
+    if (outVoiceSpeech) *outVoiceSpeech = safeSpeech;
+}
+
 static void agRecordSpringBoardBootEventAndWarmupCache(void) {
     if (!agIsSpringBoardProcess()) return;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        agSpringBoardRadarHitCallback,
+                                        CFSTR("com.apple.coremedia.spatial.radar"),
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
             @autoreleasepool {
                 @try {
@@ -12899,6 +13366,42 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     if ([sqLower containsString:@"low power"] || [sqLower containsString:@"low_power"] || [sqLower containsString:@"省电"] || [sqLower containsString:@"低电量"] || [sqLower containsString:@"点亮模式"]) {
                         [self executeActionDictionary:@{@"type": @"low_power_mode", @"on": @YES}];
                         isActionCommand = YES;
+                    } else if ([sqLower containsString:@"耗电"] || [sqLower containsString:@"费电"]) {
+                        NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                        agAnalyze24HourTweakPowerDrain(&pillStr, &cardStr, &speechStr);
+                        [self executeActionDictionary:@{@"type": @"tweak_power_report"}];
+                        NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时越狱插件耗电数据：%@ 请直接用亲切自然的中文口语把份本机实测排行念给用户听，严禁再次搜索！", (speechStr ?: @"暂无异常耗电")];
+                        [self sendJSONDictionaryOverWebSocket:@{
+                            @"toolResponse": @{ @"functionResponses": @[ @{ @"id": callId ?: @"", @"name": @"google_search", @"response": @{ @"result": resText, @"output": resText, @"status": @"success" } } ] }
+                        }];
+                        return;
+                    } else if ([sqLower containsString:@"流量"] || [sqLower containsString:@"偷跑"]) {
+                        NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                        agAnalyze24HourTweakNetworkTraffic(&pillStr, &cardStr, &speechStr);
+                        [self executeActionDictionary:@{@"type": @"tweak_traffic_report"}];
+                        NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时越狱插件流量数据：%@ 请直接用亲切自然的中文口语把这份本机实测流量报告念给用户听，严禁再次搜索！", (speechStr ?: @"暂无异常流量")];
+                        [self sendJSONDictionaryOverWebSocket:@{
+                            @"toolResponse": @{ @"functionResponses": @[ @{ @"id": callId ?: @"", @"name": @"google_search", @"response": @{ @"result": resText, @"output": resText, @"status": @"success" } } ] }
+                        }];
+                        return;
+                    } else if ([sqLower containsString:@"注销"] || [sqLower containsString:@"崩溃"] || [sqLower containsString:@"闪退"] || [sqLower containsString:@"死机"]) {
+                        NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                        agAnalyzeRecentCrashesAndResprings(&pillStr, &cardStr, &speechStr);
+                        [self executeActionDictionary:@{@"type": @"crash_forensics"}];
+                        NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的近7天崩溃与注销取证数据：%@ 请直接用亲切自然的中文口语把这份本机实测结果念给用户听，严禁再次搜索！", (speechStr ?: @"近7天0次崩溃")];
+                        [self sendJSONDictionaryOverWebSocket:@{
+                            @"toolResponse": @{ @"functionResponses": @[ @{ @"id": callId ?: @"", @"name": @"google_search", @"response": @{ @"result": resText, @"output": resText, @"status": @"success" } } ] }
+                        }];
+                        return;
+                    } else if ([sqLower containsString:@"拦截"] || [sqLower containsString:@"检测记录"]) {
+                        NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                        agAnalyze24HourRadarInterceptions(&pillStr, &cardStr, &speechStr);
+                        [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
+                        NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时防检测雷达拦截数据：%@ 请直接用亲切自然的中文口语把这份本机实测拦截报告念给用户听，严禁再次搜索！", (speechStr ?: @"护盾运行正常")];
+                        [self sendJSONDictionaryOverWebSocket:@{
+                            @"toolResponse": @{ @"functionResponses": @[ @{ @"id": callId ?: @"", @"name": @"google_search", @"response": @{ @"result": resText, @"output": resText, @"status": @"success" } } ] }
+                        }];
+                        return;
                     } else if ([sqLower containsString:@"brightness"] || [sqLower containsString:@"亮度"]) {
                         [self tryExecuteDirectLocalCommand:searchQuery];
                         isActionCommand = YES;
@@ -13017,6 +13520,66 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             if ([sqLower containsString:@"low power"] || [sqLower containsString:@"low_power"] || [sqLower containsString:@"省电"] || [sqLower containsString:@"低电量"] || [sqLower containsString:@"点亮模式"]) {
                 [self executeActionDictionary:@{@"type": @"low_power_mode", @"on": @YES}];
                 isActionCommand = YES;
+            } else if ([sqLower containsString:@"耗电"] || [sqLower containsString:@"费电"]) {
+                NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                agAnalyze24HourTweakPowerDrain(&pillStr, &cardStr, &speechStr);
+                [self executeActionDictionary:@{@"type": @"tweak_power_report"}];
+                NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时越狱插件耗电数据：%@ 请直接用亲切自然的中文口语把份本机实测排行念给用户听，严禁再次搜索！", (speechStr ?: @"暂无异常耗电")];
+                [self sendJSONDictionaryOverWebSocket:@{
+                    @"type": @"conversation.item.create",
+                    @"item": @{
+                        @"type": @"function_call_output",
+                        @"call_id": callId ?: @"",
+                        @"output": resText
+                    }
+                }];
+                [self sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
+                return;
+            } else if ([sqLower containsString:@"流量"] || [sqLower containsString:@"偷跑"]) {
+                NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                agAnalyze24HourTweakNetworkTraffic(&pillStr, &cardStr, &speechStr);
+                [self executeActionDictionary:@{@"type": @"tweak_traffic_report"}];
+                NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时越狱插件流量数据：%@ 请直接用亲切自然的中文口语把这份本机实测流量报告念给用户听，严禁再次搜索！", (speechStr ?: @"暂无异常流量")];
+                [self sendJSONDictionaryOverWebSocket:@{
+                    @"type": @"conversation.item.create",
+                    @"item": @{
+                        @"type": @"function_call_output",
+                        @"call_id": callId ?: @"",
+                        @"output": resText
+                    }
+                }];
+                [self sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
+                return;
+            } else if ([sqLower containsString:@"注销"] || [sqLower containsString:@"崩溃"] || [sqLower containsString:@"闪退"] || [sqLower containsString:@"死机"]) {
+                NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                agAnalyzeRecentCrashesAndResprings(&pillStr, &cardStr, &speechStr);
+                [self executeActionDictionary:@{@"type": @"crash_forensics"}];
+                NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的近7天崩溃与注销取证数据：%@ 请直接用亲切自然的中文口语把这份本机实测结果念给用户听，严禁再次搜索！", (speechStr ?: @"近7天0次崩溃")];
+                [self sendJSONDictionaryOverWebSocket:@{
+                    @"type": @"conversation.item.create",
+                    @"item": @{
+                        @"type": @"function_call_output",
+                        @"call_id": callId ?: @"",
+                        @"output": resText
+                    }
+                }];
+                [self sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
+                return;
+            } else if ([sqLower containsString:@"拦截"] || [sqLower containsString:@"检测记录"]) {
+                NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+                agAnalyze24HourRadarInterceptions(&pillStr, &cardStr, &speechStr);
+                [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
+                NSString *resText = [NSString stringWithFormat:@"已为您读取到本机真实的24小时防检测雷达拦截数据：%@ 请直接用亲切自然的中文口语把这份本机实测拦截报告念给用户听，严禁再次搜索！", (speechStr ?: @"护盾运行正常")];
+                [self sendJSONDictionaryOverWebSocket:@{
+                    @"type": @"conversation.item.create",
+                    @"item": @{
+                        @"type": @"function_call_output",
+                        @"call_id": callId ?: @"",
+                        @"output": resText
+                    }
+                }];
+                [self sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
+                return;
             } else if ([sqLower containsString:@"brightness"] || [sqLower containsString:@"亮度"]) {
                 [self tryExecuteDirectLocalCommand:searchQuery];
                 isActionCommand = YES;
@@ -13234,7 +13797,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 if (localHandled) {
                     NSTimeInterval nowExec = [[NSDate date] timeIntervalSince1970];
                     self.lastLocalActionExecTime = nowExec;
-                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"] || [execCmd containsString:@"耗电"] || [execCmd containsString:@"流量"]);
+                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"] || [execCmd containsString:@"耗电"] || [execCmd containsString:@"流量"] || [execCmd containsString:@"拦截"] || [execCmd containsString:@"检测记录"]);
                     if (!isPureStatusQuery) {
                         self.isMutedByLocalBargeIn = YES;
                         self.bargeInMuteTimestamp = nowExec;
@@ -14269,7 +14832,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
         }
         [self.currentVoiceQueryBuffer setString:@""];
-        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"] || [matchedCmd containsString:@"耗电"] || [matchedCmd containsString:@"流量"]);
+        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"] || [matchedCmd containsString:@"耗电"] || [matchedCmd containsString:@"流量"] || [matchedCmd containsString:@"拦截"] || [matchedCmd containsString:@"检测记录"]);
         if (!isPureStatusQuery) {
             self.isMutedByLocalBargeIn = YES;
             self.bargeInMuteTimestamp = now;
@@ -14416,7 +14979,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
             @"好不好", @"值得买吗", @"哪个好", @"多少钱", @"价格", @"怎么看", @"原理"
         ];
     });
-    BOOL isSystemDiagQuery = ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"闪退"] || [cmd containsString:@"注销"] || [cmd containsString:@"重启"] || [cmd containsString:@"插件"] || [cmd containsString:@"运行速度"] || [cmd containsString:@"内存"] || [cmd containsString:@"运存"] || [cmd containsString:@"电池"] || [cmd containsString:@"健康度"] || [cmd containsString:@"耗电"] || [cmd containsString:@"流量"]);
+    BOOL isSystemDiagQuery = ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"闪退"] || [cmd containsString:@"注销"] || [cmd containsString:@"重启"] || [cmd containsString:@"插件"] || [cmd containsString:@"运行速度"] || [cmd containsString:@"内存"] || [cmd containsString:@"运存"] || [cmd containsString:@"电池"] || [cmd containsString:@"健康度"] || [cmd containsString:@"耗电"] || [cmd containsString:@"流量"] || [cmd containsString:@"拦截"] || [cmd containsString:@"检测记录"]);
     if (!isSystemDiagQuery) {
         for (NSString *negKw in sQueryNegativeKeywords) {
             if ([cmd containsString:negKw]) return NO;
@@ -14527,6 +15090,67 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
                              [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
                              [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] ||
                              [cleanCmd containsString:@"网检车"]);
+
+    // 支持语音直接保存收藏点（如：“把当前定位收藏为公司” / “把当前位置保存为家里”）
+    NSRegularExpression *saveFavRe = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:当前|现在)?(?:的)?(?:虚拟)?(?:定位|位置)(?:收藏为|保存为|设为收藏|存为)([^，。！？,.!?\\s]+)" options:0 error:nil];
+    NSTextCheckingResult *saveFavMatch = [saveFavRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
+    if (saveFavMatch && saveFavMatch.numberOfRanges > 1) {
+        NSString *favName = [[cleanCmd substringWithRange:[saveFavMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
+        if (favName.length > 0) {
+            NSMutableDictionary *mp = loadGeminiPrefs();
+            double wgsLat = [mp[@"AG_LocSpoof_Lat"] doubleValue];
+            double wgsLon = [mp[@"AG_LocSpoof_Lon"] doubleValue];
+            if (fabs(wgsLat) > 0.001 || fabs(wgsLon) > 0.001) {
+                CLLocationCoordinate2D gcj = agWGS84ToGCJ02(wgsLat, wgsLon);
+                NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
+                [favs addObject:@{
+                    @"name": favName,
+                    @"lat": @(gcj.latitude),
+                    @"lon": @(gcj.longitude),
+                    @"ssid": mp[@"AG_AntiDet_FakeSSID"] ?: @"",
+                    @"bssid": mp[@"AG_AntiDet_FakeBSSID"] ?: @"",
+                    @"shieldOn": mp[@"AG_AntiDet_ShieldEnabled"] ?: @YES,
+                    @"scopeMode": mp[@"AG_LocSpoof_ScopeMode"] ?: @0,
+                    @"targetApps": mp[@"AG_LocSpoof_TargetApps"] ?: @[],
+                    @"moveMode": mp[@"AG_LocSpoof_MoveMode"] ?: @0
+                }];
+                mp[@"AG_LocSpoof_Favorites"] = favs;
+                saveGeminiPrefs(mp);
+                [self showActionBanner:[NSString stringWithFormat:@"⭐ 已将当前位置与设置收藏为「%@」", favName]];
+            } else {
+                [self showActionBanner:@"⚠️ 当前尚未开启虚拟定位，请先选点后再收藏"];
+            }
+            return YES;
+        }
+    }
+
+    // 支持“把[某软件]定位到[某地]”（自动将该软件加入白名单并秒切定位）
+    NSRegularExpression *appLocRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:把|将)?([^，。！？,.!?\\s]{2,8}?)(?:的)?(?:虚拟)?(?:定位|位置)(?:修改到|改到|定到|设到|切到|去|到)([^，。！？,.!?、]+)$" options:0 error:nil];
+    NSTextCheckingResult *appLocMatch = [appLocRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
+    if (appLocMatch && appLocMatch.numberOfRanges >= 3) {
+        NSString *maybeApp = [[cleanCmd substringWithRange:[appLocMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
+        NSString *destPlace = [[cleanCmd substringWithRange:[appLocMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
+        if (![maybeApp isEqualToString:@"我"] && ![maybeApp isEqualToString:@"手机"] && ![maybeApp isEqualToString:@"当前"]) {
+            NSString *appBID = [self resolveInstalledAppBundleIDForName:maybeApp];
+            if (appBID.length > 0 && destPlace.length >= 2) {
+                NSMutableDictionary *mp = loadGeminiPrefs();
+                NSMutableArray *tApps = [mp[@"AG_LocSpoof_TargetApps"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_TargetApps"] mutableCopy] : [NSMutableArray array];
+                if (![tApps containsObject:appBID]) {
+                    [tApps addObject:appBID];
+                    mp[@"AG_LocSpoof_TargetApps"] = tApps;
+                    saveGeminiPrefs(mp);
+                }
+                [[AGLocationSpoofManager sharedSpoofer] resolvePlaceAndPin:destPlace completion:^(BOOL ok, NSString *summary) {
+                    if (ok) {
+                        [self showActionBanner:[NSString stringWithFormat:@"🟢 已为「%@」锁定定位：%@", maybeApp, destPlace]];
+                    } else {
+                        [self showActionBanner:[NSString stringWithFormat:@"❌ 定位失败：%@", summary]];
+                    }
+                }];
+                return YES;
+            }
+        }
+    }
 
     // 优先匹配虚拟定位（支持“把定位改到XX然后把防检测打开”一句话连招，在定位落盘回调后自动开启防检测，绝不被覆盖！）
     NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
@@ -14813,6 +15437,14 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     if (([cmd containsString:@"插件"] && ([cmd containsString:@"流量"] || [cmd containsString:@"联网"] || [cmd containsString:@"偷跑"])) ||
         [cmd containsString:@"流量记录"] || [cmd containsString:@"流量排行"] || [cmd containsString:@"哪个插件用流量"] || [cmd containsString:@"偷跑流量"]) {
         [self executeActionDictionary:@{@"type": @"tweak_traffic_report"}];
+        return YES;
+    }
+
+    // 7E. 🛡️ 查询近 24 小时越狱与定位检测雷达拦截记录
+    if ([cmd containsString:@"雷达"] || [cmd containsString:@"检测记录"] || [cmd containsString:@"探测记录"] ||
+        [cmd containsString:@"拦截记录"] || [cmd containsString:@"防检测记录"] || [cmd containsString:@"谁在查我"] ||
+        [cmd containsString:@"谁检测我"] || [cmd containsString:@"有没有软件检测"] || [cmd containsString:@"拦截情况"]) {
+        [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
         return YES;
     }
 
@@ -15993,6 +16625,23 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
                 if (pillStr) [[AGGlobalActionPillWindow sharedPill] showActionPill:pillStr];
                 if (cardStr) {
                     [self showActionBanner:pillStr ?: @"🌐 已生成近24小时插件流量报告"];
+                    NSMutableString *curTrans = [self currentTabTranscript];
+                    if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+                    [curTrans appendString:cardStr];
+                    [self updateResponseTextViewSmoothly:curTrans];
+                    [self throttledExpandAndScrollTextViewForce:YES];
+                }
+                if (speechStr) agSpeakAndBroadcastHardwareResult(self, speechStr);
+            });
+        });
+    } else if ([type isEqualToString:@"radar_intercept_report"]) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+            agAnalyze24HourRadarInterceptions(&pillStr, &cardStr, &speechStr);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (pillStr) [[AGGlobalActionPillWindow sharedPill] showActionPill:pillStr];
+                if (cardStr) {
+                    [self showActionBanner:pillStr ?: @"🛡️ 已生成近24小时防检测雷达报告"];
                     NSMutableString *curTrans = [self currentTabTranscript];
                     if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
                     [curTrans appendString:cardStr];
@@ -23716,6 +24365,7 @@ static const char *hooked_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
     if (name && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
+            agReportAntiDetectionInterceptFromClient(1);
             static char sSafeSysPaths[32][128];
             uint32_t slot = image_index & 31;
             if (sSafeSysPaths[slot][0] == 0) {
@@ -23817,6 +24467,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     if (!interfaceName || CFStringGetLength(interfaceName) == 0) return NULL;
     NSDictionary *customWiFi = nil;
     NSInteger mode = agResolveWiFiProtectionMode(&customWiFi);
+    if (mode > 0) {
+        agReportAntiDetectionInterceptFromClient(3);
+    }
     if (mode == 2 && customWiFi) {
         return (__bridge_retained CFDictionaryRef)customWiFi;
     } else if (mode == 1) {
@@ -23842,6 +24495,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
                 [scheme isEqualToString:@"undecimus"] ||
                 [scheme isEqualToString:@"activator"] ||
                 [scheme isEqualToString:@"sbreload"]) {
+                agReportAntiDetectionInterceptFromClient(4);
                 return NO;
             }
         }
@@ -24261,7 +24915,10 @@ static IMP gOrig_AMap_setDetectRisk = NULL;
 static Method gDynMethod_AMap_setDetectRisk = NULL;
 
 static BOOL agDyn_SrcInfo_isSimSoft(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) {
+        agReportAntiDetectionInterceptFromClient(2);
+        return NO;
+    }
     return gOrig_SrcInfo_isSimSoft ? ((BOOL(*)(id, SEL))gOrig_SrcInfo_isSimSoft)(self, _cmd) : NO;
 }
 
@@ -24281,7 +24938,10 @@ static BOOL agDyn_CLLoc_isSim2(id self, SEL _cmd) {
 }
 
 static BOOL agDyn_AMap_detectRisk(id self, SEL _cmd) {
-    if (agIsAntiDetectionShieldActive()) return NO;
+    if (agIsAntiDetectionShieldActive()) {
+        agReportAntiDetectionInterceptFromClient(2);
+        return NO;
+    }
     return gOrig_AMap_detectRisk ? ((BOOL(*)(id, SEL))gOrig_AMap_detectRisk)(self, _cmd) : NO;
 }
 
@@ -24765,6 +25425,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
             unsetenv("DYLD_INSERT_LIBRARIES");
             unsetenv("_MSSafeMode");
             unsetenv("_SafeMode");
+            gCurrentProcessBundleHash = agHashBundleID(bundleID);
         }
 
         Dl_info selfInfo;
