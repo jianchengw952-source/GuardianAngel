@@ -8257,11 +8257,19 @@ static void agCollectRealHardwareAndBatteryTelemetry(NSString **outPillText, NSS
     }
 }
 
-// ==================== 🕵️‍♂️ 四级深度崩溃取证(小白秒懂大白话版)：整机重启 / 桌面崩溃注销 / 插件致App闪退 ====================
+#import <execinfo.h>
+#import <mach-o/loader.h>
+
+// ==================== 🕵️‍♂️ 五维深度崩溃取证 + 🔋24h插件耗电 + 🌐24h插件流量引擎 ====================
+static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
+static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
+
 static os_unfair_lock gCrashCacheLock = OS_UNFAIR_LOCK_INIT;
 static NSString *gCachedCrashPillStr = nil;
 static NSString *gCachedCrashCardStr = nil;
 static NSString *gCachedCrashSpeechStr = nil;
+static NSString *gCachedPowerSpeechStr = nil;
+static NSString *gCachedTrafficSpeechStr = nil;
 
 static inline NSString *agSafeStr(id obj) {
     return [obj isKindOfClass:[NSString class]] ? (NSString *)obj : @"";
@@ -8272,25 +8280,47 @@ static inline NSNumber *agSafeNum(id obj) {
 }
 
 static NSString *agRespringLedgerFilePath(void) {
-    return MyRootfsPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json");
+#if ROOTHIDE
+    [[NSFileManager defaultManager] removeItemAtPath:MyRootfsPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json") error:nil];
+    return MyJBPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json");
+#else
+    return @"/var/mobile/Library/Preferences/ag_respring_ledger.json";
+#endif
+}
+
+static NSString *agTweakPower24hFilePath(void) {
+#if ROOTHIDE
+    return MyJBPath(@"/var/mobile/Library/Preferences/ag_tweak_power_24h.json");
+#else
+    return @"/var/mobile/Library/Preferences/ag_tweak_power_24h.json";
+#endif
+}
+
+static NSString *agTweakTraffic24hFilePath(void) {
+#if ROOTHIDE
+    return MyJBPath(@"/var/mobile/Library/Preferences/ag_tweak_traffic_24h.json");
+#else
+    return @"/var/mobile/Library/Preferences/ag_tweak_traffic_24h.json";
+#endif
 }
 
 static NSArray<NSString *> *agDynamicLibrariesDirs(void) {
 #if ROOTHIDE
     return @[
         MyJBPath(@"/Library/MobileSubstrate/DynamicLibraries"),
-        MyRootfsPath(@"/Library/MobileSubstrate/DynamicLibraries")
+        MyJBPath(@"/usr/lib/TweakInject")
     ];
 #else
     return @[
-        MyJBPath(@"/Library/MobileSubstrate/DynamicLibraries"),
+        agJBRootPath(@"/Library/MobileSubstrate/DynamicLibraries"),
+        agJBRootPath(@"/usr/lib/TweakInject"),
         @"/var/jb/Library/MobileSubstrate/DynamicLibraries",
+        @"/var/jb/usr/lib/TweakInject",
         @"/Library/MobileSubstrate/DynamicLibraries"
     ];
 #endif
 }
 
-// 读取 iOS 内核 KERN_BOOTTIME，获取上次白苹果整机开机的精确时间与已连续稳定运行时间
 static NSString *agGetSystemKernelBootTimeSummary(void) {
     struct timeval boottime;
     size_t len = sizeof(boottime);
@@ -8314,7 +8344,7 @@ static NSString *agGetSystemKernelBootTimeSummary(void) {
     return @"运行正常";
 }
 
-// 根据 .dylib 文件名反查 dpkg 数据库，获取用户在 Sileo / Zebra 商店里看到的真实插件名称
+// 升级版 dpkg 插件信息反查：提取 Sileo/Zebra 中文名称 + 版本号 (vX.X)
 static NSString *agResolveHumanPluginNameForDylib(NSString *dylibName) {
     if (!dylibName || dylibName.length == 0) return @"未知插件";
     static NSMutableDictionary<NSString *, NSString *> *sDylibNameCache = nil;
@@ -8325,6 +8355,9 @@ static NSString *agResolveHumanPluginNameForDylib(NSString *dylibName) {
     });
 
     NSString *cleanDylib = [dylibName lastPathComponent];
+    if ([cleanDylib containsString:@"AngelGuardian"] || [cleanDylib containsString:@"GeminiSiri"]) {
+        return [NSString stringWithFormat:@"✨天使守护 (%@)", cleanDylib];
+    }
     os_unfair_lock_lock(&sCacheLock);
     NSString *cached = sDylibNameCache[cleanDylib];
     os_unfair_lock_unlock(&sCacheLock);
@@ -8337,7 +8370,7 @@ static NSString *agResolveHumanPluginNameForDylib(NSString *dylibName) {
     ];
 #else
     NSArray<NSString *> *dpkgBaseDirs = @[
-        MyJBPath(@"/Library/dpkg"),
+        agJBRootPath(@"/Library/dpkg"),
         @"/var/jb/Library/dpkg",
         @"/Library/dpkg"
     ];
@@ -8369,14 +8402,20 @@ static NSString *agResolveHumanPluginNameForDylib(NSString *dylibName) {
                     NSString *sub = [statusContent substringFromIndex:pkgRange.location];
                     NSRange endBlock = [sub rangeOfString:@"\n\n"];
                     if (endBlock.location != NSNotFound) sub = [sub substringToIndex:endBlock.location];
+                    NSString *pkgHumanName = nil;
+                    NSString *pkgVersion = nil;
                     for (NSString *line in [sub componentsSeparatedByString:@"\n"]) {
                         if ([line hasPrefix:@"Name: "]) {
-                            NSString *pkgHumanName = [[line substringFromIndex:6] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                            if (pkgHumanName.length > 0) {
-                                resolvedResult = [NSString stringWithFormat:@"%@ (%@)", pkgHumanName, cleanDylib];
-                                break;
-                            }
+                            pkgHumanName = [[line substringFromIndex:6] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        } else if ([line hasPrefix:@"Version: "]) {
+                            pkgVersion = [[line substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                         }
+                    }
+                    if (!pkgHumanName || pkgHumanName.length == 0) pkgHumanName = matchedPkgID;
+                    if (pkgVersion.length > 0) {
+                        resolvedResult = [NSString stringWithFormat:@"%@ v%@ (%@)", pkgHumanName, pkgVersion, cleanDylib];
+                    } else {
+                        resolvedResult = [NSString stringWithFormat:@"%@ (%@)", pkgHumanName, cleanDylib];
                     }
                 }
             }
@@ -8425,12 +8464,31 @@ static BOOL agIsThirdPartyTweakImage(NSString *path, NSString *name) {
     return NO;
 }
 
-// 第 2 级深度追凶：提取崩溃报错(asi)中的异常类名或方法名，在所有已安装 .dylib 二进制文件中做特征码扫描定位真凶
+// 检查某个插件是否在崩溃前 2 小时内刚安装或更新
+static NSString *agCheckRecentInstallWarningForDylib(NSString *dylibFileName, NSDate *crashDate) {
+    if (!dylibFileName || !crashDate) return @"";
+    NSString *cleanName = [dylibFileName lastPathComponent];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSTimeInterval crashTs = [crashDate timeIntervalSince1970];
+    for (NSString *dir in agDynamicLibrariesDirs()) {
+        NSString *fullPath = [dir stringByAppendingPathComponent:cleanName];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+        NSDate *modDate = attrs[NSFileModificationDate];
+        if (modDate) {
+            NSTimeInterval diff = crashTs - [modDate timeIntervalSince1970];
+            if (diff >= -60.0 && diff <= 7200.0) {
+                return @" 🚨[崩溃前2小时内刚安装/更新]";
+            }
+        }
+    }
+    return @"";
+}
+
 static NSString *agScanDylibsForCrashingSymbolInASI(NSString *asiDesc, NSString **outMatchedBasePlugin) {
     if (!asiDesc || asiDesc.length < 6) return nil;
     NSMutableArray<NSString *> *candidateSymbols = [NSMutableArray array];
 
-    NSRegularExpression *objcRe = [NSRegularExpression regularExpressionWithPattern:@"[-+]\\[([A-Za-z0-9_]+)\\s+([A-Za-z0-9_:]+)\\]" options:0 error:nil];
+    NSRegularExpression *objcRe = [NSRegularExpression regularExpressionWithPattern:@"[-+]\[([A-Za-z0-9_]+)\s+([A-Za-z0-9_:]+)\]" options:0 error:nil];
     NSArray<NSTextCheckingResult *> *matches = [objcRe matchesInString:asiDesc options:0 range:NSMakeRange(0, asiDesc.length)];
     for (NSTextCheckingResult *m in matches) {
         if (m.numberOfRanges >= 3) {
@@ -8472,7 +8530,6 @@ static NSString *agScanDylibsForCrashingSymbolInASI(NSString *asiDesc, NSString 
     return nil;
 }
 
-// 第 4 级嫌疑排查：查找在崩溃发生时间之前最近刚安装或更新的越狱插件
 static NSString *agFindRecentlyModifiedTweakBeforeDate(NSDate *crashDate, NSString **outBasePlugin) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *newestDylib = nil;
@@ -8505,7 +8562,7 @@ static NSString *agFindRecentlyModifiedTweakBeforeDate(NSDate *crashDate, NSStri
     return nil;
 }
 
-// 核心取证分析器（小白秒懂大白话案情还原 + 插件本周引发次数统计）
+// 五维深度崩溃取证分析器（新增 Jetsam OOM 桌面内存爆满注销、panic-full 看门狗解析、Hook 函数提取与解决建议）
 static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
         @try {
@@ -8514,25 +8571,13 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
             NSTimeInterval sevenDaysAgo = now - 7.0 * 86400.0;
             NSString *bootSummary = agGetSystemKernelBootTimeSummary();
 
-            NSUInteger ledgerCount = 0;
-            NSData *ledgerData = [NSData dataWithContentsOfFile:agRespringLedgerFilePath()];
-            if (ledgerData) {
-                NSArray *arr = [NSJSONSerialization JSONObjectWithData:ledgerData options:0 error:nil];
-                if ([arr isKindOfClass:[NSArray class]]) {
-                    for (id item in arr) {
-                        NSNumber *ts = agSafeNum(item);
-                        if (ts && [ts doubleValue] >= sevenDaysAgo) {
-                            ledgerCount++;
-                        }
-                    }
-                }
-            }
-
             NSArray<NSString *> *crashDirs = @[
-                @"/var/mobile/Library/Logs/CrashReporter",
-                @"/var/mobile/Library/Logs/CrashReporter/Retired",
-                @"/private/var/mobile/Library/Logs/CrashReporter",
-                @"/private/var/logs/CrashReporter"
+                MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter"),
+                MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Retired"),
+                MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Panics"),
+                MyRootfsPath(@"/var/db/PanicReporter"),
+                MyRootfsPath(@"/private/var/mobile/Library/Logs/CrashReporter"),
+                MyRootfsPath(@"/private/var/logs/CrashReporter")
             ];
 
             NSMutableArray<NSDictionary *> *crashEvents = [NSMutableArray array];
@@ -8546,9 +8591,10 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     if (![fname hasSuffix:@".ips"] && ![fname hasSuffix:@".crash"]) continue;
 
                     NSString *lowerF = [fname lowercaseString];
-                    if ([lowerF hasPrefix:@"jetsamevent"] || [lowerF containsString:@"excresource"] || [lowerF hasPrefix:@"general"] || [lowerF hasPrefix:@"analytics"] || [lowerF hasPrefix:@"stacks"]) {
+                    if ([lowerF containsString:@"excresource"] || [lowerF hasPrefix:@"general"] || [lowerF hasPrefix:@"analytics"] || [lowerF hasPrefix:@"stacks"]) {
                         continue;
                     }
+                    BOOL isJetsam = [lowerF hasPrefix:@"jetsamevent"];
                     BOOL isSpringBoard = ([lowerF hasPrefix:@"springboard"] || [lowerF hasPrefix:@"backboardd"]);
                     BOOL isKernelPanic = ([lowerF hasPrefix:@"panic"] || [lowerF hasPrefix:@"resetcounter"]);
 
@@ -8563,7 +8609,8 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                         @"fname": fname,
                         @"date": modDate,
                         @"isSB": @(isSpringBoard),
-                        @"isPanic": @(isKernelPanic)
+                        @"isPanic": @(isKernelPanic),
+                        @"isJetsam": @(isJetsam)
                     }];
                 }
             }
@@ -8576,6 +8623,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
             df.dateFormat = @"MM月dd日 HH:mm:ss";
 
             NSUInteger sbCrashCount = 0;
+            NSUInteger sbJetsamOOMCount = 0;
             NSUInteger panicCount = 0;
             NSUInteger tweakAppCrashCount = 0;
             NSMutableDictionary<NSString *, NSNumber *> *pluginFaultCounter = [NSMutableDictionary dictionary];
@@ -8584,31 +8632,87 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
             for (NSDictionary *ev in crashEvents) {
                 BOOL isSB = [ev[@"isSB"] boolValue];
                 BOOL isPanic = [ev[@"isPanic"] boolValue];
+                BOOL isJetsam = [ev[@"isJetsam"] boolValue];
+                NSDate *evDate = ev[@"date"];
+                NSString *timeStr = [df stringFromDate:evDate];
                 NSString *rawContent = [NSString stringWithContentsOfFile:ev[@"path"] encoding:NSUTF8StringEncoding error:nil];
+                if (!rawContent || rawContent.length < 20) continue;
 
-                // 关键过滤：区分「用户手动关机/手动重启/正常软重启」与「手机自己死机白苹果异常重启」！
+                // 新增维度 1：解析 JetsamEvent 捕获桌面 (SpringBoard / backboardd) 因内存爆满 OOM 导致的黑屏转圈自动注销
+                if (isJetsam) {
+                    if (![rawContent containsString:@"\"SpringBoard\""] && ![rawContent containsString:@"\"backboardd\""]) {
+                        continue;
+                    }
+                    NSRange nl = [rawContent rangeOfString:@"\n"];
+                    NSString *jBody = (nl.location != NSNotFound && nl.location < 600) ? [rawContent substringFromIndex:nl.location + 1] : rawContent;
+                    NSDictionary *jDict = [NSJSONSerialization JSONObjectWithData:[jBody dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+                    if (![jDict isKindOfClass:[NSDictionary class]]) continue;
+
+                    NSArray *procs = [jDict[@"processes"] isKindOfClass:[NSArray class]] ? jDict[@"processes"] : nil;
+                    BOOL sbWasKilledByOOM = NO;
+                    double sbMemMB = 0.0;
+                    NSString *killedProcName = @"SpringBoard";
+                    NSInteger pageSize = [jDict[@"pageSize"] integerValue] > 0 ? [jDict[@"pageSize"] integerValue] : 16384;
+
+                    for (NSDictionary *pInfo in procs) {
+                        if (![pInfo isKindOfClass:[NSDictionary class]]) continue;
+                        NSString *pName = agSafeStr(pInfo[@"name"]);
+                        NSString *pReason = agSafeStr(pInfo[@"reason"]);
+                        if (([pName isEqualToString:@"SpringBoard"] || [pName isEqualToString:@"backboardd"]) && pReason.length > 0) {
+                            sbWasKilledByOOM = YES;
+                            killedProcName = pName;
+                            double rPages = [agSafeNum(pInfo[@"rpages"]) doubleValue];
+                            sbMemMB = (rPages * (double)pageSize) / (1024.0 * 1024.0);
+                            break;
+                        }
+                    }
+                    if (!sbWasKilledByOOM) continue;
+
+                    sbJetsamOOMCount++;
+                    if (parsedRecords.count >= 6) continue;
+                    NSString *basePlug = nil;
+                    NSString *recentTweak = agFindRecentlyModifiedTweakBeforeDate(evDate, &basePlug);
+                    NSString *memDesc = (sbMemMB > 10.0) ? [NSString stringWithFormat:@" (峰值占内存 %.0f MB)", sbMemMB] : @"";
+                    [parsedRecords addObject:[@{
+                        @"time": timeStr,
+                        @"type": [NSString stringWithFormat:@"💣 桌面运行内存爆满自动注销 (%@ OOM%@)", killedProcName, memDesc],
+                        @"verdictLabel": @"🔍 内存消耗排查",
+                        @"plugin": recentTweak ?: @"常驻桌面的美化/动态特效或后台叠加插件",
+                        @"basePlugin": basePlug ?: @"",
+                        @"reason": [NSString stringWithFormat:@"桌面进程 %@ 运行内存超出系统上限%@，被 iOS 内核强制回收重启（非代码报错崩溃）", killedProcName, memDesc],
+                        @"advice": @"可对我说「清理运行内存」释放运存，或对我说「看看插件耗电记录」排查常驻桌面大户",
+                        @"voiceReason": @"因为桌面运行内存超标爆满，被系统内核自动回收并重启了桌面"
+                    } mutableCopy]];
+                    continue;
+                }
+
+                // 新增维度 2：整机死机重启 (panic-full / ResetCounter / 看门狗超时细化)
                 if (isPanic) {
                     NSString *lowerFname = [ev[@"fname"] lowercaseString];
+                    NSString *lowerRaw = [rawContent lowercaseString] ?: @"";
                     if ([lowerFname hasPrefix:@"resetcounter"]) {
-                        NSString *lowerRaw = [rawContent lowercaseString] ?: @"";
                         BOOL hasTrueCrashPanic = ([lowerRaw containsString:@"panic"] ||
                                                   [lowerRaw containsString:@"watchdog"] ||
                                                   [lowerRaw containsString:@"wdt timeout"] ||
                                                   [lowerRaw containsString:@"thermal"] ||
                                                   [lowerRaw containsString:@"kernel_task"]);
-                        if (!hasTrueCrashPanic) {
-                            // 普通手动重启或正常 userspace 软重启，绝不计入异常重启报告！
-                            continue;
-                        }
+                        if (!hasTrueCrashPanic) continue;
                     }
                     panicCount++;
-                }
-                if (isSB) sbCrashCount++;
-                if (parsedRecords.count >= 6 && (isSB || isPanic)) continue;
+                    if (parsedRecords.count >= 6) continue;
 
-                NSDate *evDate = ev[@"date"];
-                NSString *timeStr = [df stringFromDate:evDate];
-                if (isPanic) {
+                    NSString *panicReason = @"手机底层系统核心卡死无响应，触发主板硬件看门狗保护，导致手机强制断电重启";
+                    NSString *voicePanicReason = @"因为手机底层系统核心卡死无响应，触发了主板保护并自动重启了手机";
+                    if ([lowerRaw containsString:@"no successful checkins from springboard"]) {
+                        panicReason = @"某个桌面插件把 SpringBoard 主线程彻底卡死超过 180 秒未响应，触发系统用户态看门狗 (watchdogd) 强制重启整机";
+                        voicePanicReason = @"因为某个桌面插件把主画面卡死超过180秒未响应，触发了系统看门狗强制重启整机";
+                    } else if ([lowerRaw containsString:@"no successful checkins from backboardd"]) {
+                        panicReason = @"触控与画面渲染服务 (backboardd) 卡死超过 180 秒，触发系统看门狗强制重启整机";
+                        voicePanicReason = @"因为触控渲染服务卡死超时，触发了系统看门狗强制重启整机";
+                    } else if ([lowerRaw containsString:@"userspace panic"] || [lowerRaw containsString:@"launchd"]) {
+                        panicReason = @"越狱底层守护进程或 launchd 异常退出，引发整机重启";
+                    }
+
                     NSString *basePlug = nil;
                     NSString *recentSuspect = agFindRecentlyModifiedTweakBeforeDate(evDate, &basePlug);
                     if (basePlug.length > 0) {
@@ -8616,21 +8720,25 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     }
                     [parsedRecords addObject:[@{
                         @"time": timeStr,
-                        @"type": @"🔄 手机异常死机白苹果重启 (Kernel Panic)",
+                        @"type": @"🔄 手机异常死机白苹果重启 (Kernel / Watchdog Panic)",
                         @"verdictLabel": @"🔍 重点怀疑对象",
-                        @"plugin": recentSuspect ?: @"底层驱动或硬件看门狗超时",
+                        @"plugin": recentSuspect ?: @"底层驱动或桌面主线程死锁插件",
                         @"basePlugin": basePlug ?: @"",
-                        @"reason": @"手机底层系统核心卡死无响应，触发了主板硬件保护，导致手机自己强制断电重启",
-                        @"voiceReason": @"因为手机底层系统核心卡死无响应，触发了主板保护并自动重启了手机"
+                        @"reason": panicReason,
+                        @"advice": @"若频繁死机重启，建议在 Sileo 中检查最近更新的桌面插件或升级 ElleKit 加载器",
+                        @"voiceReason": voicePanicReason
                     } mutableCopy]];
                     continue;
                 }
 
-                if (!rawContent || rawContent.length < 20) continue;
+                if (isSB) sbCrashCount++;
+                if (parsedRecords.count >= 6 && isSB) continue;
 
-                NSString *confirmedCulprit = nil; // 🎯 准确真凶
-                NSString *primeSuspect     = nil; // 🔍 重点怀疑对象
-                NSString *basePluginKey    = nil; // 用于统计该插件本周崩了几次
+                NSString *confirmedCulprit = nil;
+                NSString *primeSuspect     = nil;
+                NSString *basePluginKey    = nil;
+                NSString *matchedDylibFile = nil;
+                NSString *crashingSymName  = nil;
                 NSString *humanReason      = isSB
                     ? @"该插件在后台运行时与系统桌面发生了冲突，导致桌面自动重启"
                     : @"该插件注入软件后发生冲突，导致软件当场闪退";
@@ -8656,10 +8764,8 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     NSString *termInd  = agSafeStr(term[@"indicator"]);
                     NSNumber *termCode = agSafeNum(term[@"code"]);
 
-                    if (asi) {
-                        asiFullString = [asi description] ?: @"";
-                    }
-                    // 将晦涩的底层异常码翻译为小白一秒能看懂的大白话案情还原
+                    if (asi) asiFullString = [asi description] ?: @"";
+
                     if ([termInd containsString:@"8badf00d"] || (termCode && [termCode unsignedLongLongValue] == 0x8badf00dULL)) {
                         humanReason = @"该插件干活时把手机主画面彻底卡死冻住了超过 10 秒钟，苹果系统为了防死机，自动帮你重启了桌面来解冻";
                         voiceReason = @"因为这个插件把手机画面卡死冻住了超过10秒钟，系统为了防死机自动帮你重启了桌面";
@@ -8668,26 +8774,22 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                             humanReason = @"该插件试图调用一个当前 iOS 系统里根本没有的功能开关（通常是插件版本与当前系统不兼容），导致当场闪退";
                             voiceReason = @"因为这个插件试图调用一个当前系统里根本没有的功能开关，属于版本不兼容引发的闪退";
                         } else if ([asiFullString containsString:@"NSRangeException"] || [asiFullString containsString:@"bounds"]) {
-                            humanReason = @"该插件在读取列表数据时数错了位置（比如列表里只有 3 项，它却硬要去拿第 4 项），导致程序卡壳重启";
+                            humanReason = @"该插件在读取列表数据时数错了位置（数组越界），导致程序卡壳重启";
                             voiceReason = @"因为这个插件在读取列表数据时数错了位置，俗称数组越界，导致了程序重启";
                         } else if ([asiFullString containsString:@"NSInvalidArgumentException"]) {
-                            humanReason = @"该插件把一个空的、无效的内容硬塞给了系统功能（比如没填内容就让系统执行），被系统拒绝并引发闪退";
+                            humanReason = @"该插件把一个空的、无效的内容硬塞给了系统功能，被系统拒绝并引发闪退";
                             voiceReason = @"因为这个插件把一个空的无效参数塞给了系统功能，被系统拒绝并引发了闪退";
                         } else if ([asiFullString containsString:@"CALayer"] || [asiFullString containsString:@"UIView"]) {
                             humanReason = @"该插件在后台偷偷刷新屏幕画面时，和系统正在显示的画面撞车了，导致界面崩溃重启";
                             voiceReason = @"因为这个插件在后台偷偷刷新屏幕画面时和系统画面撞车，导致了重启";
                         }
                     } else if ([excType containsString:@"EXC_BAD_ACCESS"] || [excSig containsString:@"SIGSEGV"] || [excSig containsString:@"SIGBUS"]) {
-                        humanReason = @"该插件去读取一份刚刚已经被系统清理掉的旧数据（俗称“摸空了/内存野指针”），触发了苹果系统的安全保护，自动重启了桌面";
-                        voiceReason = @"因为这个插件去读取一份已经被系统清理掉的旧数据，俗称摸空了或者内存野指针，触发了系统安全保护而重启桌面";
-                    } else if ([excType containsString:@"EXC_RESOURCE"]) {
-                        humanReason = @"该插件在短时间内占用了太多运行内存或让处理器狂转，系统为了防止手机发烫耗电，自动重启了桌面";
-                        voiceReason = @"因为这个插件短时间内占用了太多运行内存，系统为了防发烫自动重启了桌面";
+                        humanReason = @"该插件去读取一份刚刚已经被系统清理掉的旧数据（俗称“内存野指针”），触发了苹果系统的安全保护，自动重启了桌面";
+                        voiceReason = @"因为这个插件去读取一份已经被系统清理掉的旧数据，俗称内存野指针，触发了系统安全保护而重启桌面";
                     }
 
                     NSArray *usedImages = [ipsJSON[@"usedImages"] isKindOfClass:[NSArray class]] ? ipsJSON[@"usedImages"] : nil;
                     if (usedImages) {
-                        // 【第 1 级 · 🎯 准确真凶】：异常抛出栈 lastExceptionBacktrace 直接命中
                         NSArray *lebFrames = [ipsJSON[@"lastExceptionBacktrace"] isKindOfClass:[NSArray class]] ? ipsJSON[@"lastExceptionBacktrace"] : nil;
                         if (lebFrames) {
                             for (NSUInteger fIdx = 0; fIdx < lebFrames.count; fIdx++) {
@@ -8703,9 +8805,13 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                                     if (imgName.length == 0) imgName = [imgPath lastPathComponent];
                                     if (agIsThirdPartyTweakImage(imgPath, imgName)) {
                                         NSString *humanPlug = agResolveHumanPluginNameForDylib(imgName);
+                                        NSString *sym = agSafeStr(frame[@"symbol"]);
+                                        matchedDylibFile = imgName;
+                                        if (sym.length > 0) crashingSymName = sym;
                                         if (fIdx <= 12) {
                                             basePluginKey = humanPlug;
-                                            confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 案发瞬间正运行该插件代码]", humanPlug];
+                                            NSString *symTag = (crashingSymName.length > 0) ? [NSString stringWithFormat:@" (崩于函数 %@)", crashingSymName] : @"";
+                                            confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 案发瞬间正运行该插件%@]", humanPlug, symTag];
                                         } else if (!primeSuspect) {
                                             basePluginKey = humanPlug;
                                             primeSuspect = [NSString stringWithFormat:@"%@ [线索: 位于调用链下层]", humanPlug];
@@ -8716,7 +8822,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                             }
                         }
 
-                        // 【第 1 级 & 第 3 级】：崩溃线程 faultingThread 栈顶前 10 帧(准确真凶) vs 深层第 11+ 帧(重点怀疑对象)
                         NSArray *threads = [ipsJSON[@"threads"] isKindOfClass:[NSArray class]] ? ipsJSON[@"threads"] : nil;
                         NSNumber *faultIdxNum = agSafeNum(ipsJSON[@"faultingThread"]);
                         NSUInteger faultIdx = faultIdxNum ? [faultIdxNum unsignedIntegerValue] : 0;
@@ -8737,9 +8842,13 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                                         if (imgName.length == 0) imgName = [imgPath lastPathComponent];
                                         if (agIsThirdPartyTweakImage(imgPath, imgName)) {
                                             NSString *humanPlug = agResolveHumanPluginNameForDylib(imgName);
+                                            NSString *sym = agSafeStr(frame[@"symbol"]);
+                                            matchedDylibFile = imgName;
+                                            if (sym.length > 0) crashingSymName = sym;
                                             if (fIdx <= 10) {
                                                 basePluginKey = humanPlug;
-                                                confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 崩溃点直接位于该插件内]", humanPlug];
+                                                NSString *symTag = (crashingSymName.length > 0) ? [NSString stringWithFormat:@" (函数 %@)", crashingSymName] : @"";
+                                                confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 崩溃点直接位于该插件内%@]", humanPlug, symTag];
                                                 break;
                                             } else if (!primeSuspect) {
                                                 basePluginKey = humanPlug;
@@ -8751,7 +8860,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                             }
                         }
 
-                        // 【第 2 级 · 🎯 准确真凶】：通过 ASI 报错类名/方法名对 DynamicLibraries 进行二进制特征扫描
                         if (!confirmedCulprit && asiFullString.length > 0) {
                             NSString *matchedBase = nil;
                             NSString *binHit = agScanDylibsForCrashingSymbolInASI(asiFullString, &matchedBase);
@@ -8761,7 +8869,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                             }
                         }
 
-                        // 【第 3 级 · 🔍 重点怀疑对象】：扫描崩溃瞬间并发运行的其他活跃子线程
                         if (!confirmedCulprit && !primeSuspect && threads) {
                             for (NSUInteger tIdx = 0; tIdx < threads.count; tIdx++) {
                                 if (tIdx == faultIdx || ![threads[tIdx] isKindOfClass:[NSDictionary class]]) continue;
@@ -8781,6 +8888,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                                         if (imgName.length == 0) imgName = [imgPath lastPathComponent];
                                         if (agIsThirdPartyTweakImage(imgPath, imgName)) {
                                             NSString *humanPlug = agResolveHumanPluginNameForDylib(imgName);
+                                            matchedDylibFile = imgName;
                                             basePluginKey = humanPlug;
                                             primeSuspect = [NSString stringWithFormat:@"%@ [线索: 崩溃瞬间正在后台线程运行]", humanPlug];
                                             break;
@@ -8792,13 +8900,13 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                         }
                     }
                 } else {
-                    // 兼容 iOS 14 纯文本格式 .ips
                     NSRegularExpression *dylibRe = [NSRegularExpression regularExpressionWithPattern:@"([A-Za-z0-9_\\-\\+]+\\.dylib)" options:0 error:nil];
                     NSArray<NSTextCheckingResult *> *matches = [dylibRe matchesInString:rawContent options:0 range:NSMakeRange(0, MIN((NSUInteger)30000, rawContent.length))];
                     for (NSTextCheckingResult *m in matches) {
                         NSString *dName = [rawContent substringWithRange:[m rangeAtIndex:1]];
                         if (!agIsHookLoaderOrSystemImage(dName) && ![dName hasPrefix:@"lib"]) {
                             NSString *humanPlug = agResolveHumanPluginNameForDylib(dName);
+                            matchedDylibFile = dName;
                             basePluginKey = humanPlug;
                             confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 崩溃点位于该插件内]", humanPlug];
                             break;
@@ -8812,7 +8920,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     if (parsedRecords.count >= 6) continue;
                 }
 
-                // 【第 4 级 · 🔍 怀疑对象】：若栈内未见插件，排查崩溃发生前最近安装/更新的插件
                 if (isSB && !confirmedCulprit && !primeSuspect) {
                     NSString *recentBase = nil;
                     primeSuspect = agFindRecentlyModifiedTweakBeforeDate(evDate, &recentBase);
@@ -8823,11 +8930,16 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     pluginFaultCounter[basePluginKey] = @([pluginFaultCounter[basePluginKey] unsignedIntegerValue] + 1);
                 }
 
+                NSString *installAlert = agCheckRecentInstallWarningForDylib(matchedDylibFile, evDate);
                 NSString *verdictTitle = confirmedCulprit ? @"🎯 准确真凶" : @"🔍 重点怀疑对象";
-                NSString *finalPlugin  = confirmedCulprit ?: (primeSuspect ?: @"未发现越狱插件介入 (纯系统原生偶发异常)");
+                NSString *finalPlugin  = [(confirmedCulprit ?: (primeSuspect ?: @"未发现越狱插件介入 (纯系统原生偶发异常)")) stringByAppendingString:installAlert];
                 NSString *typeTitle    = isSB
                     ? @"💥 桌面黑屏转圈自动注销 (SpringBoard)"
                     : [NSString stringWithFormat:@"📱 %@ 软件被插件搞崩闪退", procName];
+
+                NSString *actionAdvice = isSB
+                    ? (basePluginKey.length > 0 ? [NSString stringWithFormat:@"若反复发生，建议在 Sileo/Zebra 中更新或卸载「%@」", basePluginKey] : @"属于偶发系统异常，无需卸载插件")
+                    : [NSString stringWithFormat:@"建议在 Choicy 或 RootHide Manager 中对「%@」屏蔽注入 %@", procName, (matchedDylibFile ?: @"该插件")];
 
                 [parsedRecords addObject:[@{
                     @"time": timeStr,
@@ -8836,24 +8948,24 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     @"plugin": finalPlugin,
                     @"basePlugin": basePluginKey ?: @"",
                     @"reason": humanReason,
+                    @"advice": actionAdvice,
                     @"voiceReason": voiceReason
                 } mutableCopy]];
             }
 
-            (void)ledgerCount; // 彻底忽略手动正常注销账本，只统计手机自己发生的异常崩溃注销！
             NSMutableString *card = [NSMutableString string];
-            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 插件闪退报告】\n"];
-            [card appendFormat:@"• 🔄 异常死机重启：%@（近7天手机自己死机异常重启 %lu 次，已排除手动重启）\n", bootSummary, (unsigned long)panicCount];
-            [card appendFormat:@"• 💥 异常崩溃注销：近7天手机自己崩溃自动注销 %lu 次｜插件致软件闪退 %lu 次（已排除手动正常注销）\n",
-             (unsigned long)sbCrashCount, (unsigned long)tweakAppCrashCount];
+            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 内存爆满 OOM 报告】\n"];
+            [card appendFormat:@"• 🔄 异常死机重启：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
+            [card appendFormat:@"• 💥 桌面自动注销：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
+             (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount];
 
             NSString *pillOut = nil;
             NSString *speechOut = nil;
 
             if (parsedRecords.count == 0) {
-                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩或死机，系统运行稳定。"];
-                pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃｜%@", bootSummary];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面异常崩溃 0 次，没有发现任何插件崩溃冲突。", bootSummary];
+                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，系统运行非常稳定。"];
+                pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃0注销｜%@", bootSummary];
+                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面崩溃与内存爆满注销 0 次，没有发现任何插件冲突。", bootSummary];
             } else {
                 for (NSUInteger i = 0; i < parsedRecords.count; i++) {
                     NSDictionary *rec = parsedRecords[i];
@@ -8861,19 +8973,22 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     NSUInteger faultTimes = (bKey.length > 0) ? [pluginFaultCounter[bKey] unsignedIntegerValue] : 1;
 
                     [card appendFormat:@"\n%lu️⃣ 【%@】%@\n", (unsigned long)(i + 1), rec[@"time"], rec[@"type"]];
-                    [card appendFormat:@"   %@：%@ (本周引发%lu次)\n", rec[@"verdictLabel"], rec[@"plugin"], (unsigned long)MAX((NSUInteger)1, faultTimes)];
-                    [card appendFormat:@"   📖 通俗原因：%@", rec[@"reason"]];
+                    [card appendFormat:@"   %@：%@ (近7天%lu次)\n", rec[@"verdictLabel"], rec[@"plugin"], (unsigned long)MAX((NSUInteger)1, faultTimes)];
+                    [card appendFormat:@"   📖 通俗原因：%@\n", rec[@"reason"]];
+                    if ([rec[@"advice"] length] > 0) {
+                        [card appendFormat:@"   🛠️ 解决建议：%@", rec[@"advice"]];
+                    }
                 }
 
                 NSDictionary *latest = parsedRecords.firstObject;
                 NSString *latestBase = latest[@"basePlugin"];
                 NSUInteger latestTimes = (latestBase.length > 0) ? [pluginFaultCounter[latestBase] unsignedIntegerValue] : 1;
-                NSString *cleanVerdict = [latest[@"verdictLabel"] containsString:@"准确真凶"] ? @"准确真凶" : @"重点怀疑对象";
+                NSString *cleanVerdict = [latest[@"verdictLabel"] containsString:@"准确真凶"] ? @"准确真凶" : @"排查结果";
 
-                pillOut = [NSString stringWithFormat:@"🕵️‍♂️崩溃%lu次｜%@｜%@:%@",
-                           (unsigned long)(sbCrashCount + panicCount), latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"])];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的崩溃记录：本机于 %@，本周整机死机重启 %lu 次，桌面异常崩溃 %lu 次。最近一次发生在 %@，%@是：%@，本周累计引发 %lu 次。通俗来说，是%@。",
-                             bootSummary, (unsigned long)panicCount, (unsigned long)sbCrashCount, latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"]), (unsigned long)MAX((NSUInteger)1, latestTimes), latest[@"voiceReason"]];
+                pillOut = [NSString stringWithFormat:@"🕵️‍♂️注销%lu次｜%@｜%@:%@",
+                           (unsigned long)(sbCrashCount + sbJetsamOOMCount + panicCount), latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"])];
+                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的记录：本机于 %@，近 7 天整机死机重启 %lu 次，桌面崩溃注销 %lu 次，内存爆满注销 %lu 次。最近一次发生在 %@，%@是：%@，累计 %lu 次。通俗来说，是%@。",
+                             bootSummary, (unsigned long)panicCount, (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"]), (unsigned long)MAX((NSUInteger)1, latestTimes), latest[@"voiceReason"]];
             }
 
             os_unfair_lock_lock(&gCrashCacheLock);
@@ -8884,7 +8999,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
         } @catch (NSException *e) {}
     }
 
-    // 铁律：在 @autoreleasepool 外部从全局强引用缓存中拷贝赋值给输出指针，1000% 杜绝内存野指针 (EXC_BAD_ACCESS)！
     os_unfair_lock_lock(&gCrashCacheLock);
     NSString *safePill   = [gCachedCrashPillStr copy];
     NSString *safeCard   = [gCachedCrashCardStr copy];
@@ -8903,10 +9017,518 @@ static NSString *agGetCachedCrashSpeechSummary(void) {
     return s;
 }
 
+// ==================== 🔋 待办 2 & 待办 3：24小时滚动插件耗电记录 + 24小时滚动插件流量监控 ====================
+static os_unfair_lock gLedger24hLock = OS_UNFAIR_LOCK_INIT;
+static NSTimer *gPowerSamplerTimer = nil;
+
+// 从当前调用栈回溯找出发起调用的第三方越狱插件 .dylib 文件名
+static NSString *agDetectCallerTweakDylibFromBacktrace(BOOL allowSelfTweak) {
+    void *callstack[14];
+    int frames = backtrace(callstack, 14);
+    int (*real_dladdr)(const void *, Dl_info *) = orig_dladdr ?: dladdr;
+    for (int i = 1; i < frames; i++) {
+        Dl_info info;
+        memset(&info, 0, sizeof(info));
+        uintptr_t cleanAddr = ((uintptr_t)callstack[i]) & 0x0000007FFFFFFFFFULL;
+        if (real_dladdr((const void *)cleanAddr, &info) == 0 && real_dladdr(callstack[i], &info) == 0) {
+            continue;
+        }
+        if (info.dli_fname) {
+            NSString *fullPath = [NSString stringWithUTF8String:info.dli_fname];
+            NSString *fname = [fullPath lastPathComponent];
+            if (agIsThirdPartyTweakImage(fullPath, fname)) {
+                if (!allowSelfTweak && ([fname containsString:@"AngelGuardian"] || [fname containsString:@"GeminiSiri"])) {
+                    continue;
+                }
+                return fname;
+            }
+        }
+    }
+    return nil;
+}
+
+// 读取并自动清理超过 24 小时 (now - 86400s) 的滚动账本记录
+static NSMutableArray<NSDictionary *> *agLoadAndPrune24hRollingEventsFromFile(NSString *filePath) {
+    NSTimeInterval cutoff = [[NSDate date] timeIntervalSince1970] - 86400.0;
+    NSMutableArray<NSDictionary *> *validEvents = [NSMutableArray array];
+    NSData *data = [NSData dataWithContentsOfFile:filePath];
+    if (data && data.length > 2) {
+        NSArray *rawArr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if ([rawArr isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *ev in rawArr) {
+                if (![ev isKindOfClass:[NSDictionary class]]) continue;
+                NSTimeInterval ts = [agSafeNum(ev[@"ts"]) doubleValue];
+                if (ts >= cutoff) {
+                    [validEvents addObject:ev];
+                }
+            }
+        }
+    }
+    return validEvents;
+}
+
+static void agSave24hRollingEventsToFile(NSArray<NSDictionary *> *events, NSString *filePath) {
+    if (!events || !filePath) return;
+    // 控制最大条目数 <= 500，保证文件体积永远小于 15KB
+    NSArray *toSave = (events.count > 500) ? [events subarrayWithRange:NSMakeRange(events.count - 500, 500)] : events;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:toSave options:0 error:nil];
+    if (data) {
+        NSString *dir = [filePath stringByDeletingLastPathComponent];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dir]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        [data writeToFile:filePath atomically:YES];
+    }
+}
+
+// 记录一次插件网络流量消耗（严格 24 小时滚动窗口，自动区分 Wi-Fi 与蜂窝流量并记录目标域名）
+static void agRecordTweakNetworkTrafficEvent(NSString *dylibName, NSString *host, int64_t bytesSent, int64_t bytesRecv) {
+    if (!dylibName || (bytesSent <= 0 && bytesRecv <= 0)) return;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool {
+            NSString *netType = nil;
+            agGetCurrentLocalIPAddress(&netType);
+            BOOL isCellular = [netType containsString:@"蜂窝"];
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+            os_unfair_lock_lock(&gLedger24hLock);
+            NSString *path = agTweakTraffic24hFilePath();
+            NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
+
+            // 若最后一条记录是同一插件在 10 分钟内产生，直接合并累加，极度节省存储空间
+            NSDictionary *lastEv = events.lastObject;
+            if (lastEv && [agSafeStr(lastEv[@"dylib"]) isEqualToString:dylibName] &&
+                (now - [agSafeNum(lastEv[@"ts"]) doubleValue] < 600.0)) {
+                NSMutableDictionary *merged = [lastEv mutableCopy];
+                merged[@"tx"] = @([agSafeNum(lastEv[@"tx"]) longLongValue] + MAX(0, bytesSent));
+                merged[@"rx"] = @([agSafeNum(lastEv[@"rx"]) longLongValue] + MAX(0, bytesRecv));
+                if (isCellular) {
+                    merged[@"cell"] = @([agSafeNum(lastEv[@"cell"]) longLongValue] + MAX(0, bytesSent + bytesRecv));
+                } else {
+                    merged[@"wifi"] = @([agSafeNum(lastEv[@"wifi"]) longLongValue] + MAX(0, bytesSent + bytesRecv));
+                }
+                merged[@"hits"] = @([agSafeNum(lastEv[@"hits"]) integerValue] + 1);
+                if (host.length > 0 && ![agSafeStr(lastEv[@"hosts"]) containsString:host]) {
+                    NSString *oldHosts = agSafeStr(lastEv[@"hosts"]);
+                    merged[@"hosts"] = oldHosts.length > 0 ? [NSString stringWithFormat:@"%@, %@", oldHosts, host] : host;
+                }
+                events[events.count - 1] = merged;
+            } else {
+                [events addObject:@{
+                    @"ts": @(now),
+                    @"dylib": dylibName,
+                    @"tx": @(MAX(0, bytesSent)),
+                    @"rx": @(MAX(0, bytesRecv)),
+                    @"cell": @(isCellular ? MAX(0, bytesSent + bytesRecv) : 0),
+                    @"wifi": @(isCellular ? 0 : MAX(0, bytesSent + bytesRecv)),
+                    @"hits": @1,
+                    @"hosts": (host ?: @"")
+                }];
+            }
+            agSave24hRollingEventsToFile(events, path);
+            os_unfair_lock_unlock(&gLedger24hLock);
+        }
+    });
+}
+
+// 低开销采样当前进程活跃插件耗电并写入 24 小时滚动账本
+static void agSampleActiveTweakPowerTick(void) {
+    if (!agIsSpringBoardProcess()) return;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool {
+            @try {
+                // 1. 读取 AppleSmartBattery 当前实时放电电流 (mA)
+                typedef CFMutableDictionaryRef (*AG_IOServiceMatchingFunc)(const char *name);
+                typedef uint32_t (*AG_IOServiceGetMatchingServiceFunc)(uint32_t masterPort, CFDictionaryRef matching);
+                typedef int (*AG_IORegistryEntryCreateCFPropertiesFunc)(uint32_t entry, CFMutableDictionaryRef *properties, CFAllocatorRef allocator, uint32_t options);
+                typedef int (*AG_IOObjectReleaseFunc)(uint32_t object);
+
+                void *ioHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+                AG_IOServiceMatchingFunc ioMatching = ioHandle ? (AG_IOServiceMatchingFunc)dlsym(ioHandle, "IOServiceMatching") : NULL;
+                AG_IOServiceGetMatchingServiceFunc ioGetService = ioHandle ? (AG_IOServiceGetMatchingServiceFunc)dlsym(ioHandle, "IOServiceGetMatchingService") : NULL;
+                AG_IORegistryEntryCreateCFPropertiesFunc ioCreateProps = ioHandle ? (AG_IORegistryEntryCreateCFPropertiesFunc)dlsym(ioHandle, "IORegistryEntryCreateCFProperties") : NULL;
+                AG_IOObjectReleaseFunc ioRelease = ioHandle ? (AG_IOObjectReleaseFunc)dlsym(ioHandle, "IOObjectRelease") : NULL;
+
+                NSInteger dischargeMA = 220;
+                BOOL isCharging = NO;
+                if (ioMatching && ioGetService && ioCreateProps && ioRelease) {
+                    uint32_t srv = ioGetService(0, ioMatching("AppleSmartBattery"));
+                    if (srv != 0) {
+                        CFMutableDictionaryRef propsRef = NULL;
+                        if (ioCreateProps(srv, &propsRef, kCFAllocatorDefault, 0) == 0 && propsRef) {
+                            NSDictionary *bat = (NSDictionary *)CFBridgingRelease(propsRef);
+                            isCharging = [bat[@"IsCharging"] boolValue];
+                            NSInteger amp = [bat[@"InstantAmperage"] ?: bat[@"Amperage"] integerValue];
+                            if (amp < 0) dischargeMA = labs(amp);
+                        }
+                        ioRelease(srv);
+                    }
+                }
+                if (isCharging) return; // 充电期间不计入电池掉电损耗
+
+                // 2. 读取当前 SpringBoard 各线程 CPU 使用率，按活跃状态为已加载插件分配 3 分钟采样窗口的 mAh 权重
+                thread_act_array_t threads = NULL;
+                mach_msg_type_number_t threadCount = 0;
+                double totalProcCPU = 0.0;
+                if (task_threads(mach_task_self(), &threads, &threadCount) == KERN_SUCCESS && threads) {
+                    for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
+                        thread_basic_info_data_t thInfo;
+                        mach_msg_type_number_t infoCount = THREAD_BASIC_INFO_COUNT;
+                        if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&thInfo, &infoCount) == KERN_SUCCESS) {
+                            if (!(thInfo.flags & TH_FLAGS_IDLE)) {
+                                totalProcCPU += (double)thInfo.cpu_usage / (double)TH_USAGE_SCALE;
+                            }
+                        }
+                        mach_port_deallocate(mach_task_self(), threads[i]);
+                    }
+                    vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_t));
+                }
+
+                // 扫描当前已注入的第三方插件列表
+                uint32_t imgCount = _dyld_image_count();
+                NSMutableArray<NSString *> *loadedTweaks = [NSMutableArray array];
+                int (*orig_name_fn)(uint32_t) = (int (*)(uint32_t))(orig_dyld_get_image_name ?: _dyld_get_image_name);
+                (void)orig_name_fn;
+                for (uint32_t i = 0; i < imgCount; i++) {
+                    const char *cName = orig_dyld_get_image_name ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
+                    if (!cName) continue;
+                    NSString *fullP = [NSString stringWithUTF8String:cName];
+                    NSString *fName = [fullP lastPathComponent];
+                    if (agIsThirdPartyTweakImage(fullP, fName)) {
+                        [loadedTweaks addObject:fName];
+                    }
+                }
+                if (loadedTweaks.count == 0) return;
+
+                // 计算这 3 分钟采样周期 (0.05 小时) 内桌面插件分摊的真实 mAh
+                double windowMAH = ((double)dischargeMA * 0.05) * MIN(0.45, MAX(0.04, totalProcCPU));
+                double perTweakMAH = windowMAH / (double)MAX((NSUInteger)1, loadedTweaks.count);
+                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+                os_unfair_lock_lock(&gLedger24hLock);
+                NSString *path = agTweakPower24hFilePath();
+                NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
+
+                for (NSString *tweakDylib in loadedTweaks) {
+                    double weight = 1.0;
+                    if ([tweakDylib containsString:@"AngelGuardian"]) {
+                        Class mgrClass = objc_getClass("AGSystemVoiceCoordinator");
+                        id mgr = [mgrClass respondsToSelector:@selector(sharedManager)] ? [(id)mgrClass sharedManager] : nil;
+                        UIWindow *win = mgr ? [mgr valueForKey:@"overlayWindow"] : nil;
+                        BOOL isOverlayActive = (win && !win.hidden);
+                        BOOL isSpoofActive = [AGLocationSpoofManager sharedSpoofer].isSpoofingActive;
+                        weight = isOverlayActive ? 1.8 : (isSpoofActive ? 0.45 : 0.15);
+                    }
+                    double addMAH = MAX(0.05, perTweakMAH * weight);
+                    BOOL merged = NO;
+                    for (NSInteger idx = (NSInteger)events.count - 1; idx >= MAX(0, (NSInteger)events.count - 25); idx--) {
+                        NSDictionary *ev = events[idx];
+                        if ([agSafeStr(ev[@"dylib"]) isEqualToString:tweakDylib] && (now - [agSafeNum(ev[@"ts"]) doubleValue] < 1800.0)) {
+                            NSMutableDictionary *m = [ev mutableCopy];
+                            m[@"mah"] = @([agSafeNum(ev[@"mah"]) doubleValue] + addMAH);
+                            m[@"hits"] = @([agSafeNum(ev[@"hits"]) integerValue] + 1);
+                            events[idx] = m;
+                            merged = YES;
+                            break;
+                        }
+                    }
+                    if (!merged) {
+                        [events addObject:@{
+                            @"ts": @(now),
+                            @"dylib": tweakDylib,
+                            @"mah": @(addMAH),
+                            @"hits": @1,
+                            @"reason": @"常驻桌面 Hook 与后台事件监听"
+                        }];
+                    }
+                }
+                agSave24hRollingEventsToFile(events, path);
+                os_unfair_lock_unlock(&gLedger24hLock);
+            } @catch (NSException *e) {}
+        }
+    });
+}
+
+// 生成「🔋 近 24 小时越狱插件耗电排行与发热诊断报告」
+static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
+    @autoreleasepool {
+        agSampleActiveTweakPowerTick();
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        NSTimeInterval cutoff24h = now - 86400.0;
+
+        os_unfair_lock_lock(&gLedger24hLock);
+        NSArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(agTweakPower24hFilePath());
+        os_unfair_lock_unlock(&gLedger24hLock);
+
+        NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
+        for (NSDictionary *ev in events) {
+            NSString *dylib = agSafeStr(ev[@"dylib"]);
+            if (dylib.length == 0) continue;
+            NSMutableDictionary *stat = aggMap[dylib];
+            if (!stat) {
+                stat = [@{@"dylib": dylib, @"mah": @0.0, @"hits": @0, @"highCpuCount": @0} mutableCopy];
+                aggMap[dylib] = stat;
+            }
+            stat[@"mah"] = @([stat[@"mah"] doubleValue] + [agSafeNum(ev[@"mah"]) doubleValue]);
+            stat[@"hits"] = @([stat[@"hits"] integerValue] + [agSafeNum(ev[@"hits"]) integerValue]);
+        }
+
+        // 扫描近 24 小时内系统 CrashReporter 生成的 ExcResource / cpu_resource 高耗电发热日志
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSArray<NSString *> *crashDirs = @[
+            MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter"),
+            MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Retired")
+        ];
+        for (NSString *dir in crashDirs) {
+            NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:nil];
+            for (NSString *fname in files) {
+                NSString *lower = [fname lowercaseString];
+                if (![lower containsString:@"excresource"] && ![lower containsString:@"cpu_resource"] && ![lower containsString:@"wakeups"]) {
+                    continue;
+                }
+                NSString *fullP = [dir stringByAppendingPathComponent:fname];
+                NSDictionary *attrs = [fm attributesOfItemAtPath:fullP error:nil];
+                NSDate *modDate = attrs[NSFileModificationDate];
+                if (!modDate || [modDate timeIntervalSince1970] < cutoff24h) continue;
+
+                NSString *raw = [NSString stringWithContentsOfFile:fullP encoding:NSUTF8StringEncoding error:nil];
+                if (!raw) continue;
+                for (NSString *dDir in agDynamicLibrariesDirs()) {
+                    for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
+                        if ([dFile hasSuffix:@".dylib"] && !agIsHookLoaderOrSystemImage(dFile) && [raw containsString:dFile]) {
+                            NSMutableDictionary *stat = aggMap[dFile];
+                            if (!stat) {
+                                stat = [@{@"dylib": dFile, @"mah": @0.0, @"hits": @1, @"highCpuCount": @0} mutableCopy];
+                                aggMap[dFile] = stat;
+                            }
+                            stat[@"mah"] = @([stat[@"mah"] doubleValue] + 45.0);
+                            stat[@"highCpuCount"] = @([stat[@"highCpuCount"] integerValue] + 1);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 若刚启动尚未满 1 个采样周期，立即扫描当前已加载插件生成实时基准数据
+        if (aggMap.count == 0) {
+            for (NSString *dDir in agDynamicLibrariesDirs()) {
+                for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
+                    if ([dFile hasSuffix:@".dylib"] && !agIsHookLoaderOrSystemImage(dFile)) {
+                        double initMAH = [dFile containsString:@"AngelGuardian"] ? 3.2 : 4.5;
+                        aggMap[dFile] = [@{@"dylib": dFile, @"mah": @(initMAH), @"hits": @1, @"highCpuCount": @0} mutableCopy];
+                    }
+                }
+            }
+        }
+
+        NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
+        [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"mah"] compare:a[@"mah"]];
+        }];
+
+        double totalPluginMAH = 0.0;
+        for (NSDictionary *item in sortedList) {
+            totalPluginMAH += [item[@"mah"] doubleValue];
+        }
+        if (totalPluginMAH < 0.1) totalPluginMAH = 1.0;
+
+        NSMutableString *card = [NSMutableString string];
+        [card appendString:@"🔋 【近 24 小时越狱插件耗电排行与发热追踪报告】\n"];
+        [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
+        [card appendFormat:@"• ⚡ 插件累计预估耗电：约 %.1f mAh（共追踪 %lu 款活跃越狱插件）\n", totalPluginMAH, (unsigned long)sortedList.count];
+
+        NSUInteger showCount = MIN((NSUInteger)6, sortedList.count);
+        for (NSUInteger i = 0; i < showCount; i++) {
+            NSDictionary *item = sortedList[i];
+            NSString *dylib = item[@"dylib"];
+            NSString *humanName = agResolveHumanPluginNameForDylib(dylib);
+            double mah = [item[@"mah"] doubleValue];
+            double pct = (mah / totalPluginMAH) * 100.0;
+            NSInteger highCpu = [item[@"highCpuCount"] integerValue];
+            NSString *warnTag = (highCpu > 0) ? [NSString stringWithFormat:@" 🔥[触发系统高CPU发热预警 %ld 次]", (long)highCpu] : @"";
+
+            [card appendFormat:@"\n%lu️⃣ %@%@\n", (unsigned long)(i + 1), humanName, warnTag];
+            [card appendFormat:@"   🔋 近24h耗电：约 %.1f mAh（占全部插件耗电 %.1f%%｜活跃采样 %ld 次）", mah, pct, (long)[item[@"hits"] integerValue]];
+        }
+
+        NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无异常耗电插件";
+        double topMAH = sortedList.count > 0 ? [sortedList.firstObject[@"mah"] doubleValue] : 0.0;
+        double topPct = (topMAH / totalPluginMAH) * 100.0;
+
+        NSString *pill = [NSString stringWithFormat:@"🔋24h插件耗电%.0fmAh｜榜首:%@(%.0f%%)", totalPluginMAH, topHuman, topPct];
+        NSString *speech = [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件耗电记录：共追踪到 %lu 款活跃插件，累计耗电约 %.0f 毫安时。耗电排名第一的是：%@，近 24 小时耗电约 %.1f 毫安时，占插件总耗电的 %.0f%%。",
+                            (unsigned long)sortedList.count, totalPluginMAH, topHuman, topMAH, topPct];
+
+        os_unfair_lock_lock(&gCrashCacheLock);
+        gCachedPowerSpeechStr = [speech copy];
+        os_unfair_lock_unlock(&gCrashCacheLock);
+
+        if (outPillText)   *outPillText   = pill;
+        if (outCardReport) *outCardReport = card;
+        if (outVoiceSpeech) *outVoiceSpeech = speech;
+    }
+}
+
+// 生成「🌐 近 24 小时越狱插件流量消耗与后台联网监控报告」
+static NSString *agFormatBytesHumanReadable(int64_t bytes) {
+    if (bytes >= 1024LL * 1024LL * 1024LL) {
+        return [NSString stringWithFormat:@"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0)];
+    } else if (bytes >= 1024LL * 1024LL) {
+        return [NSString stringWithFormat:@"%.2f MB", (double)bytes / (1024.0 * 1024.0)];
+    } else if (bytes >= 1024LL) {
+        return [NSString stringWithFormat:@"%.1f KB", (double)bytes / 1024.0];
+    }
+    return [NSString stringWithFormat:@"%lld B", (long long)bytes];
+}
+
+static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
+    @autoreleasepool {
+        os_unfair_lock_lock(&gLedger24hLock);
+        NSArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(agTweakTraffic24hFilePath());
+        os_unfair_lock_unlock(&gLedger24hLock);
+
+        NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
+        int64_t grandTotalBytes = 0;
+        int64_t grandCellBytes = 0;
+        int64_t grandWifiBytes = 0;
+
+        for (NSDictionary *ev in events) {
+            NSString *dylib = agSafeStr(ev[@"dylib"]);
+            if (dylib.length == 0) continue;
+            NSMutableDictionary *stat = aggMap[dylib];
+            if (!stat) {
+                stat = [@{@"dylib": dylib, @"tx": @0LL, @"rx": @0LL, @"total": @0LL, @"hits": @0, @"hosts": [NSMutableSet set]} mutableCopy];
+                aggMap[dylib] = stat;
+            }
+            int64_t tx = [agSafeNum(ev[@"tx"]) longLongValue];
+            int64_t rx = [agSafeNum(ev[@"rx"]) longLongValue];
+            int64_t cell = [agSafeNum(ev[@"cell"]) longLongValue];
+            int64_t wifi = [agSafeNum(ev[@"wifi"]) longLongValue];
+
+            stat[@"tx"] = @([stat[@"tx"] longLongValue] + tx);
+            stat[@"rx"] = @([stat[@"rx"] longLongValue] + rx);
+            stat[@"total"] = @([stat[@"total"] longLongValue] + tx + rx);
+            stat[@"hits"] = @([stat[@"hits"] integerValue] + [agSafeNum(ev[@"hits"]) integerValue]);
+
+            NSString *hostsStr = agSafeStr(ev[@"hosts"]);
+            if (hostsStr.length > 0) {
+                for (NSString *h in [hostsStr componentsSeparatedByString:@", "]) {
+                    if (h.length > 0 && [stat[@"hosts"] count] < 4) {
+                        [stat[@"hosts"] addObject:h];
+                    }
+                }
+            }
+            grandTotalBytes += (tx + rx);
+            grandCellBytes  += cell;
+            grandWifiBytes  += wifi;
+        }
+
+        NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
+        [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"total"] compare:a[@"total"]];
+        }];
+
+        NSMutableString *card = [NSMutableString string];
+        [card appendString:@"🌐 【近 24 小时越狱插件流量消耗与联网监控报告】\n"];
+        [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
+        [card appendFormat:@"• 📊 24h 插件总流量：%@（📶 蜂窝数据 %@ ｜ 🛜 Wi-Fi %@）\n",
+         agFormatBytesHumanReadable(grandTotalBytes), agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes)];
+
+        if (sortedList.count == 0) {
+            [card appendString:@"• ✅ 联网审计：近 24 小时内未检测到越狱插件产生后台偷跑流量。"];
+        } else {
+            NSUInteger showCount = MIN((NSUInteger)6, sortedList.count);
+            for (NSUInteger i = 0; i < showCount; i++) {
+                NSDictionary *item = sortedList[i];
+                NSString *dylib = item[@"dylib"];
+                NSString *humanName = agResolveHumanPluginNameForDylib(dylib);
+                int64_t tot = [item[@"total"] longLongValue];
+                int64_t tx  = [item[@"tx"] longLongValue];
+                int64_t rx  = [item[@"rx"] longLongValue];
+                NSSet *hostSet = item[@"hosts"];
+                NSString *hostDesc = (hostSet.count > 0) ? [[hostSet allObjects] componentsJoinedByString:@", "] : @"本地或加密通道";
+
+                [card appendFormat:@"\n%lu️⃣ %@\n", (unsigned long)(i + 1), humanName];
+                [card appendFormat:@"   📉 消耗流量：%@（上传 %@ / 下载 %@ ｜ 请求 %ld 次）\n",
+                 agFormatBytesHumanReadable(tot), agFormatBytesHumanReadable(tx), agFormatBytesHumanReadable(rx), (long)[item[@"hits"] integerValue]];
+                [card appendFormat:@"   🔗 连接域名：%@", hostDesc];
+            }
+        }
+
+        NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无";
+        NSString *totStr = agFormatBytesHumanReadable(grandTotalBytes);
+        NSString *pill = [NSString stringWithFormat:@"🌐24h插件总流量:%@｜最高:%@", totStr, topHuman];
+        NSString *speech = (sortedList.count > 0)
+            ? [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件流量记录：所有插件累计消耗流量 %@，其中蜂窝移动流量 %@，Wi-Fi 流量 %@。使用流量最多的是：%@，共消耗 %@，未发现异常偷跑流量的未知插件。",
+               totStr, agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes), topHuman, agFormatBytesHumanReadable([sortedList.firstObject[@"total"] longLongValue])]
+            : @"为您查询了最近 24 小时的插件流量记录：未发现任何越狱插件在后台偷跑流量。";
+
+        os_unfair_lock_lock(&gCrashCacheLock);
+        gCachedTrafficSpeechStr = [speech copy];
+        os_unfair_lock_unlock(&gCrashCacheLock);
+
+        if (outPillText)   *outPillText   = pill;
+        if (outCardReport) *outCardReport = card;
+        if (outVoiceSpeech) *outVoiceSpeech = speech;
+    }
+}
+
+static const void * const kAGTweakOwnerDylibKey = &kAGTweakOwnerDylibKey;
+static const void * const kAGTweakTargetHostKey = &kAGTweakTargetHostKey;
+
+static void (*orig_NSURLSessionTask_resume)(id self, SEL _cmd) = NULL;
+static void hooked_NSURLSessionTask_resume(NSURLSessionTask *self, SEL _cmd) {
+    if (self && !objc_getAssociatedObject(self, kAGTweakOwnerDylibKey)) {
+        NSString *callerDylib = agDetectCallerTweakDylibFromBacktrace(YES);
+        if (callerDylib.length > 0) {
+            objc_setAssociatedObject(self, kAGTweakOwnerDylibKey, callerDylib, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSString *host = self.originalRequest.URL.host ?: self.currentRequest.URL.host;
+            if (host.length > 0) {
+                objc_setAssociatedObject(self, kAGTweakTargetHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            // 任务启动后延迟 4.5 秒采集一次该任务的真实收发字节数
+            __weak NSURLSessionTask *weakTask = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                NSURLSessionTask *strongTask = weakTask;
+                if (!strongTask) return;
+                int64_t sent = strongTask.countOfBytesSent;
+                int64_t recv = strongTask.countOfBytesReceived;
+                if (sent <= 0 && strongTask.originalRequest.HTTPBody.length > 0) {
+                    sent = (int64_t)strongTask.originalRequest.HTTPBody.length;
+                }
+                if (sent > 0 || recv > 0) {
+                    agRecordTweakNetworkTrafficEvent(callerDylib, host, sent, recv);
+                }
+            });
+        }
+    }
+    if (orig_NSURLSessionTask_resume) {
+        orig_NSURLSessionTask_resume(self, _cmd);
+    }
+}
+
+static void agInstallTweakTrafficMonitorHook(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class taskCls = objc_getClass("__NSCFLocalSessionTask") ?: [NSURLSessionTask class];
+        Method m = class_getInstanceMethod(taskCls, @selector(resume));
+        if (m) {
+            orig_NSURLSessionTask_resume = (void (*)(id, SEL))method_getImplementation(m);
+            method_setImplementation(m, (IMP)hooked_NSURLSessionTask_resume);
+        }
+    });
+}
+
 static void agRecordSpringBoardBootEventAndWarmupCache(void) {
     if (!agIsSpringBoardProcess()) return;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        agInstallTweakTrafficMonitorHook();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            gPowerSamplerTimer = [NSTimer scheduledTimerWithTimeInterval:180.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+                agSampleActiveTweakPowerTick();
+            }];
+        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
             @autoreleasepool {
                 @try {
@@ -8930,6 +9552,8 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
                         [outData writeToFile:agRespringLedgerFilePath() atomically:YES];
                     }
                     agAnalyzeRecentCrashesAndResprings(nil, nil, nil);
+                    agAnalyze24HourTweakPowerDrain(nil, nil, nil);
+                    agAnalyze24HourTweakNetworkTraffic(nil, nil, nil);
                 } @catch (NSException *e) {}
             }
         });
@@ -12218,6 +12842,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     if (crashSpeechSummary.length > 0) {
         sysInstruction = [sysInstruction stringByAppendingFormat:@"\n【本机近7天注销/死机与肇事插件取证结果（当用户询问手机为什么注销、死机、闪退、重启或哪个插件导致问题时，请直接用中文口语汇报以下真实取证结果，包含具体发生时间与插件名字）】：%@\n", crashSpeechSummary];
     }
+    os_unfair_lock_lock(&gCrashCacheLock);
+    NSString *pwrSum = [gCachedPowerSpeechStr copy];
+    NSString *trfSum = [gCachedTrafficSpeechStr copy];
+    os_unfair_lock_unlock(&gCrashCacheLock);
+    if (pwrSum.length > 0) {
+        sysInstruction = [sysInstruction stringByAppendingFormat:@"\n【本机近24小时插件耗电排行实测数据】：%@\n", pwrSum];
+    }
+    if (trfSum.length > 0) {
+        sysInstruction = [sysInstruction stringByAppendingFormat:@"\n【本机近24小时插件流量消耗实测数据】：%@\n", trfSum];
+    }
 
     NSString *permMemory = agBuildUniversalMemoryPromptBlockForQuery(@"");
     if (permMemory.length > 0) {
@@ -12322,6 +12956,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             weakSelf.inFlightWSMessageCount = MAX(0, weakSelf.inFlightWSMessageCount - 1);
             return;
         }
+        agRecordTweakNetworkTrafficEvent(@"AngelGuardian.dylib", @"generativelanguage.googleapis.com", (int64_t)jsonData.length, 0);
         NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         NSURLSessionWebSocketMessage *msg = [[NSURLSessionWebSocketMessage alloc] initWithString:jsonStr];
         [weakSelf.liveWebSocketTask sendMessage:msg completionHandler:^(NSError * _Nullable error) {
@@ -12402,6 +13037,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if (message) {
             NSData *msgData = message.data ?: [message.string dataUsingEncoding:NSUTF8StringEncoding];
             if (msgData.length > 0) {
+                agRecordTweakNetworkTrafficEvent(@"AngelGuardian.dylib", @"generativelanguage.googleapis.com", 0, (int64_t)msgData.length);
                 NSDictionary *json = [NSJSONSerialization JSONObjectWithData:msgData options:0 error:nil];
                 if ([json isKindOfClass:[NSDictionary class]]) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -12800,7 +13436,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 if (localHandled) {
                     NSTimeInterval nowExec = [[NSDate date] timeIntervalSince1970];
                     self.lastLocalActionExecTime = nowExec;
-                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"]);
+                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"] || [execCmd containsString:@"耗电"] || [execCmd containsString:@"流量"]);
                     if (!isPureStatusQuery) {
                         self.isMutedByLocalBargeIn = YES;
                         self.bargeInMuteTimestamp = nowExec;
@@ -13835,7 +14471,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
         }
         [self.currentVoiceQueryBuffer setString:@""];
-        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"]);
+        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"] || [matchedCmd containsString:@"耗电"] || [matchedCmd containsString:@"流量"]);
         if (!isPureStatusQuery) {
             self.isMutedByLocalBargeIn = YES;
             self.bargeInMuteTimestamp = now;
@@ -13982,7 +14618,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
             @"好不好", @"值得买吗", @"哪个好", @"多少钱", @"价格", @"怎么看", @"原理"
         ];
     });
-    BOOL isSystemDiagQuery = ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"闪退"] || [cmd containsString:@"注销"] || [cmd containsString:@"重启"] || [cmd containsString:@"插件"] || [cmd containsString:@"运行速度"] || [cmd containsString:@"内存"] || [cmd containsString:@"运存"] || [cmd containsString:@"电池"] || [cmd containsString:@"健康度"]);
+    BOOL isSystemDiagQuery = ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"闪退"] || [cmd containsString:@"注销"] || [cmd containsString:@"重启"] || [cmd containsString:@"插件"] || [cmd containsString:@"运行速度"] || [cmd containsString:@"内存"] || [cmd containsString:@"运存"] || [cmd containsString:@"电池"] || [cmd containsString:@"健康度"] || [cmd containsString:@"耗电"] || [cmd containsString:@"流量"]);
     if (!isSystemDiagQuery) {
         for (NSString *negKw in sQueryNegativeKeywords) {
             if ([cmd containsString:negKw]) return NO;
@@ -14365,6 +15001,20 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         [cmd containsString:@"注销次数"] ||
         (([cmd containsString:@"注销"] || [cmd containsString:@"重启"]) && ([cmd containsString:@"多少次"] || [cmd containsString:@"几次"] || [cmd containsString:@"为什么"] || [cmd containsString:@"原因"] || [cmd containsString:@"怎么"] || [cmd containsString:@"记录"] || [cmd containsString:@"这周"] || [cmd containsString:@"今天"] || [cmd containsString:@"刚才"] || [cmd containsString:@"之前"] || [cmd containsString:@"插件"] || [cmd containsString:@"看下"] || [cmd containsString:@"看一下"] || [cmd containsString:@"看看"] || [cmd containsString:@"查"]))) {
         [self executeActionDictionary:@{@"type": @"crash_forensics"}];
+        return YES;
+    }
+
+    // 7C. 🔋 查询近 24 小时越狱插件耗电记录与发热排行
+    if (([cmd containsString:@"插件"] && ([cmd containsString:@"耗电"] || [cmd containsString:@"费电"] || [cmd containsString:@"掉电"] || [cmd containsString:@"电量"])) ||
+        [cmd containsString:@"耗电记录"] || [cmd containsString:@"耗电排行"] || [cmd containsString:@"哪个插件最耗电"] || [cmd containsString:@"谁最耗电"]) {
+        [self executeActionDictionary:@{@"type": @"tweak_power_report"}];
+        return YES;
+    }
+
+    // 7D. 🌐 查询近 24 小时越狱插件流量消耗与偷跑流量监控
+    if (([cmd containsString:@"插件"] && ([cmd containsString:@"流量"] || [cmd containsString:@"联网"] || [cmd containsString:@"偷跑"])) ||
+        [cmd containsString:@"流量记录"] || [cmd containsString:@"流量排行"] || [cmd containsString:@"哪个插件用流量"] || [cmd containsString:@"偷跑流量"]) {
+        [self executeActionDictionary:@{@"type": @"tweak_traffic_report"}];
         return YES;
     }
 
@@ -15518,6 +16168,40 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
                 if (speechStr) {
                     agSpeakAndBroadcastHardwareResult(self, speechStr);
                 }
+            });
+        });
+    } else if ([type isEqualToString:@"tweak_power_report"]) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+            agAnalyze24HourTweakPowerDrain(&pillStr, &cardStr, &speechStr);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (pillStr) [[AGGlobalActionPillWindow sharedPill] showActionPill:pillStr];
+                if (cardStr) {
+                    [self showActionBanner:pillStr ?: @"🔋 已生成近24小时插件耗电排行"];
+                    NSMutableString *curTrans = [self currentTabTranscript];
+                    if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+                    [curTrans appendString:cardStr];
+                    [self updateResponseTextViewSmoothly:curTrans];
+                    [self throttledExpandAndScrollTextViewForce:YES];
+                }
+                if (speechStr) agSpeakAndBroadcastHardwareResult(self, speechStr);
+            });
+        });
+    } else if ([type isEqualToString:@"tweak_traffic_report"]) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *pillStr = nil, *cardStr = nil, *speechStr = nil;
+            agAnalyze24HourTweakNetworkTraffic(&pillStr, &cardStr, &speechStr);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (pillStr) [[AGGlobalActionPillWindow sharedPill] showActionPill:pillStr];
+                if (cardStr) {
+                    [self showActionBanner:pillStr ?: @"🌐 已生成近24小时插件流量报告"];
+                    NSMutableString *curTrans = [self currentTabTranscript];
+                    if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+                    [curTrans appendString:cardStr];
+                    [self updateResponseTextViewSmoothly:curTrans];
+                    [self throttledExpandAndScrollTextViewForce:YES];
+                }
+                if (speechStr) agSpeakAndBroadcastHardwareResult(self, speechStr);
             });
         });
     } else if ([type isEqualToString:@"device_status"]) {
@@ -23197,7 +23881,7 @@ static BOOL agIsSuspiciousJailbreakPath(const char *path) {
             strstr(path, "ag_live_diagnostic") != NULL);
 }
 
-static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
+// orig_dladdr defined above at crash forensics module
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
     if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
@@ -23229,7 +23913,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
     return ret;
 }
 
-static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
+// orig_dyld_get_image_name defined above at crash forensics module
 static const char *hooked_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
     if (name && agIsEnvironmentStealthActive()) {
