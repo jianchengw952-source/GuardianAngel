@@ -1133,3 +1133,38 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (565,968 字节, SHA256: `4ef9a4e44650dc3f3028da7a57fee35e5d03f4f01e2c25a5d5182b036d34992d`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,248 字节, SHA256: `2637c18dd8a1d1b4109bf20141141250ac1d68afdd63fb86f4d78ec27536560f`)
+
+---
+
+## 2026-11-04: 支持内核缓存立即清零、漂移彻底复位与客户端Hook硬防护 (Run #75)
+
+### 1. 核心改进点
+1. **第一步：内核缓存支持“收到通知立即清零”**：
+   - 增加全局变量 `static volatile BOOL sForceInvalidateKernelCache = YES;`。
+   - 在 `agReadSpoofStateFromKernel` 内部加入 `!sForceInvalidateKernelCache` 拦截，当开关切换时立即穿透 0.20 秒缓存读取最新内核寄存器，读取完成后重置为 `NO`。
+2. **第二步：`agStepKalmanSmoothDrift` 漂移残留彻底清零**：
+   - 当 `!enableJitter`（防检测关闭）时，彻底清零所有漂移残留变量：
+     `sOUDriftLatM = 0.0; sOUDriftLonM = 0.0; sOUDriftAltM = 0.0;`
+     确保不开防检测时坐标与海拔 100% 还原基准值，无任何微小随机扰动残留。
+3. **第三步：客户端 Hook 增加 `agIsAntiDetectionShieldActive()` 双层硬防护与即时刷新**：
+   - 在 `-[CLLocation altitude]`、`ellipsoidalAltitude`、`horizontalAccuracy`、`verticalAccuracy`、`speedAccuracy`、`courseAccuracy`、`timestamp`、`description` 以及 `-[CLLocationManager accuracyAuthorization]` 内部全部加入 `&& agIsAntiDetectionShieldActive()` 硬性校验。
+   - 航向 `course` 与速度 `speed` 在无移动（`speed <= 0.1` 且未开防检测）时还原系统 `%orig`。
+   - `agClientAppMasterSyncCallback` 在收到 Darwin 通知瞬间立即设置 `sForceInvalidateKernelCache = YES` 并清零 `sOUDriftLatM/LonM/AltM`，瞬间重置遥测与缓存，并调用 `agSyncClientHooksWithCurrentState()` 动态还原/挂载 Hook。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,439,772 字节
+- SHA256 校验和：`d247bf8dace5ee05630b553cf3243616751c5e08e64a347512caa32fb5421831`
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `08d843c`
+- GitHub Actions CI Run #75 (ID: 41678902086) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (567,676 字节, SHA256: `308b06b73c5bd494d269af42964a673fef73694b201c153b40583f5102adc3d7`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,300 字节, SHA256: `2bd4ebb6578aabfbac82528ba7000adad3251db6259fc3a00b9697d4ebf8bf7d`)
