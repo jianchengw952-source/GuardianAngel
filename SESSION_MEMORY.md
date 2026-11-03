@@ -846,3 +846,40 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (548584 字节, SHA256: `57eacd1143bba99f025050d2ba5cfa5e02d2a0324e022c42c5573580ed890052`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (354792 字节, SHA256: `18acfb053491a160d278ad5375e778297a25288a37b8bb576a55044bbadd3cda`)
+
+---
+
+## 2026-11-03: 安全重构版·五维崩溃取证 + 24h插件耗电排行 + 24h插件流量统计 (Run #56)
+
+### 1. 修改要点 (严格遵循零额外Hook、零后台定时器、零流式磁盘I/O原则)
+1. **五维深度崩溃取证模块 (零Hook纯按需安全版)**:
+   - 彻底移除对 `NSURLSession` 的全局 Hook 与 IOKit 轮询定时器，改用纯按需设计。
+   - 保留 Jetsam OOM SpringBoard 杀后台进程深度诊断、Watchdogd/假死卡死诊断、第三方 Dylib 代码特征命中、最近安装/更新插件排查与详细异常堆栈分析。
+2. **24h 插件耗电排行 (纯按需瞬时分析)**:
+   - 移除后台 180s 常驻定时器与多线程 CPU 轮询；
+   - 仅在用户主动询问或调起报告瞬间，依据已装插件体积/常驻内存规模与 `CrashReporter` 中近 24 小时真实 `ExcResource` / `cpu_resource` 高能耗日志执行一次极速快照融合。
+3. **24h 插件流量监控 (纯内存原子计数 + 按需冲刷)**:
+   - 在 WebSocket 收发入口使用纯内存无锁原子计数器（`agAddSelfNetworkTrafficBytes`），0 线程派发、0 磁盘 I/O；
+   - 仅在用户查询流量报告时，通过 `__atomic_exchange_n` 一次性原子冲刷至 24 小时滚动账本并生成结构化卡片与语音播报。
+4. **口语交互与大模型上下文深度联动**:
+   - 在 `tryExecuteDirectLocalCommand:` 中支持 7C (耗电记录/排行) 与 7D (流量记录/排行) 口语秒级命中与直接动作派发。
+   - 在 `executeActionDictionary:` 中展示动作胶囊、展开卡片详情并语音播报。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,367,925 字节
+- SHA256 校验和：`9a60641a03f014029488d536cd59c1e131bfab2980ac9e8da66ccc8b3778fb71`
+
+### 3. CI 构建与产物
+- 提交哈希：`75b5211`
+- GitHub Actions CI Run #56 (ID: 41611833158) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (536988 字节, SHA256: `fe58520928f4ce2e3acd52bfe2cee0f95c83e69651770ad4c909fc089b7a6bdf`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (352620 字节, SHA256: `dd371f19527b3f3fe92aa93636c7e4f0b58069c343202fc77fbafcd76da78b0d`)
