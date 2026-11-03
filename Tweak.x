@@ -279,19 +279,34 @@ extern "C" {
 #endif
 extern const char *jbroot(const char *path);
 extern const char *rootfs(const char *path);
-extern NSString *jbrootpath(NSString *path);
-extern NSString *rootfspath(NSString *path);
 #ifdef __cplusplus
 }
 #endif
+static inline NSString * __attribute__((overloadable)) jbroot(NSString *path) {
+    if (!path) return nil;
+    const char *p = jbroot(path.UTF8String);
+    return p ? [NSString stringWithUTF8String:p] : path;
+}
+static inline NSString * __attribute__((overloadable)) rootfs(NSString *path) {
+    if (!path) return @"";
+    const char *p = rootfs(path.UTF8String);
+    return p ? [NSString stringWithUTF8String:p] : path;
+}
+#endif
+
+#ifndef jbrootpath
+#define jbrootpath(x) jbroot(x)
+#endif
+#ifndef rootfspath
+#define rootfspath(x) rootfs(x)
 #endif
 
 static inline NSString *MyJBPath(NSString *relativePath) {
     if (!relativePath || relativePath.length == 0) {
-        return jbrootpath(@"/");
+        return jbroot(@"/");
     }
     NSString *cleanRel = [relativePath hasPrefix:@"/"] ? relativePath : [@"/" stringByAppendingString:relativePath];
-    return jbrootpath(cleanRel);
+    return jbroot(cleanRel);
 }
 
 static inline const char *MyJBCPath(const char *relativePath) {
@@ -303,7 +318,7 @@ static inline const char *MyJBCPath(const char *relativePath) {
 
 static inline NSString *MyRootfsPath(NSString *sysPath) {
     if (!sysPath || sysPath.length == 0) return @"";
-    return rootfspath(sysPath);
+    return rootfs(sysPath);
 }
 
 static inline const char *MyRootfsCPath(const char *sysPath) {
