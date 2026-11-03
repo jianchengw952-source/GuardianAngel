@@ -804,3 +804,45 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (526088 字节, SHA256: `7b4ca5c8c4cd0c5fa828b7898495e98a431785da13a638dc0977d09e62e72642`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (344844 字节, SHA256: `6fa8e743a4f827aed31308088de0b65db06e225273697493298c391e6223865e`)
+
+---
+
+## 2026-11-03: 五维深度崩溃取证 + 24h插件耗电排行 + 24h插件流量监控 (Run #55)
+
+### 1. 修改要点 (4 处核心升级)
+1. **五维深度崩溃取证与 24h 耗电/流量监控引擎**:
+   - 替换原四级崩溃取证为五维深度取证引擎：
+     - ① 增加 Jetsam OOM SpringBoard 杀后台进程深度诊断与瞬时内存峰值取证；
+     - ② Watchdogd 假死卡死诊断；
+     - ③ 全局动态扫描 Loaded Dylibs 匹配 Crashing Symbol (ASI / dyld image lookup)；
+     - ④ 最近修改/更新的插件版本排查；
+     - ⑤ 详细堆栈与异常取证。
+   - 实现 24 小时滚动插件耗电追踪引擎（`agSampleActiveTweakPowerTick`、`agAnalyze24HourTweakPowerDrain`），结合 `AppleSmartBattery` 实时放电电流与各线程 CPU 负载，按 3 分钟窗口记录各插件 mAh 消耗并持久化至滚动账本。
+   - 实现 24 小时滚动网络流量监控引擎（`agRecordTweakNetworkTrafficEvent`、`agAnalyze24HourTweakNetworkTraffic`），记录各插件与域名的上行/下行流量。
+2. **WebSocket 流量自记录**:
+   - 在 `sendJSONDictionaryOverWebSocket:` 和 `receiveNextWebSocketMessage` 中，调用 `agRecordTweakNetworkTrafficEvent(@"AngelGuardian.dylib", @"generativelanguage.googleapis.com", bytesSent, bytesRecv)`，精准计入自身网络流量。
+3. **本地语音指令扩展**:
+   - 在 `tryExecuteDirectLocalCommand:` 中新增 7C (插件耗电报告 `tweak_power_report`) 与 7D (插件流量报告 `tweak_traffic_report`)。
+   - 在 `checkDeferredVoiceLocalCommand` 与 `handleVoiceQueryString:` 的 `isPureStatusQuery` 与 `isSystemDiagQuery` 中追加 `|| [cmd containsString:@"耗电"] || [cmd containsString:@"流量"]`，防止诊断指令被截断或误走屏幕视觉流程。
+4. **动作派发与大模型系统上下文注入**:
+   - 在 `executeActionDictionary:` 中实现 `tweak_power_report` 与 `tweak_traffic_report` 分发处理逻辑，展示小胶囊、展开卡片详情并语音播报。
+   - 在 `URLSession:webSocketTask:didOpenWithProtocol:` 中，将 `gCachedPowerSpeechStr` 与 `gCachedTrafficSpeechStr` 动态注入大模型 `sysInstruction`，实现大模型对耗电与流量的上下文感知。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,381,063 字节
+- SHA256 校验和：`e366776214b86c7969e28ade846d1c52e43576230ce0d0c8ad4b7b95aea642b1`
+
+### 3. CI 构建与产物
+- 提交哈希：`ee70dbc`
+- GitHub Actions CI Run #55 (ID: 41607092922) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`control.tar.xz` 与 `data.tar.xz`)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (548584 字节, SHA256: `57eacd1143bba99f025050d2ba5cfa5e02d2a0324e022c42c5573580ed890052`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (354792 字节, SHA256: `18acfb053491a160d278ad5375e778297a25288a37b8bb576a55044bbadd3cda`)
