@@ -9945,6 +9945,7 @@ static void agPerformThermalCooldownAndReport(void (^completion)(NSString *pillT
                         ioRelease(srv);
                     }
                 }
+                (void)isCharging;
 
                 double watts = (voltageMV > 0 && amperageMA != 0) ? ((double)voltageMV * fabs((double)amperageMA) / 1000000.0) : 1.1;
                 double usedBeforeGB = 0.0, totalRAMGB = 0.0;

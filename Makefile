@@ -21,7 +21,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = AngelGuardian
 AngelGuardian_FILES = Tweak.x
-AngelGuardian_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable -Wno-unguarded-availability-new -Wno-incomplete-implementation -Wno-unused-function -Wno-arc-performSelector-leaks -Wno-nonnull -Wno-pointer-bool-conversion $(EXTRA_SCHEME_CFLAGS)
+AngelGuardian_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unguarded-availability-new -Wno-incomplete-implementation -Wno-unused-function -Wno-arc-performSelector-leaks -Wno-nonnull -Wno-pointer-bool-conversion $(EXTRA_SCHEME_CFLAGS)
 AngelGuardian_FRAMEWORKS = UIKit Foundation AVFoundation Contacts QuartzCore CoreGraphics CoreMedia CoreVideo CoreImage VideoToolbox ImageIO Speech AudioToolbox Vision ReplayKit CoreLocation CoreMotion MapKit SystemConfiguration NetworkExtension
 
 TOOL_NAME = AngelCameraHelper
