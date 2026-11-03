@@ -9051,7 +9051,12 @@ static void agSave24hRollingEventsToFile(NSArray<NSDictionary *> *events, NSStri
     }
 }
 
-// 🔋 按需生成「近 24 小时越狱插件耗电排行与发热追踪报告」（零后台线程，仅查询瞬间执行一次文件扫描）
+static NSString *gCachedPowerPillStr = nil;
+static NSString *gCachedPowerCardStr = nil;
+static NSString *gCachedTrafficPillStr = nil;
+static NSString *gCachedTrafficCardStr = nil;
+
+// 🔋 按需生成「近 24 小时越狱插件耗电排行与发热追踪报告」
 static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
         @try {
@@ -9059,7 +9064,9 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
             NSTimeInterval cutoff24h = now - 86400.0;
             NSFileManager *fm = [NSFileManager defaultManager];
 
-            // 1. 扫描已安装的第三方越狱插件 .dylib 文件及文件体积（作为常驻内存与 Hook 规模权重）
+            BOOL kSpoofActive = NO;
+            agReadSpoofStateFromKernel(&kSpoofActive, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
             NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
             for (NSString *dDir in agDynamicLibrariesDirs()) {
                 NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dDir error:nil];
@@ -9071,7 +9078,7 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
                     double sizeKB = [attrs[NSFileSize] doubleValue] / 1024.0;
                     double baseWeight = MAX(2.5, MIN(35.0, sizeKB * 0.04));
                     if ([dFile containsString:@"AngelGuardian"]) {
-                        baseWeight = [AGLocationSpoofManager sharedSpoofer].isSpoofingActive ? 14.5 : 6.8;
+                        baseWeight = kSpoofActive ? 14.5 : 6.8;
                     }
                     aggMap[dFile] = [@{
                         @"dylib": dFile,
@@ -9081,7 +9088,6 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
                 }
             }
 
-            // 2. 融合 24h 滚动账本历史记录并自动淘汰 24 小时前的数据
             NSMutableArray<NSDictionary *> *savedEvents = agLoadAndPrune24hRollingEventsFromFile(agTweakPower24hFilePath());
             for (NSDictionary *ev in savedEvents) {
                 NSString *dylib = agSafeStr(ev[@"dylib"]);
@@ -9091,7 +9097,6 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
                 }
             }
 
-            // 3. 扫描近 24 小时内系统 CrashReporter 生成的 ExcResource / cpu_resource 高耗电日志
             NSArray<NSString *> *crashDirs = @[
                 MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter"),
                 MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Retired")
@@ -9120,7 +9125,6 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
                 }
             }
 
-            // 将本次快照记入 24h 滚动账本（若距上次写入超过 30 分钟）
             NSDictionary *lastSaved = savedEvents.lastObject;
             if (!lastSaved || (now - [agSafeNum(lastSaved[@"ts"]) doubleValue] >= 1800.0)) {
                 for (NSString *dFile in aggMap) {
@@ -9172,14 +9176,23 @@ static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **ou
                                 (unsigned long)sortedList.count, totalPluginMAH, topHuman, topMAH, topPct];
 
             os_unfair_lock_lock(&gCrashCacheLock);
+            gCachedPowerPillStr   = [pill copy];
+            gCachedPowerCardStr   = [card copy];
             gCachedPowerSpeechStr = [speech copy];
             os_unfair_lock_unlock(&gCrashCacheLock);
-
-            if (outPillText)    *outPillText    = pill;
-            if (outCardReport)  *outCardReport  = card;
-            if (outVoiceSpeech) *outVoiceSpeech = speech;
         } @catch (NSException *e) {}
     }
+
+    // 铁律：在 @autoreleasepool 外部从全局强引用缓存中拷贝赋值给输出指针，彻底杜绝野指针注销！
+    os_unfair_lock_lock(&gCrashCacheLock);
+    NSString *safePill   = [gCachedPowerPillStr copy];
+    NSString *safeCard   = [gCachedPowerCardStr copy];
+    NSString *safeSpeech = [gCachedPowerSpeechStr copy];
+    os_unfair_lock_unlock(&gCrashCacheLock);
+
+    if (outPillText)    *outPillText    = safePill;
+    if (outCardReport)  *outCardReport  = safeCard;
+    if (outVoiceSpeech) *outVoiceSpeech = safeSpeech;
 }
 
 // 🌐 按需生成「近 24 小时越狱插件流量消耗与后台联网监控报告」（零 Hook，纯内存计数落盘）
@@ -9194,6 +9207,7 @@ static NSString *agFormatBytesHumanReadable(int64_t bytes) {
     return [NSString stringWithFormat:@"%lld B", (long long)bytes];
 }
 
+// 🌐 按需生成「近 24 小时越狱插件流量消耗与后台联网监控报告」
 static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
         @try {
@@ -9201,7 +9215,6 @@ static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString 
             NSString *path = agTweakTraffic24hFilePath();
             NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
 
-            // 将内存中累积的收发字节一次性冲刷入 24h 滚动账本
             int64_t pendingTx = __atomic_exchange_n(&gPendingSelfTxBytes, 0, __ATOMIC_RELAXED);
             int64_t pendingRx = __atomic_exchange_n(&gPendingSelfRxBytes, 0, __ATOMIC_RELAXED);
             NSUInteger pendingHits = __atomic_exchange_n(&gPendingSelfNetHits, 0, __ATOMIC_RELAXED);
@@ -9252,7 +9265,6 @@ static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString 
                 grandWifiBytes  += wifi;
             }
 
-            // 扫描其他已安装插件是否包含网络模块特征
             NSFileManager *fm = [NSFileManager defaultManager];
             for (NSString *dDir in agDynamicLibrariesDirs()) {
                 for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
@@ -9294,14 +9306,23 @@ static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString 
                                 totStr, agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes), topHuman];
 
             os_unfair_lock_lock(&gCrashCacheLock);
+            gCachedTrafficPillStr   = [pill copy];
+            gCachedTrafficCardStr   = [card copy];
             gCachedTrafficSpeechStr = [speech copy];
             os_unfair_lock_unlock(&gCrashCacheLock);
-
-            if (outPillText)    *outPillText    = pill;
-            if (outCardReport)  *outCardReport  = card;
-            if (outVoiceSpeech) *outVoiceSpeech = speech;
         } @catch (NSException *e) {}
     }
+
+    // 铁律：在 @autoreleasepool 外部从全局强引用缓存中拷贝赋值给输出指针，彻底杜绝野指针注销！
+    os_unfair_lock_lock(&gCrashCacheLock);
+    NSString *safePill   = [gCachedTrafficPillStr copy];
+    NSString *safeCard   = [gCachedTrafficCardStr copy];
+    NSString *safeSpeech = [gCachedTrafficSpeechStr copy];
+    os_unfair_lock_unlock(&gCrashCacheLock);
+
+    if (outPillText)    *outPillText    = safePill;
+    if (outCardReport)  *outCardReport  = safeCard;
+    if (outVoiceSpeech) *outVoiceSpeech = safeSpeech;
 }
 
 static void agRecordSpringBoardBootEventAndWarmupCache(void) {
