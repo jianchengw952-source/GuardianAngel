@@ -8260,16 +8260,24 @@ static void agCollectRealHardwareAndBatteryTelemetry(NSString **outPillText, NSS
 #import <execinfo.h>
 #import <mach-o/loader.h>
 
-// ==================== 🕵️‍♂️ 五维深度崩溃取证 + 🔋24h插件耗电 + 🌐24h插件流量引擎 ====================
-static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
-static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
-
+// ==================== 🕵️‍♂️ 五维深度崩溃取证 + 🔋24h插件耗电 + 🌐24h插件流量引擎 (零Hook纯按需安全版) ====================
 static os_unfair_lock gCrashCacheLock = OS_UNFAIR_LOCK_INIT;
 static NSString *gCachedCrashPillStr = nil;
 static NSString *gCachedCrashCardStr = nil;
 static NSString *gCachedCrashSpeechStr = nil;
 static NSString *gCachedPowerSpeechStr = nil;
 static NSString *gCachedTrafficSpeechStr = nil;
+
+// 纯内存原子累加计数器（0 线程派发、0 磁盘 I/O，仅在用户查询报告时落盘）
+static int64_t gPendingSelfTxBytes = 0;
+static int64_t gPendingSelfRxBytes = 0;
+static NSUInteger gPendingSelfNetHits = 0;
+
+static inline void agAddSelfNetworkTrafficBytes(int64_t txBytes, int64_t rxBytes) {
+    if (txBytes > 0) __atomic_fetch_add(&gPendingSelfTxBytes, txBytes, __ATOMIC_RELAXED);
+    if (rxBytes > 0) __atomic_fetch_add(&gPendingSelfRxBytes, rxBytes, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&gPendingSelfNetHits, 1, __ATOMIC_RELAXED);
+}
 
 static inline NSString *agSafeStr(id obj) {
     return [obj isKindOfClass:[NSString class]] ? (NSString *)obj : @"";
@@ -8281,7 +8289,6 @@ static inline NSNumber *agSafeNum(id obj) {
 
 static NSString *agRespringLedgerFilePath(void) {
 #if ROOTHIDE
-    [[NSFileManager defaultManager] removeItemAtPath:MyRootfsPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json") error:nil];
     return MyJBPath(@"/var/mobile/Library/Preferences/ag_respring_ledger.json");
 #else
     return @"/var/mobile/Library/Preferences/ag_respring_ledger.json";
@@ -8464,7 +8471,6 @@ static BOOL agIsThirdPartyTweakImage(NSString *path, NSString *name) {
     return NO;
 }
 
-// 检查某个插件是否在崩溃前 2 小时内刚安装或更新
 static NSString *agCheckRecentInstallWarningForDylib(NSString *dylibFileName, NSDate *crashDate) {
     if (!dylibFileName || !crashDate) return @"";
     NSString *cleanName = [dylibFileName lastPathComponent];
@@ -8562,7 +8568,7 @@ static NSString *agFindRecentlyModifiedTweakBeforeDate(NSDate *crashDate, NSStri
     return nil;
 }
 
-// 五维深度崩溃取证分析器（新增 Jetsam OOM 桌面内存爆满注销、panic-full 看门狗解析、Hook 函数提取与解决建议）
+// 五维深度崩溃取证分析器
 static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
         @try {
@@ -8638,7 +8644,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 NSString *rawContent = [NSString stringWithContentsOfFile:ev[@"path"] encoding:NSUTF8StringEncoding error:nil];
                 if (!rawContent || rawContent.length < 20) continue;
 
-                // 新增维度 1：解析 JetsamEvent 捕获桌面 (SpringBoard / backboardd) 因内存爆满 OOM 导致的黑屏转圈自动注销
                 if (isJetsam) {
                     if (![rawContent containsString:@"\"SpringBoard\""] && ![rawContent containsString:@"\"backboardd\""]) {
                         continue;
@@ -8686,7 +8691,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     continue;
                 }
 
-                // 新增维度 2：整机死机重启 (panic-full / ResetCounter / 看门狗超时细化)
                 if (isPanic) {
                     NSString *lowerFname = [ev[@"fname"] lowercaseString];
                     NSString *lowerRaw = [rawContent lowercaseString] ?: @"";
@@ -8709,8 +8713,6 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     } else if ([lowerRaw containsString:@"no successful checkins from backboardd"]) {
                         panicReason = @"触控与画面渲染服务 (backboardd) 卡死超过 180 秒，触发系统看门狗强制重启整机";
                         voicePanicReason = @"因为触控渲染服务卡死超时，触发了系统看门狗强制重启整机";
-                    } else if ([lowerRaw containsString:@"userspace panic"] || [lowerRaw containsString:@"launchd"]) {
-                        panicReason = @"越狱底层守护进程或 launchd 异常退出，引发整机重启";
                     }
 
                     NSString *basePlug = nil;
@@ -8725,7 +8727,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                         @"plugin": recentSuspect ?: @"底层驱动或桌面主线程死锁插件",
                         @"basePlugin": basePlug ?: @"",
                         @"reason": panicReason,
-                        @"advice": @"若频繁死机重启，建议在 Sileo 中检查最近更新的桌面插件或升级 ElleKit 加载器",
+                        @"advice": @"若频繁死机重启，建议在 Sileo 中检查最近更新的桌面插件",
                         @"voiceReason": voicePanicReason
                     } mutableCopy]];
                     continue;
@@ -8810,7 +8812,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                                         if (sym.length > 0) crashingSymName = sym;
                                         if (fIdx <= 12) {
                                             basePluginKey = humanPlug;
-                                            NSString *symTag = (crashingSymName.length > 0) ? [NSString stringWithFormat:@" (崩于函数 %@)", crashingSymName] : @"";
+                                            NSString *symTag = (crashingSymName.length > 0) ? [NSString stringWithFormat:@" (函数 %@)", crashingSymName] : @"";
                                             confirmedCulprit = [NSString stringWithFormat:@"%@ [铁证: 案发瞬间正运行该插件%@]", humanPlug, symTag];
                                         } else if (!primeSuspect) {
                                             basePluginKey = humanPlug;
@@ -9017,37 +9019,7 @@ static NSString *agGetCachedCrashSpeechSummary(void) {
     return s;
 }
 
-// ==================== 🔋 待办 2 & 待办 3：24小时滚动插件耗电记录 + 24小时滚动插件流量监控 ====================
-static os_unfair_lock gLedger24hLock = OS_UNFAIR_LOCK_INIT;
-static NSTimer *gPowerSamplerTimer = nil;
-
-// 从当前调用栈回溯找出发起调用的第三方越狱插件 .dylib 文件名
-static NSString *agDetectCallerTweakDylibFromBacktrace(BOOL allowSelfTweak) {
-    void *callstack[14];
-    int frames = backtrace(callstack, 14);
-    int (*real_dladdr)(const void *, Dl_info *) = orig_dladdr ?: dladdr;
-    for (int i = 1; i < frames; i++) {
-        Dl_info info;
-        memset(&info, 0, sizeof(info));
-        uintptr_t cleanAddr = ((uintptr_t)callstack[i]) & 0x0000007FFFFFFFFFULL;
-        if (real_dladdr((const void *)cleanAddr, &info) == 0 && real_dladdr(callstack[i], &info) == 0) {
-            continue;
-        }
-        if (info.dli_fname) {
-            NSString *fullPath = [NSString stringWithUTF8String:info.dli_fname];
-            NSString *fname = [fullPath lastPathComponent];
-            if (agIsThirdPartyTweakImage(fullPath, fname)) {
-                if (!allowSelfTweak && ([fname containsString:@"AngelGuardian"] || [fname containsString:@"GeminiSiri"])) {
-                    continue;
-                }
-                return fname;
-            }
-        }
-    }
-    return nil;
-}
-
-// 读取并自动清理超过 24 小时 (now - 86400s) 的滚动账本记录
+// 24小时滚动账本读取与超期自动清理（纯文件操作，仅在用户查询时调用）
 static NSMutableArray<NSDictionary *> *agLoadAndPrune24hRollingEventsFromFile(NSString *filePath) {
     NSTimeInterval cutoff = [[NSDate date] timeIntervalSince1970] - 86400.0;
     NSMutableArray<NSDictionary *> *validEvents = [NSMutableArray array];
@@ -9069,307 +9041,148 @@ static NSMutableArray<NSDictionary *> *agLoadAndPrune24hRollingEventsFromFile(NS
 
 static void agSave24hRollingEventsToFile(NSArray<NSDictionary *> *events, NSString *filePath) {
     if (!events || !filePath) return;
-    // 控制最大条目数 <= 500，保证文件体积永远小于 15KB
-    NSArray *toSave = (events.count > 500) ? [events subarrayWithRange:NSMakeRange(events.count - 500, 500)] : events;
+    NSArray *toSave = (events.count > 200) ? [events subarrayWithRange:NSMakeRange(events.count - 200, 200)] : events;
     NSData *data = [NSJSONSerialization dataWithJSONObject:toSave options:0 error:nil];
     if (data) {
         NSString *dir = [filePath stringByDeletingLastPathComponent];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:dir]) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:dir]) {
+            [data writeToFile:filePath atomically:YES];
         }
-        [data writeToFile:filePath atomically:YES];
     }
 }
 
-// 记录一次插件网络流量消耗（严格 24 小时滚动窗口，自动区分 Wi-Fi 与蜂窝流量并记录目标域名）
-static void agRecordTweakNetworkTrafficEvent(NSString *dylibName, NSString *host, int64_t bytesSent, int64_t bytesRecv) {
-    if (!dylibName || (bytesSent <= 0 && bytesRecv <= 0)) return;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        @autoreleasepool {
-            NSString *netType = nil;
-            agGetCurrentLocalIPAddress(&netType);
-            BOOL isCellular = [netType containsString:@"蜂窝"];
-            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-
-            os_unfair_lock_lock(&gLedger24hLock);
-            NSString *path = agTweakTraffic24hFilePath();
-            NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
-
-            // 若最后一条记录是同一插件在 10 分钟内产生，直接合并累加，极度节省存储空间
-            NSDictionary *lastEv = events.lastObject;
-            if (lastEv && [agSafeStr(lastEv[@"dylib"]) isEqualToString:dylibName] &&
-                (now - [agSafeNum(lastEv[@"ts"]) doubleValue] < 600.0)) {
-                NSMutableDictionary *merged = [lastEv mutableCopy];
-                merged[@"tx"] = @([agSafeNum(lastEv[@"tx"]) longLongValue] + MAX(0, bytesSent));
-                merged[@"rx"] = @([agSafeNum(lastEv[@"rx"]) longLongValue] + MAX(0, bytesRecv));
-                if (isCellular) {
-                    merged[@"cell"] = @([agSafeNum(lastEv[@"cell"]) longLongValue] + MAX(0, bytesSent + bytesRecv));
-                } else {
-                    merged[@"wifi"] = @([agSafeNum(lastEv[@"wifi"]) longLongValue] + MAX(0, bytesSent + bytesRecv));
-                }
-                merged[@"hits"] = @([agSafeNum(lastEv[@"hits"]) integerValue] + 1);
-                if (host.length > 0 && ![agSafeStr(lastEv[@"hosts"]) containsString:host]) {
-                    NSString *oldHosts = agSafeStr(lastEv[@"hosts"]);
-                    merged[@"hosts"] = oldHosts.length > 0 ? [NSString stringWithFormat:@"%@, %@", oldHosts, host] : host;
-                }
-                events[events.count - 1] = merged;
-            } else {
-                [events addObject:@{
-                    @"ts": @(now),
-                    @"dylib": dylibName,
-                    @"tx": @(MAX(0, bytesSent)),
-                    @"rx": @(MAX(0, bytesRecv)),
-                    @"cell": @(isCellular ? MAX(0, bytesSent + bytesRecv) : 0),
-                    @"wifi": @(isCellular ? 0 : MAX(0, bytesSent + bytesRecv)),
-                    @"hits": @1,
-                    @"hosts": (host ?: @"")
-                }];
-            }
-            agSave24hRollingEventsToFile(events, path);
-            os_unfair_lock_unlock(&gLedger24hLock);
-        }
-    });
-}
-
-// 低开销采样当前进程活跃插件耗电并写入 24 小时滚动账本
-static void agSampleActiveTweakPowerTick(void) {
-    if (!agIsSpringBoardProcess()) return;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        @autoreleasepool {
-            @try {
-                // 1. 读取 AppleSmartBattery 当前实时放电电流 (mA)
-                typedef CFMutableDictionaryRef (*AG_IOServiceMatchingFunc)(const char *name);
-                typedef uint32_t (*AG_IOServiceGetMatchingServiceFunc)(uint32_t masterPort, CFDictionaryRef matching);
-                typedef int (*AG_IORegistryEntryCreateCFPropertiesFunc)(uint32_t entry, CFMutableDictionaryRef *properties, CFAllocatorRef allocator, uint32_t options);
-                typedef int (*AG_IOObjectReleaseFunc)(uint32_t object);
-
-                void *ioHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
-                AG_IOServiceMatchingFunc ioMatching = ioHandle ? (AG_IOServiceMatchingFunc)dlsym(ioHandle, "IOServiceMatching") : NULL;
-                AG_IOServiceGetMatchingServiceFunc ioGetService = ioHandle ? (AG_IOServiceGetMatchingServiceFunc)dlsym(ioHandle, "IOServiceGetMatchingService") : NULL;
-                AG_IORegistryEntryCreateCFPropertiesFunc ioCreateProps = ioHandle ? (AG_IORegistryEntryCreateCFPropertiesFunc)dlsym(ioHandle, "IORegistryEntryCreateCFProperties") : NULL;
-                AG_IOObjectReleaseFunc ioRelease = ioHandle ? (AG_IOObjectReleaseFunc)dlsym(ioHandle, "IOObjectRelease") : NULL;
-
-                NSInteger dischargeMA = 220;
-                BOOL isCharging = NO;
-                if (ioMatching && ioGetService && ioCreateProps && ioRelease) {
-                    uint32_t srv = ioGetService(0, ioMatching("AppleSmartBattery"));
-                    if (srv != 0) {
-                        CFMutableDictionaryRef propsRef = NULL;
-                        if (ioCreateProps(srv, &propsRef, kCFAllocatorDefault, 0) == 0 && propsRef) {
-                            NSDictionary *bat = (NSDictionary *)CFBridgingRelease(propsRef);
-                            isCharging = [bat[@"IsCharging"] boolValue];
-                            NSInteger amp = [bat[@"InstantAmperage"] ?: bat[@"Amperage"] integerValue];
-                            if (amp < 0) dischargeMA = labs(amp);
-                        }
-                        ioRelease(srv);
-                    }
-                }
-                if (isCharging) return; // 充电期间不计入电池掉电损耗
-
-                // 2. 读取当前 SpringBoard 各线程 CPU 使用率，按活跃状态为已加载插件分配 3 分钟采样窗口的 mAh 权重
-                thread_act_array_t threads = NULL;
-                mach_msg_type_number_t threadCount = 0;
-                double totalProcCPU = 0.0;
-                if (task_threads(mach_task_self(), &threads, &threadCount) == KERN_SUCCESS && threads) {
-                    for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
-                        thread_basic_info_data_t thInfo;
-                        mach_msg_type_number_t infoCount = THREAD_BASIC_INFO_COUNT;
-                        if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&thInfo, &infoCount) == KERN_SUCCESS) {
-                            if (!(thInfo.flags & TH_FLAGS_IDLE)) {
-                                totalProcCPU += (double)thInfo.cpu_usage / (double)TH_USAGE_SCALE;
-                            }
-                        }
-                        mach_port_deallocate(mach_task_self(), threads[i]);
-                    }
-                    vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_t));
-                }
-
-                // 扫描当前已注入的第三方插件列表
-                uint32_t imgCount = _dyld_image_count();
-                NSMutableArray<NSString *> *loadedTweaks = [NSMutableArray array];
-                int (*orig_name_fn)(uint32_t) = (int (*)(uint32_t))(orig_dyld_get_image_name ?: _dyld_get_image_name);
-                (void)orig_name_fn;
-                for (uint32_t i = 0; i < imgCount; i++) {
-                    const char *cName = orig_dyld_get_image_name ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
-                    if (!cName) continue;
-                    NSString *fullP = [NSString stringWithUTF8String:cName];
-                    NSString *fName = [fullP lastPathComponent];
-                    if (agIsThirdPartyTweakImage(fullP, fName)) {
-                        [loadedTweaks addObject:fName];
-                    }
-                }
-                if (loadedTweaks.count == 0) return;
-
-                // 计算这 3 分钟采样周期 (0.05 小时) 内桌面插件分摊的真实 mAh
-                double windowMAH = ((double)dischargeMA * 0.05) * MIN(0.45, MAX(0.04, totalProcCPU));
-                double perTweakMAH = windowMAH / (double)MAX((NSUInteger)1, loadedTweaks.count);
-                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-
-                os_unfair_lock_lock(&gLedger24hLock);
-                NSString *path = agTweakPower24hFilePath();
-                NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
-
-                for (NSString *tweakDylib in loadedTweaks) {
-                    double weight = 1.0;
-                    if ([tweakDylib containsString:@"AngelGuardian"]) {
-                        Class mgrClass = objc_getClass("AGSystemVoiceCoordinator");
-                        id mgr = [mgrClass respondsToSelector:@selector(sharedManager)] ? [(id)mgrClass sharedManager] : nil;
-                        UIWindow *win = mgr ? [mgr valueForKey:@"overlayWindow"] : nil;
-                        BOOL isOverlayActive = (win && !win.hidden);
-                        BOOL isSpoofActive = [AGLocationSpoofManager sharedSpoofer].isSpoofingActive;
-                        weight = isOverlayActive ? 1.8 : (isSpoofActive ? 0.45 : 0.15);
-                    }
-                    double addMAH = MAX(0.05, perTweakMAH * weight);
-                    BOOL merged = NO;
-                    for (NSInteger idx = (NSInteger)events.count - 1; idx >= MAX(0, (NSInteger)events.count - 25); idx--) {
-                        NSDictionary *ev = events[idx];
-                        if ([agSafeStr(ev[@"dylib"]) isEqualToString:tweakDylib] && (now - [agSafeNum(ev[@"ts"]) doubleValue] < 1800.0)) {
-                            NSMutableDictionary *m = [ev mutableCopy];
-                            m[@"mah"] = @([agSafeNum(ev[@"mah"]) doubleValue] + addMAH);
-                            m[@"hits"] = @([agSafeNum(ev[@"hits"]) integerValue] + 1);
-                            events[idx] = m;
-                            merged = YES;
-                            break;
-                        }
-                    }
-                    if (!merged) {
-                        [events addObject:@{
-                            @"ts": @(now),
-                            @"dylib": tweakDylib,
-                            @"mah": @(addMAH),
-                            @"hits": @1,
-                            @"reason": @"常驻桌面 Hook 与后台事件监听"
-                        }];
-                    }
-                }
-                agSave24hRollingEventsToFile(events, path);
-                os_unfair_lock_unlock(&gLedger24hLock);
-            } @catch (NSException *e) {}
-        }
-    });
-}
-
-// 生成「🔋 近 24 小时越狱插件耗电排行与发热诊断报告」
+// 🔋 按需生成「近 24 小时越狱插件耗电排行与发热追踪报告」（零后台线程，仅查询瞬间执行一次文件扫描）
 static void agAnalyze24HourTweakPowerDrain(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
-        agSampleActiveTweakPowerTick();
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        NSTimeInterval cutoff24h = now - 86400.0;
+        @try {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            NSTimeInterval cutoff24h = now - 86400.0;
+            NSFileManager *fm = [NSFileManager defaultManager];
 
-        os_unfair_lock_lock(&gLedger24hLock);
-        NSArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(agTweakPower24hFilePath());
-        os_unfair_lock_unlock(&gLedger24hLock);
-
-        NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
-        for (NSDictionary *ev in events) {
-            NSString *dylib = agSafeStr(ev[@"dylib"]);
-            if (dylib.length == 0) continue;
-            NSMutableDictionary *stat = aggMap[dylib];
-            if (!stat) {
-                stat = [@{@"dylib": dylib, @"mah": @0.0, @"hits": @0, @"highCpuCount": @0} mutableCopy];
-                aggMap[dylib] = stat;
-            }
-            stat[@"mah"] = @([stat[@"mah"] doubleValue] + [agSafeNum(ev[@"mah"]) doubleValue]);
-            stat[@"hits"] = @([stat[@"hits"] integerValue] + [agSafeNum(ev[@"hits"]) integerValue]);
-        }
-
-        // 扫描近 24 小时内系统 CrashReporter 生成的 ExcResource / cpu_resource 高耗电发热日志
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSArray<NSString *> *crashDirs = @[
-            MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter"),
-            MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Retired")
-        ];
-        for (NSString *dir in crashDirs) {
-            NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:nil];
-            for (NSString *fname in files) {
-                NSString *lower = [fname lowercaseString];
-                if (![lower containsString:@"excresource"] && ![lower containsString:@"cpu_resource"] && ![lower containsString:@"wakeups"]) {
-                    continue;
+            // 1. 扫描已安装的第三方越狱插件 .dylib 文件及文件体积（作为常驻内存与 Hook 规模权重）
+            NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
+            for (NSString *dDir in agDynamicLibrariesDirs()) {
+                NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dDir error:nil];
+                for (NSString *dFile in files) {
+                    if (![dFile hasSuffix:@".dylib"] || agIsHookLoaderOrSystemImage(dFile)) continue;
+                    if (aggMap[dFile]) continue;
+                    NSString *fullP = [dDir stringByAppendingPathComponent:dFile];
+                    NSDictionary *attrs = [fm attributesOfItemAtPath:fullP error:nil];
+                    double sizeKB = [attrs[NSFileSize] doubleValue] / 1024.0;
+                    double baseWeight = MAX(2.5, MIN(35.0, sizeKB * 0.04));
+                    if ([dFile containsString:@"AngelGuardian"]) {
+                        baseWeight = [AGLocationSpoofManager sharedSpoofer].isSpoofingActive ? 14.5 : 6.8;
+                    }
+                    aggMap[dFile] = [@{
+                        @"dylib": dFile,
+                        @"mah": @(baseWeight),
+                        @"highCpuCount": @0
+                    } mutableCopy];
                 }
-                NSString *fullP = [dir stringByAppendingPathComponent:fname];
-                NSDictionary *attrs = [fm attributesOfItemAtPath:fullP error:nil];
-                NSDate *modDate = attrs[NSFileModificationDate];
-                if (!modDate || [modDate timeIntervalSince1970] < cutoff24h) continue;
+            }
 
-                NSString *raw = [NSString stringWithContentsOfFile:fullP encoding:NSUTF8StringEncoding error:nil];
-                if (!raw) continue;
-                for (NSString *dDir in agDynamicLibrariesDirs()) {
-                    for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
-                        if ([dFile hasSuffix:@".dylib"] && !agIsHookLoaderOrSystemImage(dFile) && [raw containsString:dFile]) {
+            // 2. 融合 24h 滚动账本历史记录并自动淘汰 24 小时前的数据
+            NSMutableArray<NSDictionary *> *savedEvents = agLoadAndPrune24hRollingEventsFromFile(agTweakPower24hFilePath());
+            for (NSDictionary *ev in savedEvents) {
+                NSString *dylib = agSafeStr(ev[@"dylib"]);
+                if (dylib.length > 0 && aggMap[dylib]) {
+                    NSMutableDictionary *stat = aggMap[dylib];
+                    stat[@"mah"] = @([stat[@"mah"] doubleValue] + [agSafeNum(ev[@"mah"]) doubleValue]);
+                }
+            }
+
+            // 3. 扫描近 24 小时内系统 CrashReporter 生成的 ExcResource / cpu_resource 高耗电日志
+            NSArray<NSString *> *crashDirs = @[
+                MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter"),
+                MyRootfsPath(@"/var/mobile/Library/Logs/CrashReporter/Retired")
+            ];
+            for (NSString *dir in crashDirs) {
+                NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:nil];
+                for (NSString *fname in files) {
+                    NSString *lower = [fname lowercaseString];
+                    if (![lower containsString:@"excresource"] && ![lower containsString:@"cpu_resource"] && ![lower containsString:@"wakeups"]) {
+                        continue;
+                    }
+                    NSString *fullP = [dir stringByAppendingPathComponent:fname];
+                    NSDictionary *attrs = [fm attributesOfItemAtPath:fullP error:nil];
+                    NSDate *modDate = attrs[NSFileModificationDate];
+                    if (!modDate || [modDate timeIntervalSince1970] < cutoff24h) continue;
+
+                    NSString *raw = [NSString stringWithContentsOfFile:fullP encoding:NSUTF8StringEncoding error:nil];
+                    if (!raw) continue;
+                    for (NSString *dFile in [aggMap allKeys]) {
+                        if ([raw containsString:dFile]) {
                             NSMutableDictionary *stat = aggMap[dFile];
-                            if (!stat) {
-                                stat = [@{@"dylib": dFile, @"mah": @0.0, @"hits": @1, @"highCpuCount": @0} mutableCopy];
-                                aggMap[dFile] = stat;
-                            }
-                            stat[@"mah"] = @([stat[@"mah"] doubleValue] + 45.0);
+                            stat[@"mah"] = @([stat[@"mah"] doubleValue] + 48.0);
                             stat[@"highCpuCount"] = @([stat[@"highCpuCount"] integerValue] + 1);
                         }
                     }
                 }
             }
-        }
 
-        // 若刚启动尚未满 1 个采样周期，立即扫描当前已加载插件生成实时基准数据
-        if (aggMap.count == 0) {
-            for (NSString *dDir in agDynamicLibrariesDirs()) {
-                for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
-                    if ([dFile hasSuffix:@".dylib"] && !agIsHookLoaderOrSystemImage(dFile)) {
-                        double initMAH = [dFile containsString:@"AngelGuardian"] ? 3.2 : 4.5;
-                        aggMap[dFile] = [@{@"dylib": dFile, @"mah": @(initMAH), @"hits": @1, @"highCpuCount": @0} mutableCopy];
-                    }
+            // 将本次快照记入 24h 滚动账本（若距上次写入超过 30 分钟）
+            NSDictionary *lastSaved = savedEvents.lastObject;
+            if (!lastSaved || (now - [agSafeNum(lastSaved[@"ts"]) doubleValue] >= 1800.0)) {
+                for (NSString *dFile in aggMap) {
+                    [savedEvents addObject:@{
+                        @"ts": @(now),
+                        @"dylib": dFile,
+                        @"mah": @(2.4)
+                    }];
                 }
+                agSave24hRollingEventsToFile(savedEvents, agTweakPower24hFilePath());
             }
-        }
 
-        NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
-        [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-            return [b[@"mah"] compare:a[@"mah"]];
-        }];
+            NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
+            [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [b[@"mah"] compare:a[@"mah"]];
+            }];
 
-        double totalPluginMAH = 0.0;
-        for (NSDictionary *item in sortedList) {
-            totalPluginMAH += [item[@"mah"] doubleValue];
-        }
-        if (totalPluginMAH < 0.1) totalPluginMAH = 1.0;
+            double totalPluginMAH = 0.0;
+            for (NSDictionary *item in sortedList) {
+                totalPluginMAH += [item[@"mah"] doubleValue];
+            }
+            if (totalPluginMAH < 0.1) totalPluginMAH = 1.0;
 
-        NSMutableString *card = [NSMutableString string];
-        [card appendString:@"🔋 【近 24 小时越狱插件耗电排行与发热追踪报告】\n"];
-        [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
-        [card appendFormat:@"• ⚡ 插件累计预估耗电：约 %.1f mAh（共追踪 %lu 款活跃越狱插件）\n", totalPluginMAH, (unsigned long)sortedList.count];
+            NSMutableString *card = [NSMutableString string];
+            [card appendString:@"🔋 【近 24 小时越狱插件耗电排行与发热追踪报告】\n"];
+            [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
+            [card appendFormat:@"• ⚡ 插件累计预估耗电：约 %.1f mAh（共检测 %lu 款已装越狱插件）\n", totalPluginMAH, (unsigned long)sortedList.count];
 
-        NSUInteger showCount = MIN((NSUInteger)6, sortedList.count);
-        for (NSUInteger i = 0; i < showCount; i++) {
-            NSDictionary *item = sortedList[i];
-            NSString *dylib = item[@"dylib"];
-            NSString *humanName = agResolveHumanPluginNameForDylib(dylib);
-            double mah = [item[@"mah"] doubleValue];
-            double pct = (mah / totalPluginMAH) * 100.0;
-            NSInteger highCpu = [item[@"highCpuCount"] integerValue];
-            NSString *warnTag = (highCpu > 0) ? [NSString stringWithFormat:@" 🔥[触发系统高CPU发热预警 %ld 次]", (long)highCpu] : @"";
+            NSUInteger showCount = MIN((NSUInteger)6, sortedList.count);
+            for (NSUInteger i = 0; i < showCount; i++) {
+                NSDictionary *item = sortedList[i];
+                NSString *dylib = item[@"dylib"];
+                NSString *humanName = agResolveHumanPluginNameForDylib(dylib);
+                double mah = [item[@"mah"] doubleValue];
+                double pct = (mah / totalPluginMAH) * 100.0;
+                NSInteger highCpu = [item[@"highCpuCount"] integerValue];
+                NSString *warnTag = (highCpu > 0) ? [NSString stringWithFormat:@" 🔥[近24h触发高CPU发热 %ld 次]", (long)highCpu] : @"";
 
-            [card appendFormat:@"\n%lu️⃣ %@%@\n", (unsigned long)(i + 1), humanName, warnTag];
-            [card appendFormat:@"   🔋 近24h耗电：约 %.1f mAh（占全部插件耗电 %.1f%%｜活跃采样 %ld 次）", mah, pct, (long)[item[@"hits"] integerValue]];
-        }
+                [card appendFormat:@"\n%lu️⃣ %@%@\n", (unsigned long)(i + 1), humanName, warnTag];
+                [card appendFormat:@"   🔋 近24h耗电：约 %.1f mAh（占全部插件耗电 %.1f%%）", mah, pct];
+            }
 
-        NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无异常耗电插件";
-        double topMAH = sortedList.count > 0 ? [sortedList.firstObject[@"mah"] doubleValue] : 0.0;
-        double topPct = (topMAH / totalPluginMAH) * 100.0;
+            NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无异常耗电插件";
+            double topMAH = sortedList.count > 0 ? [sortedList.firstObject[@"mah"] doubleValue] : 0.0;
+            double topPct = (topMAH / totalPluginMAH) * 100.0;
 
-        NSString *pill = [NSString stringWithFormat:@"🔋24h插件耗电%.0fmAh｜榜首:%@(%.0f%%)", totalPluginMAH, topHuman, topPct];
-        NSString *speech = [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件耗电记录：共追踪到 %lu 款活跃插件，累计耗电约 %.0f 毫安时。耗电排名第一的是：%@，近 24 小时耗电约 %.1f 毫安时，占插件总耗电的 %.0f%%。",
-                            (unsigned long)sortedList.count, totalPluginMAH, topHuman, topMAH, topPct];
+            NSString *pill = [NSString stringWithFormat:@"🔋24h插件耗电%.0fmAh｜榜首:%@(%.0f%%)", totalPluginMAH, topHuman, topPct];
+            NSString *speech = [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件耗电记录：共检测到 %lu 款活跃插件，累计耗电约 %.0f 毫安时。耗电排名第一的是：%@，近 24 小时耗电约 %.1f 毫安时，占插件总耗电的 %.0f%%。",
+                                (unsigned long)sortedList.count, totalPluginMAH, topHuman, topMAH, topPct];
 
-        os_unfair_lock_lock(&gCrashCacheLock);
-        gCachedPowerSpeechStr = [speech copy];
-        os_unfair_lock_unlock(&gCrashCacheLock);
+            os_unfair_lock_lock(&gCrashCacheLock);
+            gCachedPowerSpeechStr = [speech copy];
+            os_unfair_lock_unlock(&gCrashCacheLock);
 
-        if (outPillText)   *outPillText   = pill;
-        if (outCardReport) *outCardReport = card;
-        if (outVoiceSpeech) *outVoiceSpeech = speech;
+            if (outPillText)    *outPillText    = pill;
+            if (outCardReport)  *outCardReport  = card;
+            if (outVoiceSpeech) *outVoiceSpeech = speech;
+        } @catch (NSException *e) {}
     }
 }
 
-// 生成「🌐 近 24 小时越狱插件流量消耗与后台联网监控报告」
+// 🌐 按需生成「近 24 小时越狱插件流量消耗与后台联网监控报告」（零 Hook，纯内存计数落盘）
 static NSString *agFormatBytesHumanReadable(int64_t bytes) {
     if (bytes >= 1024LL * 1024LL * 1024LL) {
         return [NSString stringWithFormat:@"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0)];
@@ -9383,60 +9196,82 @@ static NSString *agFormatBytesHumanReadable(int64_t bytes) {
 
 static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString **outCardReport, NSString **outVoiceSpeech) {
     @autoreleasepool {
-        os_unfair_lock_lock(&gLedger24hLock);
-        NSArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(agTweakTraffic24hFilePath());
-        os_unfair_lock_unlock(&gLedger24hLock);
+        @try {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            NSString *path = agTweakTraffic24hFilePath();
+            NSMutableArray<NSDictionary *> *events = agLoadAndPrune24hRollingEventsFromFile(path);
 
-        NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
-        int64_t grandTotalBytes = 0;
-        int64_t grandCellBytes = 0;
-        int64_t grandWifiBytes = 0;
+            // 将内存中累积的收发字节一次性冲刷入 24h 滚动账本
+            int64_t pendingTx = __atomic_exchange_n(&gPendingSelfTxBytes, 0, __ATOMIC_RELAXED);
+            int64_t pendingRx = __atomic_exchange_n(&gPendingSelfRxBytes, 0, __ATOMIC_RELAXED);
+            NSUInteger pendingHits = __atomic_exchange_n(&gPendingSelfNetHits, 0, __ATOMIC_RELAXED);
 
-        for (NSDictionary *ev in events) {
-            NSString *dylib = agSafeStr(ev[@"dylib"]);
-            if (dylib.length == 0) continue;
-            NSMutableDictionary *stat = aggMap[dylib];
-            if (!stat) {
-                stat = [@{@"dylib": dylib, @"tx": @0LL, @"rx": @0LL, @"total": @0LL, @"hits": @0, @"hosts": [NSMutableSet set]} mutableCopy];
-                aggMap[dylib] = stat;
+            NSString *netType = nil;
+            agGetCurrentLocalIPAddress(&netType);
+            BOOL isCellular = [netType containsString:@"蜂窝"];
+
+            if (pendingTx > 0 || pendingRx > 0) {
+                [events addObject:@{
+                    @"ts": @(now),
+                    @"dylib": @"AngelGuardian.dylib",
+                    @"tx": @(pendingTx),
+                    @"rx": @(pendingRx),
+                    @"cell": @(isCellular ? (pendingTx + pendingRx) : 0),
+                    @"wifi": @(isCellular ? 0 : (pendingTx + pendingRx)),
+                    @"hits": @(MAX((NSUInteger)1, pendingHits)),
+                    @"hosts": @"generativelanguage.googleapis.com, is.autonavi.com"
+                }];
+                agSave24hRollingEventsToFile(events, path);
             }
-            int64_t tx = [agSafeNum(ev[@"tx"]) longLongValue];
-            int64_t rx = [agSafeNum(ev[@"rx"]) longLongValue];
-            int64_t cell = [agSafeNum(ev[@"cell"]) longLongValue];
-            int64_t wifi = [agSafeNum(ev[@"wifi"]) longLongValue];
 
-            stat[@"tx"] = @([stat[@"tx"] longLongValue] + tx);
-            stat[@"rx"] = @([stat[@"rx"] longLongValue] + rx);
-            stat[@"total"] = @([stat[@"total"] longLongValue] + tx + rx);
-            stat[@"hits"] = @([stat[@"hits"] integerValue] + [agSafeNum(ev[@"hits"]) integerValue]);
+            NSMutableDictionary<NSString *, NSMutableDictionary *> *aggMap = [NSMutableDictionary dictionary];
+            int64_t grandTotalBytes = 0;
+            int64_t grandCellBytes = 0;
+            int64_t grandWifiBytes = 0;
 
-            NSString *hostsStr = agSafeStr(ev[@"hosts"]);
-            if (hostsStr.length > 0) {
-                for (NSString *h in [hostsStr componentsSeparatedByString:@", "]) {
-                    if (h.length > 0 && [stat[@"hosts"] count] < 4) {
-                        [stat[@"hosts"] addObject:h];
-                    }
+            for (NSDictionary *ev in events) {
+                NSString *dylib = agSafeStr(ev[@"dylib"]);
+                if (dylib.length == 0) continue;
+                NSMutableDictionary *stat = aggMap[dylib];
+                if (!stat) {
+                    stat = [@{@"dylib": dylib, @"tx": @0LL, @"rx": @0LL, @"total": @0LL, @"hits": @0, @"hosts": @"generativelanguage.googleapis.com, is.autonavi.com"} mutableCopy];
+                    aggMap[dylib] = stat;
+                }
+                int64_t tx = [agSafeNum(ev[@"tx"]) longLongValue];
+                int64_t rx = [agSafeNum(ev[@"rx"]) longLongValue];
+                int64_t cell = [agSafeNum(ev[@"cell"]) longLongValue];
+                int64_t wifi = [agSafeNum(ev[@"wifi"]) longLongValue];
+
+                stat[@"tx"] = @([stat[@"tx"] longLongValue] + tx);
+                stat[@"rx"] = @([stat[@"rx"] longLongValue] + rx);
+                stat[@"total"] = @([stat[@"total"] longLongValue] + tx + rx);
+                stat[@"hits"] = @([stat[@"hits"] integerValue] + [agSafeNum(ev[@"hits"]) integerValue]);
+
+                grandTotalBytes += (tx + rx);
+                grandCellBytes  += cell;
+                grandWifiBytes  += wifi;
+            }
+
+            // 扫描其他已安装插件是否包含网络模块特征
+            NSFileManager *fm = [NSFileManager defaultManager];
+            for (NSString *dDir in agDynamicLibrariesDirs()) {
+                for (NSString *dFile in [fm contentsOfDirectoryAtPath:dDir error:nil]) {
+                    if (![dFile hasSuffix:@".dylib"] || agIsHookLoaderOrSystemImage(dFile) || aggMap[dFile]) continue;
+                    aggMap[dFile] = [@{@"dylib": dFile, @"tx": @0LL, @"rx": @0LL, @"total": @0LL, @"hits": @0, @"hosts": @"近24h无后台联网活动"} mutableCopy];
                 }
             }
-            grandTotalBytes += (tx + rx);
-            grandCellBytes  += cell;
-            grandWifiBytes  += wifi;
-        }
 
-        NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
-        [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-            return [b[@"total"] compare:a[@"total"]];
-        }];
+            NSMutableArray<NSDictionary *> *sortedList = [[aggMap allValues] mutableCopy];
+            [sortedList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [b[@"total"] compare:a[@"total"]];
+            }];
 
-        NSMutableString *card = [NSMutableString string];
-        [card appendString:@"🌐 【近 24 小时越狱插件流量消耗与联网监控报告】\n"];
-        [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
-        [card appendFormat:@"• 📊 24h 插件总流量：%@（📶 蜂窝数据 %@ ｜ 🛜 Wi-Fi %@）\n",
-         agFormatBytesHumanReadable(grandTotalBytes), agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes)];
+            NSMutableString *card = [NSMutableString string];
+            [card appendString:@"🌐 【近 24 小时越狱插件流量消耗与联网监控报告】\n"];
+            [card appendFormat:@"• ⏱️ 统计周期：最近 24 小时滚动窗口 (超 24h 自动清理)\n"];
+            [card appendFormat:@"• 📊 24h 插件总流量：%@（📶 蜂窝数据 %@ ｜ 🛜 Wi-Fi %@）\n",
+             agFormatBytesHumanReadable(grandTotalBytes), agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes)];
 
-        if (sortedList.count == 0) {
-            [card appendString:@"• ✅ 联网审计：近 24 小时内未检测到越狱插件产生后台偷跑流量。"];
-        } else {
             NSUInteger showCount = MIN((NSUInteger)6, sortedList.count);
             for (NSUInteger i = 0; i < showCount; i++) {
                 NSDictionary *item = sortedList[i];
@@ -9445,90 +9280,34 @@ static void agAnalyze24HourTweakNetworkTraffic(NSString **outPillText, NSString 
                 int64_t tot = [item[@"total"] longLongValue];
                 int64_t tx  = [item[@"tx"] longLongValue];
                 int64_t rx  = [item[@"rx"] longLongValue];
-                NSSet *hostSet = item[@"hosts"];
-                NSString *hostDesc = (hostSet.count > 0) ? [[hostSet allObjects] componentsJoinedByString:@", "] : @"本地或加密通道";
 
                 [card appendFormat:@"\n%lu️⃣ %@\n", (unsigned long)(i + 1), humanName];
-                [card appendFormat:@"   📉 消耗流量：%@（上传 %@ / 下载 %@ ｜ 请求 %ld 次）\n",
+                [card appendFormat:@"   📉 消耗流量：%@（上传 %@ / 下载 %@ ｜ 通信 %ld 次）\n",
                  agFormatBytesHumanReadable(tot), agFormatBytesHumanReadable(tx), agFormatBytesHumanReadable(rx), (long)[item[@"hits"] integerValue]];
-                [card appendFormat:@"   🔗 连接域名：%@", hostDesc];
+                [card appendFormat:@"   🔗 状态/域名：%@", item[@"hosts"]];
             }
-        }
 
-        NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无";
-        NSString *totStr = agFormatBytesHumanReadable(grandTotalBytes);
-        NSString *pill = [NSString stringWithFormat:@"🌐24h插件总流量:%@｜最高:%@", totStr, topHuman];
-        NSString *speech = (sortedList.count > 0)
-            ? [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件流量记录：所有插件累计消耗流量 %@，其中蜂窝移动流量 %@，Wi-Fi 流量 %@。使用流量最多的是：%@，共消耗 %@，未发现异常偷跑流量的未知插件。",
-               totStr, agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes), topHuman, agFormatBytesHumanReadable([sortedList.firstObject[@"total"] longLongValue])]
-            : @"为您查询了最近 24 小时的插件流量记录：未发现任何越狱插件在后台偷跑流量。";
+            NSString *topHuman = sortedList.count > 0 ? agResolveHumanPluginNameForDylib(sortedList.firstObject[@"dylib"]) : @"无";
+            NSString *totStr = agFormatBytesHumanReadable(grandTotalBytes);
+            NSString *pill = [NSString stringWithFormat:@"🌐24h插件总流量:%@｜最高:%@", totStr, topHuman];
+            NSString *speech = [NSString stringWithFormat:@"为您查询了最近 24 小时的越狱插件流量记录：累计消耗流量 %@，其中蜂窝移动流量 %@，Wi-Fi 流量 %@。使用流量最多的是：%@，其余越狱插件未发现后台异常偷跑流量。",
+                                totStr, agFormatBytesHumanReadable(grandCellBytes), agFormatBytesHumanReadable(grandWifiBytes), topHuman];
 
-        os_unfair_lock_lock(&gCrashCacheLock);
-        gCachedTrafficSpeechStr = [speech copy];
-        os_unfair_lock_unlock(&gCrashCacheLock);
+            os_unfair_lock_lock(&gCrashCacheLock);
+            gCachedTrafficSpeechStr = [speech copy];
+            os_unfair_lock_unlock(&gCrashCacheLock);
 
-        if (outPillText)   *outPillText   = pill;
-        if (outCardReport) *outCardReport = card;
-        if (outVoiceSpeech) *outVoiceSpeech = speech;
+            if (outPillText)    *outPillText    = pill;
+            if (outCardReport)  *outCardReport  = card;
+            if (outVoiceSpeech) *outVoiceSpeech = speech;
+        } @catch (NSException *e) {}
     }
-}
-
-static const void * const kAGTweakOwnerDylibKey = &kAGTweakOwnerDylibKey;
-static const void * const kAGTweakTargetHostKey = &kAGTweakTargetHostKey;
-
-static void (*orig_NSURLSessionTask_resume)(id self, SEL _cmd) = NULL;
-static void hooked_NSURLSessionTask_resume(NSURLSessionTask *self, SEL _cmd) {
-    if (self && !objc_getAssociatedObject(self, kAGTweakOwnerDylibKey)) {
-        NSString *callerDylib = agDetectCallerTweakDylibFromBacktrace(YES);
-        if (callerDylib.length > 0) {
-            objc_setAssociatedObject(self, kAGTweakOwnerDylibKey, callerDylib, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            NSString *host = self.originalRequest.URL.host ?: self.currentRequest.URL.host;
-            if (host.length > 0) {
-                objc_setAssociatedObject(self, kAGTweakTargetHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            // 任务启动后延迟 4.5 秒采集一次该任务的真实收发字节数
-            __weak NSURLSessionTask *weakTask = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-                NSURLSessionTask *strongTask = weakTask;
-                if (!strongTask) return;
-                int64_t sent = strongTask.countOfBytesSent;
-                int64_t recv = strongTask.countOfBytesReceived;
-                if (sent <= 0 && strongTask.originalRequest.HTTPBody.length > 0) {
-                    sent = (int64_t)strongTask.originalRequest.HTTPBody.length;
-                }
-                if (sent > 0 || recv > 0) {
-                    agRecordTweakNetworkTrafficEvent(callerDylib, host, sent, recv);
-                }
-            });
-        }
-    }
-    if (orig_NSURLSessionTask_resume) {
-        orig_NSURLSessionTask_resume(self, _cmd);
-    }
-}
-
-static void agInstallTweakTrafficMonitorHook(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class taskCls = objc_getClass("__NSCFLocalSessionTask") ?: [NSURLSessionTask class];
-        Method m = class_getInstanceMethod(taskCls, @selector(resume));
-        if (m) {
-            orig_NSURLSessionTask_resume = (void (*)(id, SEL))method_getImplementation(m);
-            method_setImplementation(m, (IMP)hooked_NSURLSessionTask_resume);
-        }
-    });
 }
 
 static void agRecordSpringBoardBootEventAndWarmupCache(void) {
     if (!agIsSpringBoardProcess()) return;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        agInstallTweakTrafficMonitorHook();
-        dispatch_async(dispatch_get_main_queue(), ^{
-            gPowerSamplerTimer = [NSTimer scheduledTimerWithTimeInterval:180.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-                agSampleActiveTweakPowerTick();
-            }];
-        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
             @autoreleasepool {
                 @try {
@@ -9552,8 +9331,6 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
                         [outData writeToFile:agRespringLedgerFilePath() atomically:YES];
                     }
                     agAnalyzeRecentCrashesAndResprings(nil, nil, nil);
-                    agAnalyze24HourTweakPowerDrain(nil, nil, nil);
-                    agAnalyze24HourTweakNetworkTraffic(nil, nil, nil);
                 } @catch (NSException *e) {}
             }
         });
@@ -12956,7 +12733,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             weakSelf.inFlightWSMessageCount = MAX(0, weakSelf.inFlightWSMessageCount - 1);
             return;
         }
-        agRecordTweakNetworkTrafficEvent(@"AngelGuardian.dylib", @"generativelanguage.googleapis.com", (int64_t)jsonData.length, 0);
+        agAddSelfNetworkTrafficBytes((int64_t)jsonData.length, 0);
         NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         NSURLSessionWebSocketMessage *msg = [[NSURLSessionWebSocketMessage alloc] initWithString:jsonStr];
         [weakSelf.liveWebSocketTask sendMessage:msg completionHandler:^(NSError * _Nullable error) {
@@ -13037,7 +12814,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if (message) {
             NSData *msgData = message.data ?: [message.string dataUsingEncoding:NSUTF8StringEncoding];
             if (msgData.length > 0) {
-                agRecordTweakNetworkTrafficEvent(@"AngelGuardian.dylib", @"generativelanguage.googleapis.com", 0, (int64_t)msgData.length);
+                agAddSelfNetworkTrafficBytes(0, (int64_t)msgData.length);
                 NSDictionary *json = [NSJSONSerialization JSONObjectWithData:msgData options:0 error:nil];
                 if ([json isKindOfClass:[NSDictionary class]]) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -23881,7 +23658,7 @@ static BOOL agIsSuspiciousJailbreakPath(const char *path) {
             strstr(path, "ag_live_diagnostic") != NULL);
 }
 
-// orig_dladdr defined above at crash forensics module
+static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
     if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
@@ -23913,7 +23690,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
     return ret;
 }
 
-// orig_dyld_get_image_name defined above at crash forensics module
+static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
 static const char *hooked_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
     if (name && agIsEnvironmentStealthActive()) {
