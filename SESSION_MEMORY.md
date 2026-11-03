@@ -995,3 +995,47 @@
 - 本地产物验证：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (552120 字节, SHA256: `a9f1dd604d4189a3e77fd2147f88d23bbc23053da6b0a3fab9b39a4be286c1de`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (364060 字节, SHA256: `b0cea47cae5e9769cad9f4c7aa9df723c1b0a0e21bcce594829ef42c6b450e52`)
+
+
+---
+
+## 2026-11-03: 第三批升级·❄️手机发烫元凶揪出与一键降温急救 + 架构规范对齐与 RootHide 路径适配 (Run #60 / #61)
+
+### 1. 修改要点 (4 大核心实现)
+1. **新增手机发烫元凶排查与一键降温急救引擎 (`agPerformThermalCooldownAndReport`)**:
+   - 动态加载 `IOKit.framework` 查询 `AppleSmartBattery` 实时获取电池实际温度（℃）、电压（mV）、瞬时电流（mA）并计算瞬时整机功率（W）；
+   - 遍历 SpringBoard 前台运行 App 与后台正在播放音频 App（`SBMediaController nowPlayingApplication`），自动纳入豁免白名单，保护前台应用及正在播放的音乐；
+   - 扫描后台高耗电 App 进程列表，逐一发送 `SIGKILL` 终止后台偷跑进程；
+   - 触发系统底层内存高压缓解通知与 `malloc_zone_pressure_relief(malloc_default_zone(), 0)` 全局运存回收；
+   - 屏幕峰值背光微降保护：若当前屏幕背光超过 65%，平滑下调 15% 峰值亮度减轻屏幕高发热；
+   - 严格遵循 `@autoreleasepool` 外部强引用赋值铁律（`gCachedThermalPillStr`, `gCachedThermalCardStr`, `gCachedThermalSpeechStr`），保证 100% 线程安全无野指针；
+   - 生成三维诊断报告：浮窗 Pill、卡片详情 Card、语音播报 Speech。
+2. **本地指令拦截与分发路由打通**:
+   - 在 `tryExecuteDirectLocalCommand:` 中新增 `7F. ❄️ 手机发烫元凶排查与一键降温急救`，匹配关键词（降温/退烧/好烫/发烫/发热/太烫/过热/谁在占cpu/哪个进程在发烫），派发 action `{"type": "thermal_cooldown"}`；
+   - 在 `isSystemDiagQuery` 和 `isPureStatusQuery`（共 3 处）加入降温发烫关键词豁免，防止误触发 AI 联网打断；
+   - 在 `executeActionDictionary:` 中实现 `thermal_cooldown` 动作派发器。
+3. **Gemini 与 OpenAI 双引擎联网工具拦截**:
+   - 在 `handleIncomingWebSocketJSON:` 中，拦截包含“发烫/发热/降温/过热”的 `google_search` 工具调用，直接派发本地 `thermal_cooldown` 诊断并返回本机实测报告，阻断云端通用搜索与幻觉。
+4. **Tweak 架构名称规范化与 RootHide 编译兼容**:
+   - `Makefile` 对齐：`TWEAK_NAME = AngelGuardian`（产出 `AngelGuardian.dylib`），双架构 CFLAGS/LDFLAGS 条件适配；
+   - 新增 `AngelGuardian.plist` 确保 Theos 打包时正确读取过滤配置；
+   - 解决 RootHide 模式下 `roothide.h` 重载兼容性问题（`jbroot` / `rootfs` 支持 Objective-C `NSString*` 与 C `const char*` 双重载，并通过宏兼容 `jbrootpath` / `rootfspath`）。
+
+### 2. 六文件镜像 100% 字节完全一致
+- 镜像文件列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+- 单文件大小：1,428,814 字节
+- SHA256 校验和：`1143d6f4d8327ba6d6a586db7c5ec8ba6c56235c64183cbd3d1aaf0009e3445c`
+
+### 3. CI 构建与产物
+- 提交哈希：`eab36fe`（先 `3add9f3`，修复 roothide 路径重载后为 `eab36fe`）
+- GitHub Actions CI Run #61 (ID: 41623820283) - 双架构构建 100% 成功
+- 产物包结构：标准纯 XZ 格式 (`debian-binary`, `control.tar.xz`, `data.tar.xz`，0% Zstandard)
+- 本地产物验证：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (564,204 字节, SHA256: `1f4cd4177e082853ecd0e0e87b24011fc521015ba7ecbdcef25d5e13d46356ca`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (363,036 字节, SHA256: `478e1147fc9dcbf6ae124edb0482ea39466955bb783fc93c523068e027a582a5`)
