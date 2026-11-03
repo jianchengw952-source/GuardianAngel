@@ -24986,13 +24986,16 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
                 objc_setAssociatedObject(self, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 return origCoord;
             }
-            static SEL sSetRefSel = NULL;
-            static dispatch_once_t onceToken;
-            dispatch_once(&onceToken, ^{
-                sSetRefSel = sel_registerName("setReferenceFrame:");
-            });
-            if ([self respondsToSelector:sSetRefSel]) {
-                ((void(*)(id, SEL, int))objc_msgSend)(self, sSetRefSel, 1);
+            // 仅在开启「防检测开关」时才修改内部 ReferenceFrame 标记
+            if (agIsAntiDetectionShieldActive()) {
+                static SEL sSetRefSel = NULL;
+                static dispatch_once_t onceToken;
+                dispatch_once(&onceToken, ^{
+                    sSetRefSel = sel_registerName("setReferenceFrame:");
+                });
+                if ([self respondsToSelector:sSetRefSel]) {
+                    ((void(*)(id, SEL, int))objc_msgSend)(self, sSetRefSel, 1);
+                }
             }
             return CLLocationCoordinate2DMake(tel.lat, tel.lon);
         }
@@ -25397,28 +25400,32 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
                 }
                 return raw;
             }
-            double spd = (tel.speed > 0.0) ? tel.speed : 0.0;
-            double crs = (tel.course >= 0.0) ? tel.course : -1.0;
 
+            // 1. 纯定位模式：只替换核心经纬度（若处于步行/驾车移动中则同步速度与航向）
             raw.coordinate.latitude = tel.lat;
             raw.coordinate.longitude = tel.lon;
             raw.rawCoordinate.latitude = tel.lat;
             raw.rawCoordinate.longitude = tel.lon;
-            raw.horizontalAccuracy = tel.hAcc;
-            raw.altitude = tel.alt;
-            raw.ellipsoidalAltitude = tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
-            raw.verticalAccuracy = tel.vAcc;
-            raw.speed = spd;
-            raw.course = crs;
-            raw.rawCourse = crs;
-            raw.referenceFrame = 1;
-            raw.rawReferenceFrame = 1;
-            if (raw.type <= 0 || raw.type > 1) raw.type = 1;
+            if (tel.speed > 0.0) {
+                raw.speed = tel.speed;
+                raw.course = tel.course;
+                raw.rawCourse = tel.course;
+            }
             if (raw.timestamp <= 0.0) {
                 raw.timestamp = CFAbsoluteTimeGetCurrent();
             }
 
+            // 2. 防检测参数伪装：严格仅在开启「防检测开关 (shieldOn)」时才生效！
             if (shieldOn) {
+                double spd = (tel.speed > 0.0) ? tel.speed : 0.0;
+                double crs = (tel.course >= 0.0) ? tel.course : -1.0;
+                raw.horizontalAccuracy = tel.hAcc;
+                raw.altitude = tel.alt;
+                raw.ellipsoidalAltitude = tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
+                raw.verticalAccuracy = tel.vAcc;
+                raw.speed = spd;
+                raw.course = crs;
+                raw.rawCourse = crs;
                 raw.suitability = 1;
                 raw.speedAccuracy = tel.spdAcc;
                 raw.courseAccuracy = (crs >= 0.0) ? tel.crsAcc : -1.0;
@@ -25494,9 +25501,12 @@ typedef struct {
 } AGMethodIMPBackup;
 
 static AGMethodIMPBackup gClientHookTable[] = {
+    // --- 前 3 项：纯越狱环境隐身 (随 envStealthActive 开启，保护越狱不外泄且 0 副作用) ---
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
+
+    // --- 防检测专属 Hook (isShieldOnly = YES，严格绑在「防检测开关」上，平时全部关闭还原) ---
     {"CMMotionActivity", "stationary", NO, YES, NULL, NULL, NULL},
     {"CMMotionActivity", "walking", NO, YES, NULL, NULL, NULL},
     {"CMMotionActivity", "automotive", NO, YES, NULL, NULL, NULL},
@@ -25506,26 +25516,27 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CMAltitudeData", "pressure", NO, YES, NULL, NULL, NULL},
     {"NEHotspotNetwork", "SSID", NO, YES, NULL, NULL, NULL},
     {"NEHotspotNetwork", "BSSID", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "altitude", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "ellipsoidalAltitude", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "horizontalAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "verticalAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "speedAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "courseAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "timestamp", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "description", NO, YES, NULL, NULL, NULL},
+    {"CLLocationManager", "accuracyAuthorization", NO, YES, NULL, NULL, NULL},
 
+    // --- 基础虚拟定位核心 Hook (isShieldOnly = NO，开启虚拟定位总开关时生效) ---
     {"CLLocation", "initWithLatitude:longitude:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "copyWithZone:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "coordinate", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "altitude", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "ellipsoidalAltitude", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "horizontalAccuracy", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "verticalAccuracy", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "course", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speed", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "speedAccuracy", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "courseAccuracy", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "timestamp", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "distanceFromLocation:", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "description", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "location", NO, NO, NULL, NULL, NULL},
-    {"CLLocationManager", "accuracyAuthorization", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "startUpdatingLocation", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "requestLocation", NO, NO, NULL, NULL, NULL},
     {"CLGeocoder", "reverseGeocodeLocation:completionHandler:", NO, NO, NULL, NULL, NULL},
@@ -25543,17 +25554,22 @@ static Method gDynMethod_CLLoc_clientLoc = NULL;
 static Method gDynMethod_AMap_detectRisk = NULL;
 
 static BOOL gHasInitializedObjCHooks = NO;
-static BOOL gHasInstalledCHooks = NO;
+static BOOL gHasInstalledEnvStealthCHooks = NO;
+static BOOL gHasInstalledWiFiShieldCHooks = NO;
 static os_unfair_lock gHookSyncLock = OS_UNFAIR_LOCK_INIT;
 
-static void agInstallAntiDetectionCHooksIfNeeded(void) {
-    if (gHasInstalledCHooks) return;
-    gHasInstalledCHooks = YES;
-
-    // 仅挂钩函数体大于 64 字节的标准 C 函数，严禁对 8~12 字节的极短 syscall/objc 桩函数 (access / class_getImageName) 使用 MSHookFunction 防止 16 字节跳板越界引发 CPU 100% 死循环发烫！
+// 1. 纯越狱环境隐身 C-Hook（仅隐藏 .jbroot / ellekit / 插件自身，不碰任何网络与定位参数）
+static void agInstallEnvStealthCHooksIfNeeded(void) {
+    if (gHasInstalledEnvStealthCHooks) return;
+    gHasInstalledEnvStealthCHooks = YES;
     MSHookFunction((void *)dladdr, (void *)hooked_dladdr, (void **)&orig_dladdr);
     MSHookFunction((void *)_dyld_get_image_name, (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
+}
 
+// 2. 防检测专属 Wi-Fi C-Hook（严格仅在开启「防检测开关」时才挂载！）
+static void agInstallWiFiShieldCHooksIfNeeded(void) {
+    if (gHasInstalledWiFiShieldCHooks) return;
+    gHasInstalledWiFiShieldCHooks = YES;
     void *snHandle = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY);
     if (snHandle) {
         void *cnSym = dlsym(snHandle, "CNCopyCurrentNetworkInfo");
@@ -25755,8 +25771,11 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
     }
 
-    if (shieldActive || envStealthActive) {
-        agInstallAntiDetectionCHooksIfNeeded();
+    if (envStealthActive || shieldActive) {
+        agInstallEnvStealthCHooksIfNeeded();
+    }
+    if (shieldActive) {
+        agInstallWiFiShieldCHooksIfNeeded();
     }
     os_unfair_lock_unlock(&gHookSyncLock);
 
