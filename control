@@ -12,6 +12,7 @@ Description: 替代siri变成更强的智能助手
 Maintainer: 时光
 Author: 时光
 Section: Tweaks
+Icon: https://angel7758.duckdns.org:38080/icon.png
 Depends: mobilesubstrate | org.coolstar.libhooker | ellekit
 Replaces: com.custom.geminisirioverlay, com.custom.aisiri, com.custom.timeguardian
 Conflicts: com.custom.geminisirioverlay, com.custom.aisiri
