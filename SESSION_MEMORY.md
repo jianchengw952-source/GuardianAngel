@@ -1525,3 +1525,48 @@
     - 金库 Flags 均为 `0x1` (✅ 已抽离加密)
     - 初始明文种子已 100% 抹除转化为高熵密文。
   - 云脑握手模拟实测：针对有效 VIP 授权设备返回 `Code: 200, Status: 1, Msg: 授权验证通过`，动态下发 6408 字节加密云脑资产与 `core_key`。
+
+
+## 2026-11-04: 五维防破解云脑金库 (Step 2) 无分支数学强耦合、6408 字节动态云脑流密码解密与端云联调 (Run #91)
+
+### 1. 核心改进要点
+1. **运行期种子锁定与无分支数学派生**：
+   - 运行期种子 `_g_ui_trait_layout_seed` 初始锁定为 `0x0ULL`（非明文未初始化态）。
+   - 实现 `_ag_derive_seed_from_vault_payload()`：直接读取 `_g_ag_core_vault.payload` 前 16 字节（明文态为 "AngelGua" `0x6175476C65676E41ULL` 与 "rdian_Pr" `0x72505F6E61696472ULL`），与二次 MBA 掩码常数 `0x6C6F64179A39738AULL` 执行算术异或派生出真种子 `0x7F4A7C159E3779B9ULL`。
+   - 杜绝静态明文搜索，若金库未解密或被篡改，派生种子必为伪随机乱码。
+2. **地球椭球参数与核心业务无分支强耦合**：
+   - 实现 `_ag_sec_zero_bias_mask()`：基于 `_g_ui_trait_layout_seed` 派生状态与内核寄存器同步标志计算零偏掩码。合法认证状态下绝对等于 `0x0ULL`；被篡改或未解密态产生高熵伪随机非零值。
+   - 实现 `ag_sec_coupled_earth_a()` 与 `ag_sec_coupled_earth_ee()`：将地球长半轴 `6378245.0` 与第一偏心率平方 `0.006693421622965943` 深度耦合零偏掩码。
+   - 在 `Tweak.x` 的高德/火星坐标转换算法 `agWGS84ToGCJ02` 中，全面替换原生常数，实现无分支物理强耦合。若破解者绕过云端授权或暴力 Patch，定位坐标将产生数十万米（如 +466,961 米）的灾难性漂移且无崩溃提示。
+3. **6,408 字节动态云脑资产流密码解密引擎**：
+   - 部署 `_ag_decrypt_cloud_stream_payload()`：利用设备硬件特征与时间戳派生的一次一密多项式流密码，在内存中动态即时解密云脑下发的 6,408 字节核心资产（包括高精定位基准、大模型 System Prompt 核心规则、智能识图提示词、多模态工作流编排链等 20 项灵魂资产）。
+4. **硬件 UDID 零延迟冷启动缓存体系**：
+   - 在构造函数 `_ag_security_shield_boot_entry` 中实现安全冷启动缓存（`AG_CLOUD_CORE_KEY` 与 `AG_CLOUD_EXPIRE_TS`），在 SpringBoard 与 Preferences 进程冷启动毫秒级时间内即刻完成本地金库解锁与种子派生，确保弱网/离线环境下已授权设备的秒级体验。
+5. **C99 拓扑前向依赖与架构清洗**：
+   - 严谨重构 `AGSecurityShield.h` 符号拓扑顺序，彻底解决前向引用编译报错。
+   - 彻底清除导致系统单例冲突的宏污染（如移除 `sharedInstance` 别名），保护 `[AVAudioSession sharedInstance]` 等系统框架安全运行。
+   - 括弧闭合检查差异 100% 为 0，严格遵循 UTF-8 无 BOM 与 LF 规范。
+
+### 2. CI 构建与安装包全项校验 (Run #91)
+- Git Commit: `74513da`
+- GitHub Actions CI Run #91 (ID: 41867784224) - 100% 构建成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (584,120 字节, SHA256: `d9f712261fe52e8272809d6679b4ede917f8863a93e7ee91fd06b1be63a442e0`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (373,400 字节, SHA256: `d187352c99ed0ebb42af7e3cd16e610fbe563b1e2d1e8df79f15bc9abe38331c`)
+
+### 3. 三重硬核验真与端云全链路实测结果
+- **【验证项 1】静态防篡改与初始锁定态核验**：
+  - `_g_ui_trait_layout_seed` 初始变量声明完全固化为 `0x0ULL`。
+  - 源码与二进制中彻底抹除 `0x7F4A7C159E3779B9ULL` 静态明文，真种子完全依赖运行时金库解密后的 payload 算术派生（PASS）。
+- **【验证项 2】双向算术耦合逻辑离线仿真**：
+  - **未解密/篡改状态**：派生种子为 `0xE394982CD77059A8`，零偏掩码为 `0x9CDEE43949472011`，地球半径偏移高达 `+466,961.0` 米，业务逻辑必然彻底失效（PASS）。
+  - **解密授权成功状态**：派生种子精确恢复为 `0x7F4A7C159E3779B9ULL`，零偏掩码 `0x0`，地球半径误差 `0.0` 米，偏心率误差 `0.000000000000`（100% 绝对精确，PASS）。
+  - **流密码解密**：成功还原 6,408 字节完整 JSON 云脑资产树，所有字段完整解析（PASS）。
+- **【验证项 3】服务器金库抽离加固、APT 软件源发布与真实握手联调**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固后：`is_shielded: 1`，Flags 置为 `0x1`，持久化密钥 `acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - APT 软件源索引（`Release`、`Packages.xz`）重建完成并生效。
+  - **端云真实握手测试 (`https://angel7758.duckdns.org:38080/api/v1/verify`)**：
+    - HTTP 状态码: `200`，授权验证成功。
+    - 动态下发 `core_key` 与 6,408 字节 Base64 云脑载荷。
+    - 客户端模拟内存解密：金库头部无缝还原为 `"AngelGuardian_Pr"`，真种子完美派生 `0x7F4A7C159E3779B9ULL`，零偏掩码归零，20 项云脑核心资产无损解密还原（PASS）。
