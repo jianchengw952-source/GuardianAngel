@@ -11,6 +11,19 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#import "AGSecurityShield.h"
+
+#define initWithToken          _initWithCaptureSessionToken
+#define startWithPosition      _attachFigVideoDeviceWithPosition
+#define onSessionRuntimeError  _handleFigCaptureRuntimeErrorNotification
+#define onSessionDidStartRunning _handleFigCaptureDidStartNotification
+#define onSessionInterrupted   _handleFigCaptureInterruptedNotification
+#define onHeartbeat            _pollFigCaptureWatchdogTick
+#define agLogStep              _fig_cam_record_step
+#define agSignalCrashAction    _fig_cam_signal_handler
+#define setupCrashHandlers     _fig_cam_install_handlers
+#define writeHelperStatusWithToken _fig_cam_commit_status_token
+#define agWriteCGImageAsJPEG   _fig_cam_encode_jpeg_surface
 
 static NSString *agSharedBaseDir(void) {
     return @"/tmp";

@@ -81,71 +81,8 @@ typedef struct {
 } AGCLDaemonLocation;
 #pragma pack(pop)
 
-// ==================== 反风控符号重命名宏（消除所有敏感类名与选择器特征） ====================
-#define AGLocationSpoofManager                AGCoreSpatialCoordinator
-#define AGLocationSpoofSettingsViewController AGSpatialViewportController
-#define AGAppScopePickerViewController        AGApplicationScopeController
-#define AGGaodeTileOverlay                    AGVectorTileRenderOverlay
-#define GeminiAssistantManager                AGSystemVoiceCoordinator
-#define GeminiPassthroughWindow               AGSystemPassthroughWindow
-#define AngelGuardianSettingsViewController   AGSystemPreferencesController
-#define sharedSpoofer                         sharedCoordinator
-#define isSpoofingActive                      isSpatialActive
-#define _isSpoofingActive                     _isSpatialActive
-#define constructRealisticSpoofedLocation     constructSpatialEntry
-#define pinLocationWithCoordinate             updateSpatialPinWithCoordinate
-#define teleportImmediatelyToCurrentTarget    syncSpatialTargetImmediately
-#define resolvePlaceAndPin                    resolveSpatialRegion
-#define startCruisingToPlace                  beginSpatialRouteToRegion
-#define stopAndResetToRealLocation            restoreDefaultSpatialState
-#define enableAttendanceStealthPreset         applySpatialProtectionPreset
-#define pushSimulatedLocationToDaemonWithCourse publishSpatialEntryWithCourse
-#define currentSpoofAnnotation                currentSpatialAnnotation
-#define _currentSpoofAnnotation               _currentSpatialAnnotation
-#define masterSpoofSwitchChanged              masterSpatialSwitchChanged
-#define stealthShieldSwitchChanged            spatialProtectionSwitchChanged
-#define openLocationSpoofCenterTapped         openSpatialViewportTapped
-#define angelGuardianOpenPrefsModal           agOpenSystemPrefsModal
-#define simManager                            spatialBridgeObj
-#define _simManager                           _spatialBridgeObj
-#define isDaemonSimRunning                    isSpatialBridgeActive
-#define _isDaemonSimRunning                   _isSpatialBridgeActive
-#define onSimulationTick                      onSpatialSyncTick
-#define ssidInputField                        primaryTagInputField
-#define bssidInputField                       secondaryTagInputField
-#define customWiFiSwitchChanged               spatialTagSwitchChanged
-#define builtinFamousLandmarksGCJ02           agSpatialPresetRegions
-#define syncMasterStateFromPrefsAndRestartTimer agSyncSpatialCoordinatorState
-#define applyPreferencesAndRestartTimerIfNeeded agApplySpatialCoordinatorConfig
-#define onRealtimeLocTickUpdate               agOnSpatialDisplayTick
-#define confirmMapPinTapped                   agConfirmSpatialViewportPin
-#define restoreRealLocationTapped             agRestoreDefaultSpatialAction
-#define instantArriveTapped                   agCompleteSpatialRouteAction
-#define scopeModeSegChanged                   agSpatialScopeSegmentChanged
-#define moveModeSegChanged                    agSpatialMotionSegmentChanged
-#define wifiTextFieldEdited                   agSpatialTagFieldEdited
-#define persistSelectedApps                   agPersistSpatialScopeItems
-#define selectAttendancePreset                agApplyDefaultScopeItems
-#define updateLiveMapBlueDotAndRoute          agUpdateViewportIndicator
-#define gaodeTileOverlay                      vectorTileOverlay
-#define _gaodeTileOverlay                     _vectorTileOverlay
-#define baseWGS84Coord                        originSpatialCoord
-#define _baseWGS84Coord                       _originSpatialCoord
-#define currentWGS84Coord                     activeSpatialCoord
-#define _currentWGS84Coord                    _activeSpatialCoord
-#define targetWalkWGS84Coord                  destSpatialCoord
-#define _targetWalkWGS84Coord                 _destSpatialCoord
-#define cachedTickLocation                    cachedSpatialEntry
-#define _cachedTickLocation                   _cachedSpatialEntry
-#define AGInSituTranslationOverlay            _UIKeyboardSpatialOverlayWindow
-#define AGGlobalActionPillWindow              _UIStatusBarFloatingPillWindow
-#define AGLockScreenRootViewController        _UISystemBackdropViewController
-#define AGCardBgCanvasView                    _UIGlassBackdropCanvasView
-#define AGOrbCanvasView                       _UIGlassSphereIndicatorView
-#define AGWaveCanvasView                      _UIAudioWaveformRibbonView
-#define AGMiniSummonCanvasView                _UISystemApertureFluidPortalView
-#define AGScreenTranslationOverlay            _UISystemSubtitlesOverlayWindow
-#define AGStreamTranslateDelegate             _UINetworkStreamSessionDelegate
+// ==================== 接入五维防破解与反 AI 语义投毒护盾 ====================
+#import "AGSecurityShield.h"
 
 
 static BOOL agIsAntiDetectionShieldActive(void);
@@ -404,7 +341,8 @@ static void ensureSpringBoardTCCGranted(void) {
     dispatch_once(&onceToken, ^{
         void *tccHandle = dlopen(MyRootfsCPath("/System/Library/PrivateFrameworks/TCC.framework/TCC"), RTLD_LAZY);
         if (tccHandle) {
-            TCCAccessSetForBundleIdFunc setFunc = (TCCAccessSetForBundleIdFunc)dlsym(tccHandle, "TCCAccessSetForBundleId");
+            char tccSymBuf[32] = {0};
+            TCCAccessSetForBundleIdFunc setFunc = (TCCAccessSetForBundleIdFunc)dlsym(tccHandle, ag_enc_cstr_tcc_setbundle(tccSymBuf));
             if (setFunc) {
                 setFunc(CFSTR("kTCCServiceCamera"), CFSTR("com.apple.springboard"), true);
                 setFunc(CFSTR("kTCCServiceMicrophone"), CFSTR("com.apple.springboard"), true);
@@ -545,12 +483,12 @@ static uint32_t agHashBundleID(NSString *bundleID) {
     return (hash == 0) ? 1 : hash;
 }
 
-// 64位对称混淆掩码（消除 0xA5A5 明文魔数与 double 经纬度明文特征）
-static inline uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
-    uint64_t z = 0x9E3779B97F4A7C15ULL ^ ((uint64_t)channelSalt * 0xBF58476D1CE4E5B9ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
+// 64位 MBA 混合布尔算术 + 状态耦合混淆掩码（数学结果 100% 等价，彻底打断 IDA F5 与 AI 模式识别）
+AG_FORCE_INLINE uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
+    uint64_t z = AG_MBA_XOR64(0x9E3779B97F4A7C15ULL, ((uint64_t)channelSalt * 0xBF58476D1CE4E5B9ULL));
+    z = AG_MBA_XOR64(z, (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = AG_MBA_XOR64(z, (z >> 27)) * 0x94D049BB133111EBULL;
+    return AG_MBA_XOR64(AG_MBA_XOR64(z, (z >> 31)), _ag_sec_zero_bias_mask());
 }
 
 static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSInteger moveMode, BOOL shieldOn, NSInteger wifiMode, BOOL isMoving, double wgsLat, double wgsLon, double course, double speed, NSArray<NSString *> *targetApps) {
@@ -7412,7 +7350,8 @@ static void agExecuteWeChatCommandDict(NSDictionary *dict, NSInteger retryCount)
 
                 if ([feature containsString:@"pay"] || [feature containsString:@"receipt"] || [feature containsString:@"付"] || [feature containsString:@"收"]) {
                     BOOL handled = NO;
-                    Class payVCCls = objc_getClass("WCPayOfflinePayViewController");
+                    char wcPayClsBuf[36] = {0};
+                    Class payVCCls = objc_getClass(ag_enc_cstr_wcpay_vc(wcPayClsBuf));
                     if (payVCCls && nav) {
                         if (![nav.topViewController isKindOfClass:payVCCls]) {
                             UIViewController *payVC = [[payVCCls alloc] init];
@@ -9766,7 +9705,7 @@ static void agSpringBoardRadarHitCallback(CFNotificationCenterRef center, void *
                 }
                 if (!matchedAppName) {
                     NSDictionary *snap = nil;
-                    Class mgrClass = objc_getClass("AGSystemVoiceCoordinator");
+                    Class mgrClass = objc_getClass(AG_CLS_VOICE_COORD_CSTR);
                     if (mgrClass && [mgrClass respondsToSelector:@selector(sharedManager)]) {
                         id mgr = [mgrClass performSelector:@selector(sharedManager)];
                         if (mgr) {
@@ -21867,7 +21806,6 @@ static NSString *agInstantLocalPreviewForSegment(NSString *segment, NSInteger la
 }
 
 // ====== 最终确认替换块 2 开始（iOS 14-17 原生离线翻译 + 图层100%穿透不挡滑动 + 覆膜深浅/滑动延迟可调 + 直达设置） ======
-#define AGSharedTransSessionRouter _UINetworkStreamSessionRouter
 
 @interface UIApplication (AGPrefsURLRouter)
 - (BOOL)applicationOpenURL:(NSURL *)url;
@@ -24487,7 +24425,7 @@ static UIView *hooked_AGBuildModuleCard(AngelGuardianSettingsViewController *sel
 }
 
 __attribute__((constructor)) static void agInitNativeTranslationSettingsHook(void) {
-    Class cls = objc_getClass("AGSystemPreferencesController");
+    Class cls = objc_getClass(AG_CLS_PREFS_CTRL_CSTR);
     SEL sel = @selector(buildIndependentModuleAccordionCardForTab:originY:width:);
     if (cls && sel) {
         Method m = class_getInstanceMethod(cls, sel);
@@ -24501,7 +24439,7 @@ __attribute__((constructor)) static void agInitNativeTranslationSettingsHook(voi
 
 // ==================== 挂钩主界面与《设置》面板 ====================
 %group SpringBoardOverlayExtHooks
-%hook AGSystemVoiceCoordinator
+%hook _UISceneAudioGraphLayoutCoordinator
 
 - (void)setupWindowIfNeeded {
     %orig;
@@ -24716,16 +24654,17 @@ static const char * const kAGNativeCLSymbolPool[] = {
     "CLProvideNetworkLocationUpdate"
 };
 
-static BOOL agIsSuspiciousJailbreakPath(const char *path) {
+AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
     if (!path) return NO;
-    return (strstr(path, "/var/jb") != NULL ||
-            strstr(path, ".jbroot") != NULL ||
+    char b1[12] = {0}, b2[12] = {0}, b3[20] = {0}, b4[20] = {0}, b5[16] = {0}, b6[12] = {0};
+    return (strstr(path, ag_enc_cstr_var_jb(b1)) != NULL ||
+            strstr(path, ag_enc_cstr_jbroot(b2)) != NULL ||
             strstr(path, "/private/preboot/") != NULL ||
             strstr(path, "procursus") != NULL ||
-            strstr(path, "MobileSubstrate") != NULL ||
-            strstr(path, "DynamicLibraries") != NULL ||
-            strstr(path, "TweakInject") != NULL ||
-            strstr(path, "ellekit") != NULL ||
+            strstr(path, ag_enc_cstr_mobilesubstrate(b3)) != NULL ||
+            strstr(path, ag_enc_cstr_dynamiclibs(b4)) != NULL ||
+            strstr(path, ag_enc_cstr_tweakinject(b5)) != NULL ||
+            strstr(path, ag_enc_cstr_ellekit(b6)) != NULL ||
             strstr(path, "substitute") != NULL ||
             strstr(path, "libhooker") != NULL ||
             strstr(path, "Substrate") != NULL ||
@@ -24748,12 +24687,12 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
             shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
                           agIsSuspiciousJailbreakPath(info->dli_fname));
         } else {
-            // 未开启虚拟定位时：仅隐藏本插件自身与底层加载器，绝不干扰微信等 App 内的其他插件通过 dladdr 读取自身资源
+            char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
             shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
                           strstr(info->dli_fname, "AngelGuardian") != NULL ||
-                          strstr(info->dli_fname, "ellekit") != NULL ||
-                          strstr(info->dli_fname, "libroothide") != NULL ||
-                          strstr(info->dli_fname, "MobileSubstrate.dylib") != NULL);
+                          strstr(info->dli_fname, ag_enc_cstr_ellekit(bEk)) != NULL ||
+                          strstr(info->dli_fname, ag_enc_cstr_libroothide(bRh)) != NULL ||
+                          strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
         }
         if (shouldMask) {
             BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr);
@@ -25594,7 +25533,8 @@ static void agInstallWiFiShieldCHooksIfNeeded(void) {
     gHasInstalledWiFiShieldCHooks = YES;
     void *snHandle = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY);
     if (snHandle) {
-        void *cnSym = dlsym(snHandle, "CNCopyCurrentNetworkInfo");
+        char cnBuf[32] = {0};
+        void *cnSym = dlsym(snHandle, ag_enc_cstr_cncopy_wifi(cnBuf));
         if (cnSym) {
             MSHookFunction(cnSym, (void *)hooked_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
         }
@@ -25702,15 +25642,16 @@ static void agSyncClientHooksWithCurrentState(void) {
             }
         }
 
-        // 高德定位 SDK 专属风险检测属性归零 (钉钉/飞书/各大 OA 通用)
-        Class amapCls = objc_getClass("AMapLocationManager");
+        // 高德定位 SDK 专属风险检测属性归零 (栈内动态解密类名与选择器)
+        char amapClsBuf[24] = {0}, amapRiskBuf[32] = {0}, amapSetRiskBuf[32] = {0};
+        Class amapCls = objc_getClass(ag_enc_cstr_amap_mgr(amapClsBuf));
         if (amapCls) {
-            SEL selRisk = sel_registerName("detectRiskOfFakeLocation");
+            SEL selRisk = sel_registerName(ag_enc_cstr_amap_risk(amapRiskBuf));
             gDynMethod_AMap_detectRisk = class_getInstanceMethod(amapCls, selRisk);
             if (gDynMethod_AMap_detectRisk) {
                 gOrig_AMap_detectRisk = method_getImplementation(gDynMethod_AMap_detectRisk);
             }
-            SEL selSetRisk = sel_registerName("setDetectRiskOfFakeLocation:");
+            SEL selSetRisk = sel_registerName(ag_enc_cstr_amap_setrisk(amapSetRiskBuf));
             gDynMethod_AMap_setDetectRisk = class_getInstanceMethod(amapCls, selSetRisk);
             if (gDynMethod_AMap_setDetectRisk) {
                 gOrig_AMap_setDetectRisk = method_getImplementation(gDynMethod_AMap_setDetectRisk);
@@ -25886,9 +25827,15 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
             %init(SpringBoardOverlayExtHooks);
             %init(SpringBoardOnlyHooks);
 
+// 挂载反 AI 蜜罐诱饵引用（防止被链接器 dead_strip 剥离，诱导逆向 AI 锁定假验证函数）
+            if (!AG_OPAQUE_TRUE()) {
+                (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", 0x100);
+                (void)_validateDeviceUDIDHardwareLicenseToken(0x9E3779B9ULL);
+            }
             void *tccHandle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW);
             if (tccHandle) {
-                void *sym = dlsym(tccHandle, "TCCAccessPreflight");
+                char tccPfBuf[24] = {0};
+                void *sym = dlsym(tccHandle, ag_enc_cstr_tcc_preflight(tccPfBuf));
                 if (sym) {
                     MSHookFunction(sym, (void *)my_TCCAccessPreflight, (void **)&orig_TCCAccessPreflight);
                 }
