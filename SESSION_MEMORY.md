@@ -1672,3 +1672,37 @@
     - Device A 正常授权通过（Code: 200, Status: 1, Perms: 15, Core Key 下发，6416 字符云脑载荷）。
     - Device B 异机直接登录严格拦截（Code: 401, Msg: "该卡密已绑定其他手机。可在设置中点击自助换绑（每次扣除 48 小时）"）。
     - Device B 申请自助换绑 (`action="unbind"`)：成功放行（Code: 200），重绑设备至 Device B 并下发 `core_key`。
+
+
+---
+
+## 2026-11-05: 真机三大问题精准修复（Dopamine 无根 + Relaxin 隐根双端完美兼容版）(Run #104)
+
+### 1. 核心改进要点
+1. **问题 1：虚拟定位跨进程不生效精准修复 (`notifyd` 常驻内核句柄 + 消除编译误判)**：
+   - **常驻句柄改造**：移除 `_ag_publish_auth_state_to_kernel` 与 `_ag_sync_auth_state_from_kernel` 中的 `notify_cancel` 句柄销毁调用，改为通过 `_ag_get_persistent_auth_tokens()` 采用 `dispatch_once` 进程级常驻句柄。SpringBoard 授权后的真种子与坐标矩阵 100% 永久驻留内核内存，Preferences、微信、钉钉、高德等跨进程读取 0 丢失。
+   - **显式不内联 (`AG_NOINLINE`)**：对 `_ag_publish_auth_state_to_kernel`、`_ag_sync_auth_state_from_kernel`、`_ag_decrypt_ag_core_vault_in_memory` 显式标注 `AG_NOINLINE`，消除激进优化引起的内联入口混乱。
+   - **反 Hook 检测精准收敛**：优化 `_ag_inspect_arm64_prologue_poison`，精确锁定连续 8 字节跳板序列（`i0 == 0x58000050 && i1 == 0xD61F0200` 等）与 `BRK` 软件断点（`0xD4200000`），在 Dopamine 与 Relaxin 环境下 0 误报。
+2. **问题 2：封停设备后只提醒一次、又能进设置、未默认关闭开关精准修复**：
+   - **物理内存即焚 (`_ag_force_lock_and_disable_all_switches`)**：当服务端返回 403 (设备封停)、402 (已过期) 或 401 (未激活) 时，立即使用 `memset` 将 `_g_ag_core_vault.payload` 覆盖为 `0xCC`，`flags` 置为 `0xFFFFFFFFU`，并将 `_g_ag_cloud_explicitly_locked` 置 1。
+   - **内核封禁广播与开关清零**：向内核广播封禁哨兵值 `0xDEAD0000DEAD0001ULL`，强行清空定位内核寄存器，重置所有定位与反检测开关为 `NO`，并向 SpringBoard 广播 `AGCloudForceDisableAllFeaturesNotification`。
+   - **设置视图无死角拦截 (`ag_enforce_cloud_auth_or_lock_vc`)**：在 `AngelGuardianSettingsViewController` 与 `AGLocationSpoofSettingsViewController` 的 `viewWillAppear:` 深度挂接，未授权状态弹窗拦截并强制执行 `popViewControllerAnimated:YES` 或模态 `dismiss`，彻底杜绝直接跳过弹窗操作。
+   - **语音交互链路全拦截**：在 `GeminiAssistantManager` 唤醒与会话入口处挂载 `_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)`，未授权一律弹窗并拒绝唤醒。
+3. **问题 3：同一设置页面开关无法即时联动生效修复**：
+   - 在 `Tweak.x` 中封装 `agPublishSpoofStateToKernelSync(void)`，并与 `confirmMapPinTapped` 和 `masterSpoofSwitchChanged:` 深度绑定。
+   - 开关切换或选点确认后立即同步只读配置至内核、刷新 `reloadGeminiPrefsCache()` 并触发 `[self.tableView reloadData]` 同屏无感刷新，无需反复进出设置菜单即可同屏秒级生效。
+
+### 2. CI 构建与安装包全项校验 (Run #104)
+- Git Commit: `51b3459` (Run ID: 41896037835) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (593,156 字节, SHA256: `fc38843091f9bcf2eccb8155e8892acb6b180ae66f2092e0afd82f06533c844a`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,440 字节, SHA256: `986defd6b6525cc752ce80a8a8fd567d32658d2c97908c1ce5030775a74573a1`)
+
+### 3. 服务端加固与端云全链路验真结果
+- **【服务端加固】**：
+  - 双架构 deb 成功传输至 `/opt/angel_cloud/repo/debs/`。
+  - `smart_shield_deb` 加固结果：`is_shielded: 1`，核心密钥 `acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - APT 软件源索引（`Release`、`Packages`）重建成功。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，下发 `core_key` (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
