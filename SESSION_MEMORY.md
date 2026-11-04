@@ -1368,3 +1368,34 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,128 字节, SHA256: `7a660399c1b07f107209891128a1582e447ef613f9900f7ee1ff0e6b08a2589d`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,060 字节, SHA256: `d2f4751a27e3c98d449525a02ce9309345831ddc922f5f487985a7be6152f176`)
+---
+
+## 2026-11-04: 全量消除 loaders 明文与 4 项硬核二进制安全审计 100% 达成 (Run #82)
+
+### 1. 核心改进点
+1. **全量消除 loaders 列表中的越狱明文字符串**：
+   - 将 `agIsSystemDylibPath` 中的 `@"libroothide"`、`@"ellekit"`、`@"mobilesubstrate"` 替换为安全头文件中的栈内动态解密函数，彻底消除二进制常量区中残留的最后一处明文。
+2. **4 项硬核二进制安全审计 100% 达成**：
+   - **双架构与纯 XZ 封装**：Dopamine (arm64) 与 Relaxin (arm64e) 结构严格为 `debian-binary` + `control.tar.xz` + `data.tar.xz`。
+   - **nm 符号彻底抹除**：`_logos_method|agReadSpoof|agPublishSpoof|agExecuteWeChat|ensureSpringBoardTCC` 输出为 0 行（空）。
+   - **strings 常量区清零**：`TCCAccessPreflight|TCCAccessSetForBundleId|CNCopyCurrentNetworkInfo|WCPayOfflinePayViewController|detectRiskOfFakeLocation|libroothide` 输出为 0 行（空）。
+   - **类名系统私有伪装**：原敏感类名完全消失，全量伪装为 `_UIAccessibilityParagraphLayoutCoordinator`、`_UISceneAudioGraphLayoutCoordinator`、`_AVCaptureFigVideoSampleDiagnosticNode` 等苹果系统排版私有类。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,437,748 字节
+- SHA256 校验和：`1e73d1d0cf4c04969b24aa72c37c8656d8350def1cdd23aa3f2d6e57f5f5ce42`
+- 括号平衡校验：`{ brace: 0, paren: 0, bracket: 0 }` (100% PASS)
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `2335e21`
+- GitHub Actions CI Run #82 (ID: 41763546891) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,752 字节, SHA256: `53ba3237e3da25336f42d816e390687e16fafd327f22fe6edd55e10ee80cd921`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,216 字节, SHA256: `e1dac7ce8605eb7a50ba8a4a384090c4eb023bf04dd8c677f1502feaa18e4acb`)
