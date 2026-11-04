@@ -1399,3 +1399,31 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,752 字节, SHA256: `53ba3237e3da25336f42d816e390687e16fafd327f22fe6edd55e10ee80cd921`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,216 字节, SHA256: `e1dac7ce8605eb7a50ba8a4a384090c4eb023bf04dd8c677f1502feaa18e4acb`)
+
+---
+
+## 2026-11-04: 更新 control 元数据与 Run #83 双架构构建校验 (守护天使 Pro测试版 v1.0.0)
+
+### 1. 核心改进点
+1. **control 与 layout/DEBIAN/control 同步更新**：
+   - 名称正式变更为：`守护天使 Pro测试版`
+   - 版本号重设为：`1.0.0`
+   - 作者与维护者设定为：`时光`
+   - 注入 5 大模块大白话 Description 描述（每行首部严格保留 1 个空格符，UTF-8 无 BOM，Unix LF 换行）。
+2. **五维防破解与符号剥离全量继承**：
+   - `AGSecurityShield.h`、接入护盾的 `Tweak.x`、`AngelCameraHelper.m` 以及包含 `SHIELD_CFLAGS` / `SHIELD_LDFLAGS` 的 `Makefile` 持续生效。
+3. **六大镜像文件 100% 字节级一致**：
+   - 字节大小：1,437,748 字节
+   - SHA256：`1e73d1d0cf4c04969b24aa72c37c8656d8350def1cdd23aa3f2d6e57f5f5ce42`
+
+### 2. CI 构建与安装包全项校验 (Run #83)
+- Git Commit: `e300f75`
+- GitHub Actions CI Run #83 (ID: 41768437188) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (562,548 字节, SHA256: `2157461740b0a98b2f72ded40e115b43625bc7e7679e5c13842e06bbaabf5226`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (366,880 字节, SHA256: `8cfaf7db9486bef1368f13063687c9088163a121c363e497b4b584c142d30c4e`)
+- dpkg-deb 元数据核验：
+  - Name: 守护天使 Pro测试版 (PASS)
+  - Version: 1.0.0 (PASS)
+  - Author: 时光 (PASS)
+  - 5 项大白话功能特性描述完好展示 (PASS)
