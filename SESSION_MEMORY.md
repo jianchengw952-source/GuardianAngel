@@ -1713,3 +1713,16 @@
 2. **漏项 2 闭环**：在 `AGSecurityShield.h` 中实现 512 字节原始密文备份（`_s_vault_cipher_backup`）与动态回滚；封停时原地回滚为纯密文锁死，解封或输入新卡密免重启 0.1s 当场激活。
 3. **漏项 3 闭环**：设置页（`AngelGuardianSettingsViewController` 与 `AGLocationSpoofSettingsViewController`）与 `GeminiAssistantManager` 接收 `AGCloudForceDisableAllFeaturesNotification` 时，停用所有引擎并调用 `ag_enforce_cloud_auth_or_lock_vc(self)` 强弹窗拦截并回退菜单。
 4. **漏项 4 闭环**：在 `masterSpoofSwitchChanged:` 与 `confirmMapPinTapped` 中立即将 `AG_LocSpoof_Active` 置为 `@YES` 并触发 `[self.tableView reloadData]`，使「防止检测」开关即时解锁可点，同屏即开即用。
+
+5. **CI 构建与安装包全项校验 (Run #106 Perfect 封版)**：
+   - Git Commit: `4d7c7b7` (Run ID: 41899467434) - 100% 成功
+   - 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+     - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (595,188 字节, SHA256: `e9468a3ab5aafeefde780d350d532fdcde659a72e43e93b4b75b364ddced8f24`)
+     - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,804 字节, SHA256: `96d439515259b5ed5d564cbee11254fb07116730e8aa0f74752159fb63fa7183`)
+6. **服务端加固与端云全链路验真 (Step 5 Perfect)**：
+   - 双架构 deb 成功传输至 `/opt/angel_cloud/repo/debs/`。
+   - `smart_shield_deb` 加固结果：`is_shielded: 1`，核心密钥 `acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+   - APT 软件源索引（`Release`、`Packages`）重建成功。
+   - 端云联调实测：
+     - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，下发 `core_key` (PASS)。
+     - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，触发内存物理抹除与设置死锁阻断 (PASS)。
