@@ -3304,6 +3304,24 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 @implementation AGLocationSpoofSettingsViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
+    reloadGeminiPrefsCache();
+    [self.tableView reloadData];
+}
+
+- (void)stopSpoofing {
+    [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
+    agPublishSpoofStateToKernel();
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self stopSpoofing];
+    [self updateLiveMapBlueDotAndRoute];
+    [self.tableView reloadData];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"📍虚拟定位与防检测";
@@ -3327,6 +3345,11 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     [self.view addSubview:self.tableView];
 
     [self setupInteractiveMapHeader];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleForceLockDisableAllFeatures:)
+                                                 name:@"AGCloudForceDisableAllFeaturesNotification"
+                                               object:nil];
 
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     (__bridge const void *)(self),
@@ -3657,6 +3680,8 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     CLLocationCoordinate2D coord = self.mapView.centerCoordinate;
     NSString *name = self.previewPlaceName.length > 0 ? self.previewPlaceName : @"地图选点位置";
     [[AGLocationSpoofManager sharedSpoofer] pinLocationWithCoordinate:coord coordSystem:@"GCJ02" placeName:name];
+    agPublishSpoofStateToKernel();
+    reloadGeminiPrefsCache();
     [self updateLiveMapBlueDotAndRoute];
     [self.tableView reloadData];
 }
@@ -3955,11 +3980,14 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 - (void)masterSpoofSwitchChanged:(UISwitch *)sender {
     if (sender.isOn) {
         [self confirmMapPinTapped];
+        agPublishSpoofStateToKernel();
     } else {
         [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
+        agPublishSpoofStateToKernel();
         [self updateLiveMapBlueDotAndRoute];
-        [self.tableView reloadData];
     }
+    reloadGeminiPrefsCache();
+    [self.tableView reloadData];
 }
 
 - (void)scopeModeSegChanged:(UISegmentedControl *)seg {
@@ -10447,6 +10475,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         _audioPlayQueue = dispatch_queue_create("com.angelguardian.audioplayqueue", DISPATCH_QUEUE_SERIAL);
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioSessionInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioSessionRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleForceLockDisableAllFeatures:) name:@"AGCloudForceDisableAllFeaturesNotification" object:nil];
         _inProcessCIContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
         _synthesizer = [[AVSpeechSynthesizer alloc] init];
         _synthesizer.delegate = self;
@@ -10963,6 +10992,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         });
     }
     return self;
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self stopAllVoiceEngines];
+    [self dismissOverlay];
 }
 
 - (NSMutableString *)currentTabTranscript {
@@ -13255,6 +13289,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 - (void)startAdaptiveVoiceSessionForTab:(AGConfigTab)tab {
     if (!_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)) {
+        ag_present_cloud_license_center_alert(nil);
         return;
     }
     ensureSpringBoardTCCGranted();
@@ -19888,6 +19923,10 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
 }
 
 - (void)triggerFromSystemHook {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)) {
+        ag_present_cloud_license_center_alert(nil);
+        return;
+    }
     agWakeScreenBacklightIfNeeded();
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - self.lastTriggerTime < 0.45) return;
@@ -20701,7 +20740,17 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 
 @implementation AngelGuardianSettingsViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self reloadSettingsLayoutAnimated:YES];
+}
+
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"AGCloudForceDisableAllFeaturesNotification" object:nil];
     if (self.keyboardFrameObserver) {
         [[NSNotificationCenter defaultCenter] removeObserver:self.keyboardFrameObserver];
         self.keyboardFrameObserver = nil;
@@ -20736,6 +20785,11 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
             [self.overlayWindow _setSecure:NO];
         }
     }
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleForceLockDisableAllFeatures:)
+                                                 name:@"AGCloudForceDisableAllFeaturesNotification"
+                                               object:nil];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"保存并关闭" style:UIBarButtonItemStyleDone target:self action:@selector(saveAndDismissTapped)];
     closeItem.tintColor = [UIColor colorWithRed:0.35 green:0.92 blue:0.70 alpha:1.0];
