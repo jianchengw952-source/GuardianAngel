@@ -1088,9 +1088,6 @@ sIsInternalPrefsFileRead = YES;
         }
     }
     sIsInternalPrefsFileRead = NO;
-    // 磁盘 I/O 结束后再次刷新内核寄存器并置缓存失效，防止磁盘写入期间被 SpringBoard 定时器旧值穿插覆盖
-    agPublishSpoofStateToKernel(isActive, scopeMode, moveMode, shieldOn, wifiMode, isMoving, wgsLat, wgsLon, -1.0, 0.0, targetApps);
-    sForceInvalidateKernelCache = YES;
 
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)kAGPrefsChangedNotification,
@@ -2236,18 +2233,6 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
     self.isSpoofingActive = YES;
     self.cachedTickLocation = nil;
 
-    BOOL shieldOn = (p[@"AG_AntiDet_ShieldEnabled"] == nil) ? NO : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
-    NSInteger rawWiFi = p[@"AG_AntiDet_WiFiMode"] ? [p[@"AG_AntiDet_WiFiMode"] integerValue] : 1;
-    NSInteger wifiMode = shieldOn ? ((rawWiFi == 2) ? 2 : 1) : 0;
-    if (!shieldOn) {
-        sOUDriftLatM = 0.0;
-        sOUDriftLonM = 0.0;
-        sOUDriftAltM = 0.0;
-    }
-    agPublishSpoofStateToKernel(YES, scopeMode, moveMode, shieldOn, wifiMode, moving, self.currentWGS84Coord.latitude, self.currentWGS84Coord.longitude, self.currentCourse, (moving ? self.moveSpeedMetersPerSec : 0.0), targetApps);
-    if (wifiMode == 2) {
-        agPublishCustomWiFiToKernel(p[@"AG_AntiDet_FakeSSID"], p[@"AG_AntiDet_FakeBSSID"]);
-    }
 
     [self applyPreferencesAndRestartTimerIfNeeded];
     [self pushSimulatedLocationToDaemonWithCourse:self.currentCourse speed:(moving ? self.moveSpeedMetersPerSec : 0.0) forceRestart:YES];
@@ -2635,22 +2620,9 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 }
 
 - (void)onSimulationTick {
-    BOOL kActive = YES, kShield = NO;
-    NSInteger kScope = 0, kWiFi = 0;
-    sForceInvalidateKernelCache = YES;
-    if (agReadSpoofStateFromKernel(&kActive, &kScope, &kShield, &kWiFi, NULL, NULL, NULL, NULL, NULL)) {
-        NSDictionary *curP = agReadOnlyPrefs();
-        BOOL memActive = [curP[@"AG_LocSpoof_Active"] boolValue];
-        BOOL memShield = [curP[@"AG_AntiDet_ShieldEnabled"] boolValue];
-        NSInteger memScope = curP[@"AG_LocSpoof_ScopeMode"] ? [curP[@"AG_LocSpoof_ScopeMode"] integerValue] : 0;
-        if (!kActive || kActive != memActive || kShield != memShield || kScope != memScope) {
-            reloadGeminiPrefsCache();
-            if (agIsSpringBoardProcess() && gCachedPrefs.count > 0) {
-                NSString *sbPlistPath = MyJBPath(@"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist");
-                [gCachedPrefs writeToFile:sbPlistPath atomically:YES];
-                chmod([sbPlistPath UTF8String], 0666);
-            }
-        }
+    BOOL kActive = YES;
+    if (agReadSpoofStateFromKernel(&kActive, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) && !kActive) {
+        reloadGeminiPrefsCache();
     }
     NSDictionary *p = agReadOnlyPrefs();
     if (!self.isSpoofingActive || ![p[@"AG_LocSpoof_Active"] boolValue]) {
@@ -2971,10 +2943,6 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 - (void)enableAttendanceStealthPreset {
     reloadGeminiPrefsCache();
     NSMutableDictionary *p = loadGeminiPrefs();
-    if (![p[@"AG_LocSpoof_Active"] boolValue]) {
-        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚠️ 请先开启虚拟定位（如说：定位到XX），再开启防检测"];
-        return;
-    }
     p[@"AG_AntiDet_ShieldEnabled"] = @YES;
     p[@"AG_AntiDet_HideSimFlag"] = @YES;
     p[@"AG_AntiDet_WiFiMode"] = @1;
@@ -3602,29 +3570,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 - (void)onRealtimeLocTickUpdate {
     if (!self.isViewLoaded || !self.view.window) return;
     [self updateLiveMapBlueDotAndRoute];
-    NSDictionary *p = agReadOnlyPrefs();
-    BOOL curActive = [p[@"AG_LocSpoof_Active"] boolValue];
-    BOOL curShield = curActive && [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
-    static BOOL sLastActive = NO;
-    static BOOL sLastShield = NO;
-    static BOOL sHasInitState = NO;
-    NSMutableIndexSet *secs = [NSMutableIndexSet indexSetWithIndex:0];
-    if (!sHasInitState || curActive != sLastActive || curShield != sLastShield) {
-        sHasInitState = YES;
-        sLastActive = curActive;
-        sLastShield = curShield;
-        if (!self.ssidInputField.isFirstResponder && !self.bssidInputField.isFirstResponder) {
-            [secs addIndex:2];
-        }
-    }
-    [self.tableView reloadSections:secs withRowAnimation:UITableViewRowAnimationNone];
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    reloadGeminiPrefsCache();
-    [self updateLiveMapBlueDotAndRoute];
-    [self.tableView reloadData];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
@@ -13822,13 +13768,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                             @"toolResponse": @{ @"functionResponses": @[ @{ @"id": callId ?: @"", @"name": @"google_search", @"response": @{ @"result": resText, @"output": resText, @"status": @"success" } } ] }
                         }];
                         return;
-                    } else if ([sqLower containsString:@"anti-detection"] || [sqLower containsString:@"防检测"] || [sqLower containsString:@"房检测"] || [sqLower containsString:@"房间测"] || [sqLower containsString:@"防前彻"] || [sqLower containsString:@"防震测"]) {
-                        if ([sqLower containsString:@"记录"] || [sqLower containsString:@"雷达"]) {
-                            [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
-                        } else {
-                            [self tryExecuteDirectLocalCommand:searchQuery];
-                        }
-                        isActionCommand = YES;
                     } else if ([sqLower containsString:@"brightness"] || [sqLower containsString:@"亮度"]) {
                         [self tryExecuteDirectLocalCommand:searchQuery];
                         isActionCommand = YES;
@@ -14023,13 +13962,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 }];
                 [self sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
                 return;
-            } else if ([sqLower containsString:@"anti-detection"] || [sqLower containsString:@"防检测"] || [sqLower containsString:@"房检测"] || [sqLower containsString:@"房间测"] || [sqLower containsString:@"防前彻"] || [sqLower containsString:@"防震测"]) {
-                if ([sqLower containsString:@"记录"] || [sqLower containsString:@"雷达"]) {
-                    [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
-                } else {
-                    [self tryExecuteDirectLocalCommand:searchQuery];
-                }
-                isActionCommand = YES;
             } else if ([sqLower containsString:@"brightness"] || [sqLower containsString:@"亮度"]) {
                 [self tryExecuteDirectLocalCommand:searchQuery];
                 isActionCommand = YES;
@@ -15476,14 +15408,8 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 
     // 0.2 匹配任意含“然后 / 接着 / 再去”的多步复合连招（绝不再被后面的单步点击截胡！）
-    BOOL hasAntiDetWord = ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] ||
-                           [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
-                           [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间测"] ||
-                           [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"房间撤"] ||
-                           [cleanCmd containsString:@"网检车"] || [cleanCmd containsString:@"防前彻"] ||
-                           [cleanCmd containsString:@"防盗测"] || [cleanCmd containsString:@"防剪车"] ||
-                           [cleanCmd containsString:@"防震测"] || [cleanCmd containsString:@"防火検査"]);
-    BOOL isLocAndShieldCombo = (([cleanCmd containsString:@"定位"] || [cleanCmd containsString:@"位置"] || [cleanCmd containsString:@"丁维"]) && hasAntiDetWord);
+    BOOL isLocAndShieldCombo = (([cleanCmd containsString:@"定位"] || [cleanCmd containsString:@"位置"] || [cleanCmd containsString:@"丁维"]) &&
+                                ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] || [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] || [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"网检车"]));
     BOOL isWeChatCompoundCmd = ([cleanCmd containsString:@"微信"] &&
                                 ([cleanCmd containsString:@"找到"] || [cleanCmd containsString:@"找一下"] || [cleanCmd containsString:@"聊天"] || [cleanCmd containsString:@"对话"] || [cleanCmd containsString:@"发"] || [cleanCmd containsString:@"说"] || [cleanCmd containsString:@"留言"] || [cleanCmd containsString:@"未读"] || [cleanCmd containsString:@"扫"] || [cleanCmd containsString:@"付"] || [cleanCmd containsString:@"收"] || [cleanCmd containsString:@"圈"]));
     NSTextCheckingResult *chainMatch = (isLocAndShieldCombo || isWeChatCompoundCmd) ? nil : [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
@@ -15542,8 +15468,10 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
 
-    BOOL isRadarRecordQuery = ([cleanCmd containsString:@"记录"] || [cleanCmd containsString:@"雷达"] || [cleanCmd containsString:@"谁在查"] || [cleanCmd containsString:@"谁检测"]);
-    BOOL hasAntiDetIntent = (hasAntiDetWord && !isRadarRecordQuery);
+    BOOL hasAntiDetIntent = ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] ||
+                             [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
+                             [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] ||
+                             [cleanCmd containsString:@"网检车"]);
 
     // 支持语音直接保存收藏点（如：“把当前定位收藏为公司” / “把当前位置保存为家里”）
     NSRegularExpression *saveFavRe = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:当前|现在)?(?:的)?(?:虚拟)?(?:定位|位置)(?:收藏为|保存为|设为收藏|存为)([^，。！？,.!?\\s]+)" options:0 error:nil];
@@ -15607,12 +15535,12 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 
     // 优先匹配虚拟定位（支持“把定位改到XX然后把防检测打开”一句话连招，在定位落盘回调后自动开启防检测，绝不被覆盖！）
-    NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)|(?:开启|打开)?(?:虚拟)?(?:定位到|位置到))([^\n，。！？,!?、]+)" options:0 error:nil];
+    NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
     NSTextCheckingResult *locMatch = [locPinRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (locMatch && locMatch.numberOfRanges > 1) {
         NSString *targetPlace = [[cleanCmd substringWithRange:[locMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         // 若用户一句话连说了“把定位改到海口市把防检测打开”，剥离末尾的防检测指令词，提取纯净地名
-        NSRegularExpression *stripAntiDetRe = [NSRegularExpression regularExpressionWithPattern:@"(?:(?:然后|接着|再|并|同时).*|(?:帮我|给我)?(?:把|将|开启|打开|关闭)?(?:考勤|打卡)?(?:防检测|反检测|房检测|房检车|房间车|房间测|房间侧|房间撤|网检车|防前彻|防盗测|防剪车|防震测|防火検査).*)$" options:0 error:nil];
+        NSRegularExpression *stripAntiDetRe = [NSRegularExpression regularExpressionWithPattern:@"(?:然后|接着|再|并|同时)?(?:帮我|给我)?(?:把|将)?(?:考勤|打卡)?(?:防检测|反检测|房检测|房检车|房间车|房间侧|网检车).*$" options:0 error:nil];
         targetPlace = [[stripAntiDetRe stringByReplacingMatchesInString:targetPlace options:0 range:NSMakeRange(0, targetPlace.length) withTemplate:@""] stringByTrimmingCharactersInSet:trimSet];
         if ([targetPlace hasPrefix:@"的"] && targetPlace.length > 1) {
             targetPlace = [targetPlace substringFromIndex:1];
@@ -15633,9 +15561,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
 
     // 单独开启或关闭防检测保护（兼容“防检测 / 反检测 / 房检测 / 房检车 / 房间车 / 房间侧 / 网检车”）
     if (hasAntiDetIntent) {
-        BOOL turnOffShield = ([cleanCmd containsString:@"关"] || [cleanCmd containsString:@"退"] ||
-                              [cleanCmd containsString:@"取消"] || [cleanCmd containsString:@"管避"] ||
-                              [cleanCmd containsString:@"光波"]);
+        BOOL turnOffShield = ([cleanCmd containsString:@"关"] || [cleanCmd containsString:@"退"] || [cleanCmd containsString:@"取消"]);
         if (turnOffShield) {
             NSMutableDictionary *p = loadGeminiPrefs();
             p[@"AG_AntiDet_ShieldEnabled"] = @NO;
@@ -15899,8 +15825,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     // 7E. 🛡️ 查询近 24 小时越狱与定位检测雷达拦截记录
     if ([cmd containsString:@"雷达"] || [cmd containsString:@"检测记录"] || [cmd containsString:@"探测记录"] ||
         [cmd containsString:@"拦截记录"] || [cmd containsString:@"防检测记录"] || [cmd containsString:@"谁在查我"] ||
-        [cmd containsString:@"谁检测我"] || [cmd containsString:@"有没有软件检测"] || [cmd containsString:@"拦截情况"] ||
-        [cmd containsString:@"防止检测记录"] || (hasAntiDetWord && isRadarRecordQuery)) {
+        [cmd containsString:@"谁检测我"] || [cmd containsString:@"有没有软件检测"] || [cmd containsString:@"拦截情况"]) {
         [self executeActionDictionary:@{@"type": @"radar_intercept_report"}];
         return YES;
     }
@@ -25973,18 +25898,6 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
         if (isPreferences) {
             reloadGeminiPrefsCache();
-            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                            NULL,
-                                            agDarwinPrefsChangedCallback,
-                                            (__bridge CFStringRef)kAGLocMasterSyncNotification,
-                                            NULL,
-                                            CFNotificationSuspensionBehaviorDeliverImmediately);
-            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                            NULL,
-                                            agDarwinPrefsChangedCallback,
-                                            (__bridge CFStringRef)kAGPrefsChangedNotification,
-                                            NULL,
-                                            CFNotificationSuspensionBehaviorDeliverImmediately);
             %init(PreferencesOnlyHooks);
             return;
         }

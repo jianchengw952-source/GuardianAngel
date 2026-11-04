@@ -1240,3 +1240,28 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,860 字节, SHA256: `25ef9e0f3a406ea90df96b7be201b5f962dc248b6c460025667c90cd754516bd`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,232 字节, SHA256: `c408a9c2a42654a763db62c5e7139c50d106b32902944bebaed992c3dea05234`)
+---
+
+## 2026-11-04: 撤回 Run #77 修改，100% 无损回滚至 Run #76 稳定版本
+
+### 1. 回滚概述
+- 根据用户指令，撤回 Run #77 引入的 4 处修改（定时器竞态补丁、设置页防抖刷新、同音词截断正则、大模型 WebSocket 工具拦截）。
+- 代码基线 100% 精准回滚至 Run #76 (Commit: `28c287b`)。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,440,676 字节
+- SHA256 校验和：`0658185cf17522b7b7f84b01f6b16135c47b6cc2a89532d206b92068a63e86e9`
+- 括号平衡校验：`{ brace: 0, paren: 0, bracket: 0 }` (100% PASS)
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. 安装包同步与校验（Run #76 官方构建分发）
+- GitHub Actions CI Run #76 (ID: 41682031945, Commit: `28c287b`)
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (561,008 字节, SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,408 字节, SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
