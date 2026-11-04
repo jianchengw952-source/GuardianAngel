@@ -1620,3 +1620,55 @@
     - Device A 请求验证响应：`Code=200, Status=1, Perms=15`，下发 `core_key` 与 6416 字符云脑载荷 (PASS)。
     - Device B 异机直接登录：`Code=401, Msg=该卡密已绑定其他手机。可在设置中点击自助换绑（每次扣除 48 小时）`，严格拦截 (PASS)。
     - Device B 申请自助换绑 (`action="unbind"`)：`Code=200, Msg=授权验证通过`，下发 `core_key` 并将卡密绑定设备切换至 Device B (PASS)。
+
+
+## 2026-11-05: 五维防破解云脑金库 (Step 4 Final 终极收官) ARM64 函数头反 Hook 静默投毒 + 27 项符号深度伪装 + 生产全链路终极封版 (Run #99)
+
+### 1. 核心改进要点
+1. **ARM64 / ARM64e 函数头指令自检与“静默投毒”暗桩 (`_ag_verify_internal_code_integrity`)**：
+   - 兼容 PAC 指针签名剥离 (`ptrauth_strip` / 地址掩码)，对自有核心静态函数 (`_ag_decrypt_ag_core_vault_in_memory`、`_ag_perform_cloud_handshake_ex`、`_ag_publish_auth_state_to_kernel`) 入口前 3 条 32 位机器指令执行自检。
+   - 精准识别 LLDB/GDB 软件断点 (`BRK #imm`: `0xD4200000`)、Frida/Substrate 跳板 (`LDR X16/X17, #8`: `0x58000050/51` 与 `BR X16/X17`: `0xD61F0200/20`) 以及函数入口无条件远跳 (`B #offset`: `0x14000000`)。
+   - **静默投毒惩罚机制**：检出非法挂载或断点时，表面上解密函数依然返回 YES 麻痹逆向者，但底层自动将 `_g_ui_trait_layout_seed` 异或污染掩码 `0xDEAD10CC55AA55AAULL`（变为 `0xA1E76CD9CB9D2C13ULL`），导致零偏掩码非零、尾字节解密盐值变为 `0x13`（!= `0xB9`），私有类名解出乱码、四大业务模块一票否决全部阻断、地球半径产生 +153,002 米漂移且进程 0 崩溃！
+2. **27 项全局类名与坐标纠偏/内核通信高敏符号深度伪装**：
+   - 伪装表覆盖定位、语音、识屏、翻译四大业务的核心管理器与算法。
+   - `agWGS84ToGCJ02` -> `_ui_trait_project_source_to_display_space`
+   - `agGCJ02ToWGS84` -> `_ui_trait_project_display_to_source_space`
+   - `agTransformLat` -> `_ui_trait_eval_vertical_bezier_delta`
+   - `agTransformLon` -> `_ui_trait_eval_horizontal_bezier_delta`
+   - `agOutOfChina` -> `_ui_trait_is_outside_standard_viewport`
+   - `agKernelObfuscateMask` -> `_ui_trait_compute_raster_matrix_mask`
+   - `AGLocationSpoofManager` -> `_UIAccessibilityParagraphLayoutCoordinator`
+   - `GeminiAssistantManager` -> `_UISceneAudioGraphLayoutCoordinator`
+   - `AGScreenTranslationOverlay` -> `_UITextCanvasSubpixelRenderingView`
+   - `AGInSituTranslationOverlay` -> `_UIGestureEnvironmentTraitOverlayWindow`
+   - `AGGlobalActionPillWindow` -> `_UIStatusBarFloatingCapsuleAccessoryWindow`
+   - `AGAnnotation` -> `_MKMapItemSpatialClusterNode`
+   - `agPublishSpoofStateToKernel` -> `_ui_trait_publish_layout_matrix`
+   - `agReadSpoofStateFromKernel` -> `_ui_trait_read_layout_matrix`
+   - 以及 `agPublishCustomWiFiToKernel`、`agReadCustomWiFiFromKernel`、`agIsAntiDetectionShieldActive`、`agShouldSpoofCurrentProcess`、`agInstallAntiDetectionCHooksIfNeeded`、`agSyncClientHooksWithCurrentState`、`agSimulatedLocationFromCurrentState`、`agSpoofedWiFiDictionary`、`agExecuteWeChatCommandDict`、`agAnalyzeRecentCrashesAndResprings`、`agCurrentProcessName`、`agIsSpringBoardProcess`、`agIsGeneralAppProcess`。
+   - 彻底抹除所有高危内部 C 符号与 Logos 方法，二进制中仅保留苹果官方 UIKit/CoreGraphics 排版语义。
+
+### 2. CI 构建与安装包全项校验 (Run #99 终极封版)
+- Git Commit: `2ad5060` (Run ID: 41881880480) - 100% 构建成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (580,560 字节, SHA256: `e49c1704686d0eab93d4c0b2008b4036bb3765bb1bfe961e353feb7c72428ec2`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (378,112 字节, SHA256: `a282b42100fc26bb6b09c4601c22cfcbd2dc90dfb7e6d123cb1951ce7c65a652`)
+
+### 3. 三重终极收官验真结果
+- **【验证项 1】ARM64 指令头反 Hook / 反断点“静默投毒”实测**：
+  - 正常态：指令头未挂载，投毒掩码 `0x0ULL`，真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏掩码 `0x0ULL`，类名与动作前缀 100% 正常解密（PASS）。
+  - Frida 跳板挂载态（`LDR X16, #8; BR X16`）：触发投毒掩码 `0xDEAD10CC55AA55AAULL`，种子被污染为 `0xA1E76CD9CB9D2C13ULL`，尾字节密钥变为 `0x13`（!= `0xB9`），类名解密全乱码，零偏非零导致四大模块一票否决全部静默阻断，地球长半轴偏移 +153,002 米，偏心率平方漂移 +1.700000（PASS）。
+  - LLDB 软件断点态（`BRK #0`）：准确触发 `0xDEAD10CC55AA55AAULL` 投毒惩罚（PASS）。
+- **【验证项 2】27 项符号伪装与二进制物理清零审计**：
+  - 对解包提取的 `AngelGuardian.dylib`（2,688,416 字节）深度检索：
+    - `agWGS84ToGCJ02`、`agGCJ02ToWGS84`、`agTransformLat`、`agTransformLon`、`agOutOfChina`、`agKernelObfuscateMask`、`agPublishSpoofStateToKernel` 等 21 项 C 函数名匹配均为 0（100% 物理清零 PASS）。
+    - `_LTTranslator`、`_LTParagraphTranslationRequest`、`_LTTextTranslationRequest`、`TCCAccessPreflight`、`CNCopyCurrentNetworkInfo`、`WCPayOfflinePayViewController` 等系统敏感符号匹配均为 0（100% 物理清零 PASS）。
+    - 伪装符号核验：`_UIAccessibilityParagraphLayoutCoordinator` (2 matches)、`_UISceneAudioGraphLayoutCoordinator` (6 matches)、`_UITextCanvasSubpixelRenderingView` (2 matches) 成功作为 UIKit 伪装类注入二进制元数据。
+- **【验证项 3】服务端抽离加固、软件源发布与卡密激活/异机换绑端云联调**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：`is_shielded: 1`，持久化核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）重建完成。
+  - 端云联调实测：
+    - Device A 正常授权通过（Code: 200, Status: 1, Perms: 15, Core Key 下发，6416 字符云脑载荷）。
+    - Device B 异机直接登录严格拦截（Code: 401, Msg: "该卡密已绑定其他手机。可在设置中点击自助换绑（每次扣除 48 小时）"）。
+    - Device B 申请自助换绑 (`action="unbind"`)：成功放行（Code: 200），重绑设备至 Device B 并下发 `core_key`。
