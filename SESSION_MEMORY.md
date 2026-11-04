@@ -1570,3 +1570,53 @@
     - HTTP 状态码: `200`，授权验证成功。
     - 动态下发 `core_key` 与 6,408 字节 Base64 云脑载荷。
     - 客户端模拟内存解密：金库头部无缝还原为 `"AngelGuardian_Pr"`，真种子完美派生 `0x7F4A7C159E3779B9ULL`，零偏掩码归零，20 项云脑核心资产无损解密还原（PASS）。
+
+
+## 2026-11-04: 五维防破解云脑金库 (Step 3) 10 项核心业务资产本地空心化 + 四大模块权限位 (1/2/4/8) 联动 + 桌面卡密激活/自助换绑闭环 (Run #94)
+
+### 1. 核心改进要点
+1. **10 项核心业务资产“真种子密钥耦合栈解密” (Seed-Keyed Stack Decryption)**：
+   - 将系统私有翻译引擎核心类名（`_LTTranslator`、`_LTParagraphTranslationRequest`、`_LTTextTranslationRequest`）以及协议动作前缀（`[ACTION:`）在编译期以 `0xB9`（即真种子 `0x7F4A7C159E3779B9ULL` 的最低字节）作为异或盐值加密存储。
+   - 运行时解密函数动态传入 `(uint8_t)(_g_ui_trait_layout_seed & 0xFFU)`。未授权或金库被篡改时，最低字节非 `0xB9`，解密结果为乱码，`NSClassFromString` 必然返回 `nil`，核心业务彻底瘫痪。
+   - 授权通过后优先匹配服务端下发的 6,408 字节动态云脑载荷字典（`_g_ag_cloud_brain_dict`），实现核心业务规则与 Prompt 的云端热控接管。
+2. **四大业务模块权限位 (1/2/4/8) 正交门禁控制**：
+   - 定义模块权限常量：`AG_PERM_LIVE_VOICE` (1, 全双工语音对讲)、`AG_PERM_VIDEO_AI` (2, 视觉看物识图/识屏)、`AG_PERM_LOC_SPOOF` (4, 底层虚拟定位)、`AG_PERM_TRANSLATE` (8, 实时同传与划词翻译)。
+   - 在 `Tweak.x` 中将全部业务关键入口全面接入 `_ag_sec_feature_gate_allow(...)` 物理门禁：
+     - `agPublishSpoofStateToKernel` 接入 `AG_PERM_LOC_SPOOF`。
+     - `startAdaptiveVoiceSessionForTab` 接入 `AG_PERM_LIVE_VOICE`。
+     - `startCameraSession` / `startInProcessCameraCaptureWithToken` 接入 `AG_PERM_VIDEO_AI`。
+     - `agRawLTTranslatorInvoke` / `showTranslatorFloatingBox` / `startInSituTranslation` 接入 `AG_PERM_TRANSLATE`。
+   - 门禁同时校验 `_ag_sec_zero_bias_mask() == 0`，若有任意非法 Patch 或内存篡改，一票否决所有功能。
+3. **桌面原生卡密激活与自助换绑 (`action="unbind"`) 闭环**：
+   - 在 SpringBoard 桌面提示框与设置面板中集成卡密激活与自助换绑交互逻辑。
+   - 服务端数据表 `config` 开启 `sw_self_unbind = 1`，异机登录拦截返回 401 提示自助换绑，带 `action="unbind"` 请求则扣除时长并自动将卡密重定向绑定至新设备 UDID，完成无感迁移。
+
+### 2. CI 构建与安装包全项校验 (Run #94)
+- Git Commit: `f25f20b` (Run ID: 41876644984) - 100% 构建成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (578,484 字节, SHA256: `5408f51628f3f2536f28403f7bb0a8e4cf0fe5df36a363a9d5ccf2c6d4d02e45`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (376,776 字节, SHA256: `9f2089982046af6a06787f7b9affdc86e1a582a2511d90aede5d165cd10faed7`)
+
+### 3. 三重硬核验真与端云全链路实测结果
+- **【验证项 1】核心业务资产空心化与 0xB9 密钥耦合解密验真**：
+  - 对解包产物 `AngelGuardian.dylib` (2,688,416 字节) 深度检索：
+    - `_LTTranslator`：0 行匹配 (PASS - 物理清零)
+    - `_LTParagraphTranslationRequest`：0 行匹配 (PASS - 物理清零)
+    - `_LTTextTranslationRequest`：0 行匹配 (PASS - 物理清零)
+    - `TCCAccessPreflight`、`TCCAccessSetForBundleId`、`CNCopyCurrentNetworkInfo`、`WCPayOfflinePayViewController`、`detectRiskOfFakeLocation`、`libroothide`：均为 0 行匹配 (PASS)。
+  - 授权真种子 (`0x7F4A7C159E3779B9ULL`) 准确还原所有类名与前缀；锁定态 (`0x0ULL`) 与篡改态 (`0xE394982CD77059A8ULL`) 产生不可读乱码，`NSClassFromString` 100% 返回 `nil`。
+- **【验证项 2】四大模块权限位正交矩阵与防篡改硬拦截仿真**：
+  - 权限 15（全功能开启）：四大模块放行率 100%。
+  - 权限 4（仅定位）：定位放行，语音/视觉/翻译 100% 拦截。
+  - 权限 1（仅语音）：语音放行，视觉/定位/翻译 100% 拦截。
+  - 权限 3（语音+视觉）：语音与视觉放行，定位/翻译 100% 拦截。
+  - 权限 0（全部禁用）：四大模块 100% 拦截。
+  - 篡改状态仿真：当零偏掩码不为 0 时，即便权限位为 15，所有模块均强制返回 0（一票否决）。
+- **【验证项 3】服务端抽离加固、软件源发布与卡密激活/异机换绑端云联调**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：`is_shielded: 1`，持久化核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - APT 软件源索引（`Release`、`Packages.xz`）重建完成并生效。
+  - **端云真实握手测试 (`https://angel7758.duckdns.org:38080/api/v1/verify`)**：
+    - Device A 请求验证响应：`Code=200, Status=1, Perms=15`，下发 `core_key` 与 6416 字符云脑载荷 (PASS)。
+    - Device B 异机直接登录：`Code=401, Msg=该卡密已绑定其他手机。可在设置中点击自助换绑（每次扣除 48 小时）`，严格拦截 (PASS)。
+    - Device B 申请自助换绑 (`action="unbind"`)：`Code=200, Msg=授权验证通过`，下发 `core_key` 并将卡密绑定设备切换至 Device B (PASS)。
