@@ -1260,8 +1260,11 @@
   5. `D:\dopamine测试版本.txt`
   6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
 
-### 3. 安装包同步与校验（Run #76 官方构建分发）
-- GitHub Actions CI Run #76 (ID: 41682031945, Commit: `28c287b`)
+### 3. 安装包同步与校验（Run #78 回滚构建与 Run #76 官方构建双校验）
+- GitHub Actions CI Run #78 (ID: 41746970804, Commit: `0e2d07a`) - 100% 成功
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
-  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (561,008 字节, SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
-  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,408 字节, SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (560,848 字节, SHA256: `9ac59778d0312ac240e8dcb49995efe5f44d27995c7fec203e90e170dff653c0`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,468 字节, SHA256: `a115169ccdcc7535b1d798584e25261cad581a1648424c75f40d9fc356d2bc44`)
+- 历史基线 Run #76 校验对比（ID: 41682031945, Commit: `28c287b`）：
+  - Rootless: 561,008 字节 (SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
+  - RootHide: 365,408 字节 (SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
