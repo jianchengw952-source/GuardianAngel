@@ -86,82 +86,139 @@ AG_FORCE_INLINE NSString *_ag_stack_decrypt_nsstr(const uint8_t *enc, size_t len
 
 // ==================== 四、云端通讯密钥与预置高危敏感字符串加密表 ====================
 AG_FORCE_INLINE const char *ag_enc_cstr_cloud_verify_url(char buf[64]) {
-    const uint8_t e[] = {
-        _AG_XB('h',0,0x4A), _AG_XB('t',1,0x4A), _AG_XB('t',2,0x4A), _AG_XB('p',3,0x4A), _AG_XB('s',4,0x4A), _AG_XB(':',5,0x4A), _AG_XB('/',6,0x4A), _AG_XB('/',7,0x4A),
-        _AG_XB('a',8,0x4A), _AG_XB('n',9,0x4A), _AG_XB('g',10,0x4A), _AG_XB('e',11,0x4A), _AG_XB('l',12,0x4A), _AG_XB('7',13,0x4A), _AG_XB('7',14,0x4A), _AG_XB('5',15,0x4A), _AG_XB('8',16,0x4A),
-        _AG_XB('.',17,0x4A), _AG_XB('d',18,0x4A), _AG_XB('u',19,0x4A), _AG_XB('c',20,0x4A), _AG_XB('k',21,0x4A), _AG_XB('d',22,0x4A), _AG_XB('n',23,0x4A), _AG_XB('s',24,0x4A),
-        _AG_XB('.',25,0x4A), _AG_XB('o',26,0x4A), _AG_XB('r',27,0x4A), _AG_XB('g',28,0x4A), _AG_XB(':',29,0x4A), _AG_XB('3',30,0x4A), _AG_XB('8',31,0x4A), _AG_XB('0',32,0x4A), _AG_XB('8',33,0x4A), _AG_XB('0',34,0x4A),
-        _AG_XB('/',35,0x4A), _AG_XB('a',36,0x4A), _AG_XB('p',37,0x4A), _AG_XB('i',38,0x4A), _AG_XB('/',39,0x4A), _AG_XB('v',40,0x4A), _AG_XB('1',41,0x4A), _AG_XB('/',42,0x4A), _AG_XB('v',43,0x4A), _AG_XB('e',44,0x4A), _AG_XB('r',45,0x4A), _AG_XB('i',46,0x4A), _AG_XB('f',47,0x4A), _AG_XB('y',48,0x4A)
-    };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4A);
+    const uint8_t e[] = { _AG_XB('h',0,0x4a), _AG_XB('t',1,0x4a), _AG_XB('t',2,0x4a), _AG_XB('p',3,0x4a), _AG_XB('s',4,0x4a), _AG_XB(':',5,0x4a), _AG_XB('/',6,0x4a), _AG_XB('/',7,0x4a), _AG_XB('a',8,0x4a), _AG_XB('n',9,0x4a), _AG_XB('g',10,0x4a), _AG_XB('e',11,0x4a), _AG_XB('l',12,0x4a), _AG_XB('7',13,0x4a), _AG_XB('7',14,0x4a), _AG_XB('5',15,0x4a), _AG_XB('8',16,0x4a), _AG_XB('.',17,0x4a), _AG_XB('d',18,0x4a), _AG_XB('u',19,0x4a), _AG_XB('c',20,0x4a), _AG_XB('k',21,0x4a), _AG_XB('d',22,0x4a), _AG_XB('n',23,0x4a), _AG_XB('s',24,0x4a), _AG_XB('.',25,0x4a), _AG_XB('o',26,0x4a), _AG_XB('r',27,0x4a), _AG_XB('g',28,0x4a), _AG_XB(':',29,0x4a), _AG_XB('3',30,0x4a), _AG_XB('8',31,0x4a), _AG_XB('0',32,0x4a), _AG_XB('8',33,0x4a), _AG_XB('0',34,0x4a), _AG_XB('/',35,0x4a), _AG_XB('a',36,0x4a), _AG_XB('p',37,0x4a), _AG_XB('i',38,0x4a), _AG_XB('/',39,0x4a), _AG_XB('v',40,0x4a), _AG_XB('1',41,0x4a), _AG_XB('/',42,0x4a), _AG_XB('v',43,0x4a), _AG_XB('e',44,0x4a), _AG_XB('r',45,0x4a), _AG_XB('i',46,0x4a), _AG_XB('f',47,0x4a), _AG_XB('y',48,0x4a) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4a);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_stream_cipher_salt(char buf[32]) {
-    const uint8_t e[] = {
-        _AG_XB('A',0,0x6E), _AG_XB('N',1,0x6E), _AG_XB('G',2,0x6E), _AG_XB('E',3,0x6E), _AG_XB('L',4,0x6E), _AG_XB('_',5,0x6E),
-        _AG_XB('S',6,0x6E), _AG_XB('T',7,0x6E), _AG_XB('R',8,0x6E), _AG_XB('E',9,0x6E), _AG_XB('A',10,0x6E), _AG_XB('M',11,0x6E), _AG_XB('_',12,0x6E),
-        _AG_XB('K',13,0x6E), _AG_XB('E',14,0x6E), _AG_XB('Y',15,0x6E), _AG_XB('_',16,0x6E), _AG_XB('P',17,0x6E), _AG_XB('R',18,0x6E), _AG_XB('O',19,0x6E)
-    };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x6E);
+    const uint8_t e[] = { _AG_XB('A',0,0x6e), _AG_XB('N',1,0x6e), _AG_XB('G',2,0x6e), _AG_XB('E',3,0x6e), _AG_XB('L',4,0x6e), _AG_XB('_',5,0x6e), _AG_XB('S',6,0x6e), _AG_XB('T',7,0x6e), _AG_XB('R',8,0x6e), _AG_XB('E',9,0x6e), _AG_XB('A',10,0x6e), _AG_XB('M',11,0x6e), _AG_XB('_',12,0x6e), _AG_XB('K',13,0x6e), _AG_XB('E',14,0x6e), _AG_XB('Y',15,0x6e), _AG_XB('_',16,0x6e), _AG_XB('P',17,0x6e), _AG_XB('R',18,0x6e), _AG_XB('O',19,0x6e) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x6e);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_sign_salt(char buf[32]) {
-    const uint8_t e[] = {
-        _AG_XB('A',0,0x2C), _AG_XB('G',1,0x2C), _AG_XB('_',2,0x2C), _AG_XB('S',3,0x2C), _AG_XB('I',4,0x2C), _AG_XB('G',5,0x2C), _AG_XB('N',6,0x2C), _AG_XB('_',7,0x2C),
-        _AG_XB('S',8,0x2C), _AG_XB('A',9,0x2C), _AG_XB('L',10,0x2C), _AG_XB('T',11,0x2C), _AG_XB('_',12,0x2C), _AG_XB('2',13,0x2C), _AG_XB('0',14,0x2C), _AG_XB('2',15,0x2C), _AG_XB('6',16,0x2C),
-        _AG_XB('_',17,0x2C), _AG_XB('@',18,0x2C), _AG_XB('!',19,0x2C)
-    };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2C);
+    const uint8_t e[] = { _AG_XB('A',0,0x2c), _AG_XB('G',1,0x2c), _AG_XB('_',2,0x2c), _AG_XB('S',3,0x2c), _AG_XB('I',4,0x2c), _AG_XB('G',5,0x2c), _AG_XB('N',6,0x2c), _AG_XB('_',7,0x2c), _AG_XB('S',8,0x2c), _AG_XB('A',9,0x2c), _AG_XB('L',10,0x2c), _AG_XB('T',11,0x2c), _AG_XB('_',12,0x2c), _AG_XB('2',13,0x2c), _AG_XB('0',14,0x2c), _AG_XB('2',15,0x2c), _AG_XB('6',16,0x2c), _AG_XB('_',17,0x2c), _AG_XB('@',18,0x2c), _AG_XB('!',19,0x2c) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2c);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_server_host(char buf[48]) {
+    const uint8_t e[] = { _AG_XB('h',0,0x5a), _AG_XB('t',1,0x5a), _AG_XB('t',2,0x5a), _AG_XB('p',3,0x5a), _AG_XB('s',4,0x5a), _AG_XB(':',5,0x5a), _AG_XB('/',6,0x5a), _AG_XB('/',7,0x5a), _AG_XB('a',8,0x5a), _AG_XB('n',9,0x5a), _AG_XB('g',10,0x5a), _AG_XB('e',11,0x5a), _AG_XB('l',12,0x5a), _AG_XB('7',13,0x5a), _AG_XB('7',14,0x5a), _AG_XB('5',15,0x5a), _AG_XB('8',16,0x5a), _AG_XB('.',17,0x5a), _AG_XB('d',18,0x5a), _AG_XB('u',19,0x5a), _AG_XB('c',20,0x5a), _AG_XB('k',21,0x5a), _AG_XB('d',22,0x5a), _AG_XB('n',23,0x5a), _AG_XB('s',24,0x5a), _AG_XB('.',25,0x5a), _AG_XB('o',26,0x5a), _AG_XB('r',27,0x5a), _AG_XB('g',28,0x5a), _AG_XB(':',29,0x5a), _AG_XB('3',30,0x5a), _AG_XB('8',31,0x5a), _AG_XB('0',32,0x5a), _AG_XB('8',33,0x5a), _AG_XB('0',34,0x5a) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x5a);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_auth_path(char buf[24]) {
+    const uint8_t e[] = { _AG_XB('/',0,0x33), _AG_XB('a',1,0x33), _AG_XB('p',2,0x33), _AG_XB('i',3,0x33), _AG_XB('/',4,0x33), _AG_XB('v',5,0x33), _AG_XB('1',6,0x33), _AG_XB('/',7,0x33), _AG_XB('v',8,0x33), _AG_XB('e',9,0x33), _AG_XB('r',10,0x33), _AG_XB('i',11,0x33), _AG_XB('f',12,0x33), _AG_XB('y',13,0x33) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x33);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_var_jb(char buf[16]) {
     const uint8_t e[] = { _AG_XB('/',0,0x33), _AG_XB('v',1,0x33), _AG_XB('a',2,0x33), _AG_XB('r',3,0x33), _AG_XB('/',4,0x33), _AG_XB('j',5,0x33), _AG_XB('b',6,0x33) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x33);
 }
+
 AG_FORCE_INLINE const char *ag_enc_cstr_jbroot(char buf[16]) {
     const uint8_t e[] = { _AG_XB('.',0,0x47), _AG_XB('j',1,0x47), _AG_XB('b',2,0x47), _AG_XB('r',3,0x47), _AG_XB('o',4,0x47), _AG_XB('o',5,0x47), _AG_XB('t',6,0x47) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x47);
 }
+
 AG_FORCE_INLINE const char *ag_enc_cstr_ellekit(char buf[16]) {
     const uint8_t e[] = { _AG_XB('e',0,0x59), _AG_XB('l',1,0x59), _AG_XB('l',2,0x59), _AG_XB('e',3,0x59), _AG_XB('k',4,0x59), _AG_XB('i',5,0x59), _AG_XB('t',6,0x59) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x59);
 }
-AG_FORCE_INLINE const char *ag_enc_cstr_substrate(char buf[24]) {
+
+AG_FORCE_INLINE const char *ag_enc_cstr_libroothide(char buf[24]) {
+    const uint8_t e[] = { _AG_XB('l',0,0x2e), _AG_XB('i',1,0x2e), _AG_XB('b',2,0x2e), _AG_XB('r',3,0x2e), _AG_XB('o',4,0x2e), _AG_XB('o',5,0x2e), _AG_XB('t',6,0x2e), _AG_XB('h',7,0x2e), _AG_XB('i',8,0x2e), _AG_XB('d',9,0x2e), _AG_XB('e',10,0x2e) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2e);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_mobilesubstrate(char buf[24]) {
     const uint8_t e[] = { _AG_XB('M',0,0x61), _AG_XB('o',1,0x61), _AG_XB('b',2,0x61), _AG_XB('i',3,0x61), _AG_XB('l',4,0x61), _AG_XB('e',5,0x61), _AG_XB('S',6,0x61), _AG_XB('u',7,0x61), _AG_XB('b',8,0x61), _AG_XB('s',9,0x61), _AG_XB('t',10,0x61), _AG_XB('r',11,0x61), _AG_XB('a',12,0x61), _AG_XB('t',13,0x61), _AG_XB('e',14,0x61) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x61);
 }
+
+AG_FORCE_INLINE const char *ag_enc_cstr_dynamiclibs(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('D',0,0x3c), _AG_XB('y',1,0x3c), _AG_XB('n',2,0x3c), _AG_XB('a',3,0x3c), _AG_XB('m',4,0x3c), _AG_XB('i',5,0x3c), _AG_XB('c',6,0x3c), _AG_XB('L',7,0x3c), _AG_XB('i',8,0x3c), _AG_XB('b',9,0x3c), _AG_XB('r',10,0x3c), _AG_XB('a',11,0x3c), _AG_XB('r',12,0x3c), _AG_XB('i',13,0x3c), _AG_XB('e',14,0x3c), _AG_XB('s',15,0x3c) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3c);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_tweakinject(char buf[24]) {
+    const uint8_t e[] = { _AG_XB('T',0,0x45), _AG_XB('w',1,0x45), _AG_XB('e',2,0x45), _AG_XB('a',3,0x45), _AG_XB('k',4,0x45), _AG_XB('I',5,0x45), _AG_XB('n',6,0x45), _AG_XB('j',7,0x45), _AG_XB('e',8,0x45), _AG_XB('c',9,0x45), _AG_XB('t',10,0x45) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x45);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_tcc_preflight(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('T',0,0x51), _AG_XB('C',1,0x51), _AG_XB('C',2,0x51), _AG_XB('A',3,0x51), _AG_XB('c',4,0x51), _AG_XB('c',5,0x51), _AG_XB('e',6,0x51), _AG_XB('s',7,0x51), _AG_XB('s',8,0x51), _AG_XB('P',9,0x51), _AG_XB('r',10,0x51), _AG_XB('e',11,0x51), _AG_XB('f',12,0x51), _AG_XB('l',13,0x51), _AG_XB('i',14,0x51), _AG_XB('g',15,0x51), _AG_XB('h',16,0x51), _AG_XB('t',17,0x51) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x51);
+}
+
 AG_FORCE_INLINE const char *ag_enc_cstr_tcc_setbundle(char buf[32]) {
     const uint8_t e[] = { _AG_XB('T',0,0x72), _AG_XB('C',1,0x72), _AG_XB('C',2,0x72), _AG_XB('A',3,0x72), _AG_XB('c',4,0x72), _AG_XB('c',5,0x72), _AG_XB('e',6,0x72), _AG_XB('s',7,0x72), _AG_XB('s',8,0x72), _AG_XB('S',9,0x72), _AG_XB('e',10,0x72), _AG_XB('t',11,0x72), _AG_XB('F',12,0x72), _AG_XB('o',13,0x72), _AG_XB('r',14,0x72), _AG_XB('B',15,0x72), _AG_XB('u',16,0x72), _AG_XB('n',17,0x72), _AG_XB('d',18,0x72), _AG_XB('l',19,0x72), _AG_XB('e',20,0x72), _AG_XB('I',21,0x72), _AG_XB('d',22,0x72) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x72);
 }
+
+AG_FORCE_INLINE const char *ag_enc_cstr_cncopy_wifi(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('C',0,0x19), _AG_XB('N',1,0x19), _AG_XB('C',2,0x19), _AG_XB('o',3,0x19), _AG_XB('p',4,0x19), _AG_XB('y',5,0x19), _AG_XB('C',6,0x19), _AG_XB('u',7,0x19), _AG_XB('r',8,0x19), _AG_XB('r',9,0x19), _AG_XB('e',10,0x19), _AG_XB('n',11,0x19), _AG_XB('t',12,0x19), _AG_XB('N',13,0x19), _AG_XB('e',14,0x19), _AG_XB('t',15,0x19), _AG_XB('w',16,0x19), _AG_XB('o',17,0x19), _AG_XB('r',18,0x19), _AG_XB('k',19,0x19), _AG_XB('I',20,0x19), _AG_XB('n',21,0x19), _AG_XB('f',22,0x19), _AG_XB('o',23,0x19) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x19);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_amap_mgr(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('A',0,0x3d), _AG_XB('M',1,0x3d), _AG_XB('a',2,0x3d), _AG_XB('p',3,0x3d), _AG_XB('L',4,0x3d), _AG_XB('o',5,0x3d), _AG_XB('c',6,0x3d), _AG_XB('a',7,0x3d), _AG_XB('t',8,0x3d), _AG_XB('i',9,0x3d), _AG_XB('o',10,0x3d), _AG_XB('n',11,0x3d), _AG_XB('M',12,0x3d), _AG_XB('a',13,0x3d), _AG_XB('n',14,0x3d), _AG_XB('a',15,0x3d), _AG_XB('g',16,0x3d), _AG_XB('e',17,0x3d), _AG_XB('r',18,0x3d) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3d);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_amap_risk(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('d',0,0x44), _AG_XB('e',1,0x44), _AG_XB('t',2,0x44), _AG_XB('e',3,0x44), _AG_XB('c',4,0x44), _AG_XB('t',5,0x44), _AG_XB('R',6,0x44), _AG_XB('i',7,0x44), _AG_XB('s',8,0x44), _AG_XB('k',9,0x44), _AG_XB('O',10,0x44), _AG_XB('f',11,0x44), _AG_XB('F',12,0x44), _AG_XB('a',13,0x44), _AG_XB('k',14,0x44), _AG_XB('e',15,0x44), _AG_XB('L',16,0x44), _AG_XB('o',17,0x44), _AG_XB('c',18,0x44), _AG_XB('a',19,0x44), _AG_XB('t',20,0x44), _AG_XB('i',21,0x44), _AG_XB('o',22,0x44), _AG_XB('n',23,0x44) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x44);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_amap_setrisk(char buf[32]) {
+    const uint8_t e[] = { _AG_XB('s',0,0x52), _AG_XB('e',1,0x52), _AG_XB('t',2,0x52), _AG_XB('D',3,0x52), _AG_XB('e',4,0x52), _AG_XB('t',5,0x52), _AG_XB('e',6,0x52), _AG_XB('c',7,0x52), _AG_XB('t',8,0x52), _AG_XB('R',9,0x52), _AG_XB('i',10,0x52), _AG_XB('s',11,0x52), _AG_XB('k',12,0x52), _AG_XB('O',13,0x52), _AG_XB('f',14,0x52), _AG_XB('F',15,0x52), _AG_XB('a',16,0x52), _AG_XB('k',17,0x52), _AG_XB('e',18,0x52), _AG_XB('L',19,0x52), _AG_XB('o',20,0x52), _AG_XB('c',21,0x52), _AG_XB('a',22,0x52), _AG_XB('t',23,0x52), _AG_XB('i',24,0x52), _AG_XB('o',25,0x52), _AG_XB('n',26,0x52), _AG_XB(':',27,0x52) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x52);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wcpay_vc(char buf[36]) {
+    const uint8_t e[] = { _AG_XB('W',0,0x66), _AG_XB('C',1,0x66), _AG_XB('P',2,0x66), _AG_XB('a',3,0x66), _AG_XB('y',4,0x66), _AG_XB('O',5,0x66), _AG_XB('f',6,0x66), _AG_XB('f',7,0x66), _AG_XB('l',8,0x66), _AG_XB('i',9,0x66), _AG_XB('n',10,0x66), _AG_XB('e',11,0x66), _AG_XB('P',12,0x66), _AG_XB('a',13,0x66), _AG_XB('y',14,0x66), _AG_XB('V',15,0x66), _AG_XB('i',16,0x66), _AG_XB('e',17,0x66), _AG_XB('w',18,0x66), _AG_XB('C',19,0x66), _AG_XB('o',20,0x66), _AG_XB('n',21,0x66), _AG_XB('t',22,0x66), _AG_XB('r',23,0x66), _AG_XB('o',24,0x66), _AG_XB('l',25,0x66), _AG_XB('l',26,0x66), _AG_XB('e',27,0x66), _AG_XB('r',28,0x66) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x66);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_hmac_salt(char buf[32]) {
+    return ag_enc_cstr_sign_salt(buf);
+}
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_sim_software(void) {
     const uint8_t e[] = { _AG_XB('i',0,0x18), _AG_XB('s',1,0x18), _AG_XB('S',2,0x18), _AG_XB('i',3,0x18), _AG_XB('m',4,0x18), _AG_XB('u',5,0x18), _AG_XB('l',6,0x18), _AG_XB('a',7,0x18), _AG_XB('t',8,0x18), _AG_XB('e',9,0x18), _AG_XB('d',10,0x18), _AG_XB('B',11,0x18), _AG_XB('y',12,0x18), _AG_XB('S',13,0x18), _AG_XB('o',14,0x18), _AG_XB('f',15,0x18), _AG_XB('t',16,0x18), _AG_XB('w',17,0x18), _AG_XB('a',18,0x18), _AG_XB('r',19,0x18), _AG_XB('e',20,0x18) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x18);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_prod_accessory(void) {
     const uint8_t e[] = { _AG_XB('i',0,0x29), _AG_XB('s',1,0x29), _AG_XB('P',2,0x29), _AG_XB('r',3,0x29), _AG_XB('o',4,0x29), _AG_XB('d',5,0x29), _AG_XB('u',6,0x29), _AG_XB('c',7,0x29), _AG_XB('e',8,0x29), _AG_XB('d',9,0x29), _AG_XB('B',10,0x29), _AG_XB('y',11,0x29), _AG_XB('A',12,0x29), _AG_XB('c',13,0x29), _AG_XB('c',14,0x29), _AG_XB('e',15,0x29), _AG_XB('s',16,0x29), _AG_XB('s',17,0x29), _AG_XB('o',18,0x29), _AG_XB('r',19,0x29), _AG_XB('y',20,0x29) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x29);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_amap_cls(void) {
-    const uint8_t e[] = { _AG_XB('A',0,0x3D), _AG_XB('M',1,0x3D), _AG_XB('a',2,0x3D), _AG_XB('p',3,0x3D), _AG_XB('L',4,0x3D), _AG_XB('o',5,0x3D), _AG_XB('c',6,0x3D), _AG_XB('a',7,0x3D), _AG_XB('t',8,0x3D), _AG_XB('i',9,0x3D), _AG_XB('o',10,0x3D), _AG_XB('n',11,0x3D), _AG_XB('M',12,0x3D), _AG_XB('a',13,0x3D), _AG_XB('n',14,0x3D), _AG_XB('a',15,0x3D), _AG_XB('g',16,0x3D), _AG_XB('e',17,0x3D), _AG_XB('r',18,0x3D) };
-    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x3D);
+    const uint8_t e[] = { _AG_XB('A',0,0x3d), _AG_XB('M',1,0x3d), _AG_XB('a',2,0x3d), _AG_XB('p',3,0x3d), _AG_XB('L',4,0x3d), _AG_XB('o',5,0x3d), _AG_XB('c',6,0x3d), _AG_XB('a',7,0x3d), _AG_XB('t',8,0x3d), _AG_XB('i',9,0x3d), _AG_XB('o',10,0x3d), _AG_XB('n',11,0x3d), _AG_XB('M',12,0x3d), _AG_XB('a',13,0x3d), _AG_XB('n',14,0x3d), _AG_XB('a',15,0x3d), _AG_XB('g',16,0x3d), _AG_XB('e',17,0x3d), _AG_XB('r',18,0x3d) };
+    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x3d);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_amap_detect_sel(void) {
     const uint8_t e[] = { _AG_XB('d',0,0x44), _AG_XB('e',1,0x44), _AG_XB('t',2,0x44), _AG_XB('e',3,0x44), _AG_XB('c',4,0x44), _AG_XB('t',5,0x44), _AG_XB('R',6,0x44), _AG_XB('i',7,0x44), _AG_XB('s',8,0x44), _AG_XB('k',9,0x44), _AG_XB('O',10,0x44), _AG_XB('f',11,0x44), _AG_XB('F',12,0x44), _AG_XB('a',13,0x44), _AG_XB('k',14,0x44), _AG_XB('e',15,0x44), _AG_XB('L',16,0x44), _AG_XB('o',17,0x44), _AG_XB('c',18,0x44), _AG_XB('a',19,0x44), _AG_XB('t',20,0x44), _AG_XB('i',21,0x44), _AG_XB('o',22,0x44), _AG_XB('n',23,0x44) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x44);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_amap_setdetect_sel(void) {
     const uint8_t e[] = { _AG_XB('s',0,0x52), _AG_XB('e',1,0x52), _AG_XB('t',2,0x52), _AG_XB('D',3,0x52), _AG_XB('e',4,0x52), _AG_XB('t',5,0x52), _AG_XB('e',6,0x52), _AG_XB('c',7,0x52), _AG_XB('t',8,0x52), _AG_XB('R',9,0x52), _AG_XB('i',10,0x52), _AG_XB('s',11,0x52), _AG_XB('k',12,0x52), _AG_XB('O',13,0x52), _AG_XB('f',14,0x52), _AG_XB('F',15,0x52), _AG_XB('a',16,0x52), _AG_XB('k',17,0x52), _AG_XB('e',18,0x52), _AG_XB('L',19,0x52), _AG_XB('o',20,0x52), _AG_XB('c',21,0x52), _AG_XB('a',22,0x52), _AG_XB('t',23,0x52), _AG_XB('i',24,0x52), _AG_XB('o',25,0x52), _AG_XB('n',26,0x52), _AG_XB(':',27,0x52) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x52);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_wcpay_offline_vc(void) {
     const uint8_t e[] = { _AG_XB('W',0,0x66), _AG_XB('C',1,0x66), _AG_XB('P',2,0x66), _AG_XB('a',3,0x66), _AG_XB('y',4,0x66), _AG_XB('O',5,0x66), _AG_XB('f',6,0x66), _AG_XB('f',7,0x66), _AG_XB('l',8,0x66), _AG_XB('i',9,0x66), _AG_XB('n',10,0x66), _AG_XB('e',11,0x66), _AG_XB('P',12,0x66), _AG_XB('a',13,0x66), _AG_XB('y',14,0x66), _AG_XB('V',15,0x66), _AG_XB('i',16,0x66), _AG_XB('e',17,0x66), _AG_XB('w',18,0x66), _AG_XB('C',19,0x66), _AG_XB('o',20,0x66), _AG_XB('n',21,0x66), _AG_XB('t',22,0x66), _AG_XB('r',23,0x66), _AG_XB('o',24,0x66), _AG_XB('l',25,0x66), _AG_XB('l',26,0x66), _AG_XB('e',27,0x66), _AG_XB('r',28,0x66) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x66);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_wcpay_receive_vc(void) {
-    const uint8_t e[] = { _AG_XB('W',0,0x7B), _AG_XB('C',1,0x7B), _AG_XB('P',2,0x7B), _AG_XB('a',3,0x7B), _AG_XB('y',4,0x7B), _AG_XB('F',5,0x7B), _AG_XB('a',6,0x7B), _AG_XB('c',7,0x7B), _AG_XB('i',8,0x7B), _AG_XB('n',9,0x7B), _AG_XB('g',10,0x7B), _AG_XB('R',11,0x7B), _AG_XB('e',12,0x7B), _AG_XB('c',13,0x7B), _AG_XB('e',14,0x7B), _AG_XB('i',15,0x7B), _AG_XB('v',16,0x7B), _AG_XB('e',17,0x7B), _AG_XB('Q',18,0x7B), _AG_XB('R',19,0x7B), _AG_XB('C',20,0x7B), _AG_XB('o',21,0x7B), _AG_XB('d',22,0x7B), _AG_XB('e',23,0x7B), _AG_XB('V',24,0x7B), _AG_XB('i',25,0x7B), _AG_XB('e',26,0x7B), _AG_XB('w',27,0x7B), _AG_XB('C',28,0x7B), _AG_XB('o',29,0x7B), _AG_XB('n',30,0x7B), _AG_XB('t',31,0x7B), _AG_XB('r',32,0x7B), _AG_XB('o',33,0x7B), _AG_XB('l',34,0x7B), _AG_XB('l',35,0x7B), _AG_XB('e',36,0x7B), _AG_XB('r',37,0x7B) };
-    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x7B);
+    const uint8_t e[] = { _AG_XB('W',0,0x7b), _AG_XB('C',1,0x7b), _AG_XB('P',2,0x7b), _AG_XB('a',3,0x7b), _AG_XB('y',4,0x7b), _AG_XB('F',5,0x7b), _AG_XB('a',6,0x7b), _AG_XB('c',7,0x7b), _AG_XB('i',8,0x7b), _AG_XB('n',9,0x7b), _AG_XB('g',10,0x7b), _AG_XB('R',11,0x7b), _AG_XB('e',12,0x7b), _AG_XB('c',13,0x7b), _AG_XB('e',14,0x7b), _AG_XB('i',15,0x7b), _AG_XB('v',16,0x7b), _AG_XB('e',17,0x7b), _AG_XB('Q',18,0x7b), _AG_XB('R',19,0x7b), _AG_XB('C',20,0x7b), _AG_XB('o',21,0x7b), _AG_XB('d',22,0x7b), _AG_XB('e',23,0x7b), _AG_XB('V',24,0x7b), _AG_XB('i',25,0x7b), _AG_XB('e',26,0x7b), _AG_XB('w',27,0x7b), _AG_XB('C',28,0x7b), _AG_XB('o',29,0x7b), _AG_XB('n',30,0x7b), _AG_XB('t',31,0x7b), _AG_XB('r',32,0x7b), _AG_XB('o',33,0x7b), _AG_XB('l',34,0x7b), _AG_XB('l',35,0x7b), _AG_XB('e',36,0x7b), _AG_XB('r',37,0x7b) };
+    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x7b);
 }
+
 AG_FORCE_INLINE NSString *ag_enc_nsstr_wc_moments_vc(void) {
     const uint8_t e[] = { _AG_XB('W',0,0x85), _AG_XB('C',1,0x85), _AG_XB('T',2,0x85), _AG_XB('i',3,0x85), _AG_XB('m',4,0x85), _AG_XB('e',5,0x85), _AG_XB('L',6,0x85), _AG_XB('i',7,0x85), _AG_XB('n',8,0x85), _AG_XB('e',9,0x85), _AG_XB('V',10,0x85), _AG_XB('i',11,0x85), _AG_XB('e',12,0x85), _AG_XB('w',13,0x85), _AG_XB('C',14,0x85), _AG_XB('o',15,0x85), _AG_XB('n',16,0x85), _AG_XB('t',17,0x85), _AG_XB('r',18,0x85), _AG_XB('o',19,0x85), _AG_XB('l',20,0x85), _AG_XB('l',21,0x85), _AG_XB('e',22,0x85), _AG_XB('r',23,0x85) };
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x85);

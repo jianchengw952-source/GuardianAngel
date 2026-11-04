@@ -491,6 +491,22 @@ AG_FORCE_INLINE uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
     return AG_MBA_XOR64(AG_MBA_XOR64(z, (z >> 31)), _ag_sec_zero_bias_mask());
 }
 
+static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSInteger moveMode, BOOL shieldOn, NSInteger wifiMode, BOOL isMoving, double wgsLat, double wgsLon, double course, double speed, NSArray<NSString *> *targetApps);
+
+static void agPublishSpoofStateToKernelSync(void) {
+    NSDictionary *p = agReadOnlyPrefs();
+    BOOL isActive = [p[@"AG_LocSpoof_Active"] boolValue];
+    NSInteger scopeMode = [p[@"AG_LocSpoof_ScopeMode"] integerValue];
+    NSInteger moveMode = [p[@"AG_LocSpoof_MoveMode"] integerValue];
+    BOOL shieldOn = [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
+    NSInteger wifiMode = [p[@"AG_AntiDet_WiFiMode"] integerValue];
+    BOOL isMoving = [p[@"AG_LocSpoof_IsMoving"] boolValue];
+    double wgsLat = [p[@"AG_LocSpoof_Lat"] doubleValue];
+    double wgsLon = [p[@"AG_LocSpoof_Lon"] doubleValue];
+    NSArray *targetApps = [p[@"AG_LocSpoof_TargetApps"] isKindOfClass:[NSArray class]] ? p[@"AG_LocSpoof_TargetApps"] : @[];
+    agPublishSpoofStateToKernel(isActive, scopeMode, moveMode, shieldOn, wifiMode, isMoving, wgsLat, wgsLon, -1.0, 0.0, targetApps);
+}
+
 static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSInteger moveMode, BOOL shieldOn, NSInteger wifiMode, BOOL isMoving, double wgsLat, double wgsLon, double course, double speed, NSArray<NSString *> *targetApps) {
     static int sTokState = 0, sTokLat = 0, sTokLon = 0, sTokMotion = 0;
     static int sTokApps[16] = {0};
@@ -3313,7 +3329,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 - (void)stopSpoofing {
     [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
-    agPublishSpoofStateToKernel();
+    agPublishSpoofStateToKernelSync();
 }
 
 - (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
@@ -3680,7 +3696,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     CLLocationCoordinate2D coord = self.mapView.centerCoordinate;
     NSString *name = self.previewPlaceName.length > 0 ? self.previewPlaceName : @"地图选点位置";
     [[AGLocationSpoofManager sharedSpoofer] pinLocationWithCoordinate:coord coordSystem:@"GCJ02" placeName:name];
-    agPublishSpoofStateToKernel();
+    agPublishSpoofStateToKernelSync();
     reloadGeminiPrefsCache();
     [self updateLiveMapBlueDotAndRoute];
     [self.tableView reloadData];
@@ -3980,10 +3996,10 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 - (void)masterSpoofSwitchChanged:(UISwitch *)sender {
     if (sender.isOn) {
         [self confirmMapPinTapped];
-        agPublishSpoofStateToKernel();
+        agPublishSpoofStateToKernelSync();
     } else {
         [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
-        agPublishSpoofStateToKernel();
+        agPublishSpoofStateToKernelSync();
         [self updateLiveMapBlueDotAndRoute];
     }
     reloadGeminiPrefsCache();
