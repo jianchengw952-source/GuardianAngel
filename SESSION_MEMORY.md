@@ -1348,3 +1348,23 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,488 字节, SHA256: `d856a76b08e72275f7c4ab719cf3620ab0ebc0c15eed3df53f3c370620109f02`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (367,092 字节, SHA256: `51f57191955204fc14171713d654a3641855d58a475ec3b1b97114b5d8174f5f`)
+---
+
+## 2026-11-04: Makefile 注入五维防破解编译与链接剥离标志 (Run #81)
+
+### 1. 核心改进点
+1. **注入编译期段隔离与符号隐藏标志**：
+   - `SHIELD_CFLAGS = -fvisibility=hidden -fvisibility-inlines-hidden -fdata-sections -ffunction-sections`
+   - 全局强制将默认符号可见性设为 `hidden`，使插件内部 C 函数与内联函数在编译期不向外部导出符号表。
+2. **注入链接期物理抹除标志**：
+   - `SHIELD_LDFLAGS = -Wl,-x -Wl,-S`
+   - 物理抹除所有本地符号（包括 Logos 预处理生成的全部 `_logos_method$...` 局部函数符号）以及调试符号表，100% 保持 Objective-C 异常帧与 PAC 签名完整。
+3. **全目标双架构生效**：
+   - `AngelGuardian` (Tweak) 与 `AngelCameraHelper` (Tool) 同时注入 `SHIELD_CFLAGS` 与 `SHIELD_LDFLAGS`。
+
+### 2. CI 构建与安装包验证
+- Git Commit: `f5c67ca`
+- GitHub Actions CI Run #81 (ID: 41762938988) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,128 字节, SHA256: `7a660399c1b07f107209891128a1582e447ef613f9900f7ee1ff0e6b08a2589d`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,060 字节, SHA256: `d2f4751a27e3c98d449525a02ce9309345831ddc922f5f487985a7be6152f176`)
