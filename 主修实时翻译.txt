@@ -2620,8 +2620,9 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
 }
 
 - (void)onSimulationTick {
-    BOOL kActive = YES;
-    if (agReadSpoofStateFromKernel(&kActive, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) && !kActive) {
+    BOOL kActive = YES, kShield = NO;
+    sForceInvalidateKernelCache = YES;
+    if (agReadSpoofStateFromKernel(&kActive, NULL, &kShield, NULL, NULL, NULL, NULL, NULL, NULL) && (!kActive || kShield != [agReadOnlyPrefs()[@"AG_AntiDet_ShieldEnabled"] boolValue])) {
         reloadGeminiPrefsCache();
     }
     NSDictionary *p = agReadOnlyPrefs();
@@ -15468,10 +15469,13 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         return YES;
     }
 
-    BOOL hasAntiDetIntent = ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] ||
-                             [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
-                             [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] ||
-                             [cleanCmd containsString:@"网检车"]);
+    BOOL hasAntiDetIntent = (([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] ||
+                              [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] ||
+                              [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] ||
+                              [cleanCmd containsString:@"房间测"] || [cleanCmd containsString:@"防震测"] ||
+                              [cleanCmd containsString:@"防剪测"] || [cleanCmd containsString:@"防健测"] ||
+                              [cleanCmd containsString:@"防前彻"] || [cleanCmd containsString:@"网检车"]) &&
+                             ![cleanCmd containsString:@"记录"]);
 
     // 支持语音直接保存收藏点（如：“把当前定位收藏为公司” / “把当前位置保存为家里”）
     NSRegularExpression *saveFavRe = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:当前|现在)?(?:的)?(?:虚拟)?(?:定位|位置)(?:收藏为|保存为|设为收藏|存为)([^，。！？,.!?\\s]+)" options:0 error:nil];
@@ -15561,7 +15565,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
 
     // 单独开启或关闭防检测保护（兼容“防检测 / 反检测 / 房检测 / 房检车 / 房间车 / 房间侧 / 网检车”）
     if (hasAntiDetIntent) {
-        BOOL turnOffShield = ([cleanCmd containsString:@"关"] || [cleanCmd containsString:@"退"] || [cleanCmd containsString:@"取消"]);
+        BOOL turnOffShield = ([cleanCmd containsString:@"关"] || [cleanCmd containsString:@"退"] || [cleanCmd containsString:@"取消"] || [cleanCmd containsString:@"管闭"] || [cleanCmd containsString:@"管避"]);
         if (turnOffShield) {
             NSMutableDictionary *p = loadGeminiPrefs();
             p[@"AG_AntiDet_ShieldEnabled"] = @NO;
@@ -15842,6 +15846,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     // 8. 🧹 四大清理指令严格独立（①清理后台 / ②清理系统数据 / ③纯清理运存 / ④清理应用与游戏缓存垃圾）
     if ((([cmd containsString:@"清理"] || [cmd containsString:@"请你"] || [cmd containsString:@"关闭"] || [cmd containsString:@"清空"] || [cmd containsString:@"杀掉"] || [cmd containsString:@"退掉"] || [cmd containsString:@"清一下"]) && [cmd containsString:@"后台"]) ||
         [cmd containsString:@"清理好台"] || [cmd containsString:@"请你后台"]) {
+        self.lastCommittedUserVoiceQuery = cmd;
         [self executeActionDictionary:@{@"type": @"kill_background_apps"}];
         return YES;
     }
