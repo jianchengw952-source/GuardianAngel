@@ -1268,3 +1268,37 @@
 - 历史基线 Run #76 校验对比（ID: 41682031945, Commit: `28c287b`）：
   - Rootless: 561,008 字节 (SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
   - RootHide: 365,408 字节 (SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
+---
+
+## 2026-11-04: 最小化修复设置页防检测状态同步、清理后台分流与同音词识别 (Run #79)
+
+### 1. 核心改进点（极简 3 处修改 / 共 6 行代码）
+1. **解决设置中关闭防检测被 SpringBoard 定时器刷回开启**：
+   - 在 `-[AGLocationSpoofManager onSimulationTick]` 中，增加对内核防检测开关 `kShield` 的实时比对：`(!kActive || kShield != [agReadOnlyPrefs()[@"AG_AntiDet_ShieldEnabled"] boolValue])`。
+   - 当用户在《设置》中关闭防检测时，定时器立即感知并调用 `reloadGeminiPrefsCache()`，彻底杜绝拿旧内存状态将防检测开关刷回开启的 Bug。
+2. **解决“关闭后台/清理后台”被防串台硬锁误分流去清理缓存垃圾**：
+   - 在 `tryExecuteDirectLocalCommand:` 命中清理后台指令时，主动显式赋值 `self.lastCommittedUserVoiceQuery = cmd;`。
+   - 彻底避免执行操作字典 `executeActionDictionary:` 读到不含“后台”二字的云端语音错词（如“赶紧收邮台”）而触发防串台硬锁重定向去清理缓存垃圾。
+3. **补齐开启/关闭防检测同音词与关闭口令容错**：
+   - 补齐“房间测”、“防震测”、“防剪测”、“防健测”、“防前彻”等常见 ASR 误识别同音词。
+   - 增加 `&& ![cleanCmd containsString:@"记录"]`，杜绝用户在查询雷达拦截记录时误触发防检测开关。
+   - 增加关闭口令容错：“管闭”、“管避”。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,441,278 字节
+- SHA256 校验和：`cae642f7bab59d82faab314c6390fd85bd4dd6edacf2a18145bb9ae3aa109164`
+- 括号平衡校验：`{ brace: 0, paren: 0, bracket: 0 }` (100% PASS)
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `071a24f`
+- GitHub Actions CI Run #79 (ID: 41751054068) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (560,360 字节, SHA256: `21908353e938dd6e82b04bbd9f33f59057c497497bf8d441f39066c20662f686`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,508 字节, SHA256: `e51ce19d2bfab0573e5bed3d12d4b2b9b2d7c81a0595106befbdb74f9089c2ce`)
