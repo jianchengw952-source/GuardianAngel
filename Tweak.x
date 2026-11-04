@@ -8708,10 +8708,11 @@ static BOOL agIsHookLoaderOrSystemImage(NSString *pathOrName) {
         ([lower hasPrefix:@"/private/preboot/"] && ![lower containsString:@"dynamiclibraries"] && ![lower containsString:@"tweakinject"])) {
         return YES;
     }
+    char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
     NSArray<NSString *> *loaders = @[
-        @"ellekit", @"libsubstitute", @"substrateinserter", @"mobilesubstrate",
+        [NSString stringWithUTF8String:ag_enc_cstr_ellekit(bEk)], @"libsubstitute", @"substrateinserter", [NSString stringWithUTF8String:ag_enc_cstr_mobilesubstrate(bMs)],
         @"libhooker", @"libblackjack", @"cydiasubstrate", @"choicy.dylib",
-        @"libroothide", @"opainject", @"oldabi", @"cephei"
+        [NSString stringWithUTF8String:ag_enc_cstr_libroothide(bRh)], @"opainject", @"oldabi", @"cephei"
     ];
     for (NSString *ld in loaders) {
         if ([lower containsString:ld]) return YES;
