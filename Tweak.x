@@ -1648,8 +1648,8 @@ static double agTransformLon(double x, double y) {
 
 static CLLocationCoordinate2D agWGS84ToGCJ02(double wgsLat, double wgsLon) {
     if (agIsOutOfChina(wgsLat, wgsLon)) return CLLocationCoordinate2DMake(wgsLat, wgsLon);
-    const double a = 6378245.0;
-    const double ee = 0.00669342162296594323;
+    const double a = ag_sec_coupled_earth_a();
+    const double ee = ag_sec_coupled_earth_ee();
     double dLat = agTransformLat(wgsLon - 105.0, wgsLat - 35.0);
     double dLon = agTransformLon(wgsLon - 105.0, wgsLat - 35.0);
     double radLat = wgsLat / 180.0 * M_PI;
@@ -25886,7 +25886,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
 // 挂载反 AI 蜜罐诱饵引用（防止被链接器 dead_strip 剥离，诱导逆向 AI 锁定假验证函数）
             if (!AG_OPAQUE_TRUE()) {
-                (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", 0x100);
+                (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", NULL);
                 (void)_validateDeviceUDIDHardwareLicenseToken(0x9E3779B9ULL);
             }
             void *tccHandle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW);
