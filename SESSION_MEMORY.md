@@ -1201,3 +1201,42 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (561,008 字节, SHA256: `67426482df4cf3d5a98614560783d3e8057d445ec1aa683b5b159d79959f5935`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,408 字节, SHA256: `7a278ebc6a44ec423699e22e13ae2ad88c326ee626bc0fa9930268db7837b3ad`)
+
+---
+
+## 2026-11-04: 消除定时器竞态、设置页零闪烁刷新、同音词截断与工具拦截 (Run #77)
+
+### 1. 核心改进点
+1. **修改 1：消除 SpringBoard 定时器与《设置》之间的防检测开关竞态覆盖**：
+   - `saveGeminiPrefs` 磁盘 I/O 结束后二次调用 `agPublishSpoofStateToKernel` 刷新内核寄存器并置位 `sForceInvalidateKernelCache = YES`，防止磁盘写入期间被 SpringBoard 定时器旧值穿插覆盖；
+   - `syncMasterStateFromPrefsAndRestartTimer` 补齐防检测与 Wi-Fi 模式内核发布，清零未开启防检测时的残留漂移；
+   - `onSimulationTick` 实时校验内核与内存开关一致性，防止反弹；
+   - `enableAttendanceStealthPreset` 增加未开定位时的安全拦截提示（显示 ActionPill 提示需先开启定位）。
+2. **修改 2：《设置》页面仅在开关状态改变时同步刷新（0 闪烁、不打断输入）**：
+   - `onRealtimeLocTickUpdate` 比较当前与上次状态，仅在开关变化且用户未输入 Wi-Fi 时更新 Section 2，彻底杜绝输入中断与闪烁；
+   - 在 `viewWillAppear:` 中主动刷新；
+   - 在 `%ctor` 的 `if (isPreferences)` 注册 Darwin 跨进程通知监听，确保设置页面与 SpringBoard 实时同步。
+3. **修改 3：补齐同音词与连招地名截断正则**：
+   - 补充“房间车/房检车/房间测/房间撤/网检车/防前彻/防盗测/防剪车/防震测/防火検査”等同音词及“管避/光波”关闭同音词；
+   - 防检测意图中排除“记录/雷达”，杜绝“房间车记录”被误判为开启防检测；
+   - 升级 `locPinRegex` 与 `stripAntiDetRe` 连招地名剥离正则，精准剥离末尾防检测指令。
+4. **修改 4：大模型工具调用精准拦截**：
+   - 在 Gemini 与 OpenAI WebSocket 的 `handleIncomingWebSocketJSON` 中，精准拦截“anti-detection/防检测/房检测/房间测/防前彻/防震测”等网页搜索词，直接重定向为本地雷达报告或控制指令，严禁二次无意义联网搜索。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,446,502 字节
+- SHA256 校验和：`b0583af2eb88cb95bf97ecf0a9a90133e101e5e2f3c2d4eba09220baada97cc7`
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `5f6e5d3`
+- GitHub Actions CI Run #77 (ID: 41744714221) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,860 字节, SHA256: `25ef9e0f3a406ea90df96b7be201b5f962dc248b6c460025667c90cd754516bd`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (366,232 字节, SHA256: `c408a9c2a42654a763db62c5e7139c50d106b32902944bebaed992c3dea05234`)
