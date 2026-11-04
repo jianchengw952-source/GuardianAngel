@@ -1457,3 +1457,29 @@
   - Version: 1.0.0 (PASS)
   - Author: 时光 (PASS)
   - 6 项大白话功能特性与说明完整换行展示 (PASS)
+
+---
+
+## 2026-11-04: 天使之翼官方高清图标裁剪与 control Icon 字段注入 (Run #85)
+
+### 1. 核心改进点
+1. **高清天使图标裁剪生成**：
+   - 提取中心圆角图标主体（15% ~ 85% 区域），裁切掉外围多余深色背景，高质量下采样至标准 256x256 高清 PNG。
+   - 分别保存至项目根目录 `icon.png` 及本地工作区 `D:\双工具版本\icon.png`、`D:\双工具版本\CydiaIcon.png`。
+2. **Sileo / Zebra 图标元数据注入**：
+   - 在 `control` 与 `layout/DEBIAN/control` 中增加 `Icon: https://angel7758.duckdns.org:38080/icon.png` 字段，确保安装前详情预览与安装后管理列表均能显示天使之翼官方图标。
+3. **安全防护与镜像文件完备性**：
+   - `AGSecurityShield.h`、接入护盾的 `Tweak.x`、`AngelCameraHelper.m` 与剥离编译标志的 `Makefile` 持续生效。
+
+### 2. CI 构建与安装包全项校验 (Run #85)
+- Git Commit: `05dd14f`
+- GitHub Actions CI Run #85 (ID: 41776086381) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (563388 字节, SHA256: `e6a9b6a976d3cb6720a0b7ee066201e514a3fc6331e9989eb321fd416f0ded0d`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (367608 字节, SHA256: `508a8fa818fa2b4944b43883c9eb3446b9e6fbea4188fe6c955c0f1123ae9a1e`)
+- dpkg-deb 元数据核验：
+  - Name: 守护天使 Pro测试版 (PASS)
+  - Version: 1.0.0 (PASS)
+  - Author: 时光 (PASS)
+  - Icon: https://angel7758.duckdns.org:38080/icon.png (PASS)
+  - 6 项大白话功能特性与说明完整换行展示 (PASS)
