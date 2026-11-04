@@ -21381,6 +21381,48 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
             currentY += card.frame.size.height + 12.0;
         }
 
+        // 📦 底部官方软件源地址卡片（支持点击一键复制到剪贴板）
+        UIButton *repoCard = [UIButton buttonWithType:UIButtonTypeCustom];
+        repoCard.frame = CGRectMake(16, currentY, cardW, 64.0);
+        repoCard.backgroundColor = [UIColor colorWithRed:0.13 green:0.12 blue:0.22 alpha:1.0];
+        repoCard.layer.cornerRadius = 16.0;
+        repoCard.layer.borderWidth = 1.0;
+        repoCard.layer.borderColor = [UIColor colorWithRed:0.25 green:0.85 blue:1.00 alpha:0.45].CGColor;
+        [repoCard addTarget:self action:@selector(onCopyOfficialRepoURLTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self.accordionContainerView addSubview:repoCard];
+
+        UILabel *repoTitleLbl = [[UILabel alloc] initWithFrame:CGRectMake(14, 10, cardW - 105, 20)];
+        repoTitleLbl.text = @"📦 官方软件源地址 (点击一键复制)";
+        repoTitleLbl.textColor = [UIColor whiteColor];
+        repoTitleLbl.font = [UIFont boldSystemFontOfSize:13.5];
+        repoTitleLbl.userInteractionEnabled = NO;
+        [repoCard addSubview:repoTitleLbl];
+
+        UILabel *repoURLLbl = [[UILabel alloc] initWithFrame:CGRectMake(14, 34, cardW - 105, 20)];
+        repoURLLbl.text = @"https://angel7758.duckdns.org:38080";
+        repoURLLbl.textColor = [UIColor colorWithRed:0.35 green:0.92 blue:1.00 alpha:1.0];
+        repoURLLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+        repoURLLbl.adjustsFontSizeToFitWidth = YES;
+        repoURLLbl.minimumScaleFactor = 0.75;
+        repoURLLbl.userInteractionEnabled = NO;
+        [repoCard addSubview:repoURLLbl];
+
+        UILabel *copyBadgeLbl = [[UILabel alloc] initWithFrame:CGRectMake(cardW - 86, 18, 74, 28)];
+        copyBadgeLbl.tag = 98801;
+        copyBadgeLbl.text = @"📋 复制";
+        copyBadgeLbl.textAlignment = NSTextAlignmentCenter;
+        copyBadgeLbl.textColor = [UIColor colorWithRed:0.25 green:0.98 blue:0.68 alpha:1.0];
+        copyBadgeLbl.backgroundColor = [UIColor colorWithRed:0.15 green:0.85 blue:0.58 alpha:0.18];
+        copyBadgeLbl.font = [UIFont boldSystemFontOfSize:12.0];
+        copyBadgeLbl.layer.cornerRadius = 14.0;
+        copyBadgeLbl.layer.masksToBounds = YES;
+        copyBadgeLbl.layer.borderWidth = 0.8;
+        copyBadgeLbl.layer.borderColor = [UIColor colorWithRed:0.25 green:0.95 blue:0.68 alpha:0.65].CGColor;
+        copyBadgeLbl.userInteractionEnabled = NO;
+        [repoCard addSubview:copyBadgeLbl];
+
+        currentY += 76.0;
+
         CGRect f = self.accordionContainerView.frame;
         f.size.height = currentY;
         self.accordionContainerView.frame = f;
@@ -21394,6 +21436,20 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     } else {
         layoutBlock();
     }
+}
+
+- (void)onCopyOfficialRepoURLTapped:(UIButton *)sender {
+    [UIPasteboard generalPasteboard].string = @"https://angel7758.duckdns.org:38080";
+    UIImpactFeedbackGenerator *haptic = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [haptic impactOccurred];
+    UILabel *badge = (UILabel *)[sender viewWithTag:98801];
+    if (badge) {
+        badge.text = @"✅ 已复制";
+    }
+    [[AGGlobalActionPillWindow sharedPill] showActionPill:@"✅ 已复制源地址：https://angel7758.duckdns.org:38080"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (badge) badge.text = @"📋 复制";
+    });
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {

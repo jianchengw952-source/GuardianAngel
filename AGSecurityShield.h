@@ -370,4 +370,6 @@ static int _validateDeviceUDIDHardwareLicenseToken(uint64_t deviceSeed) {
 #define agInstallWiFiShieldCHooksIfNeeded     _ui_trait_attach_captive_network_callbacks
 #define agSyncClientHooksWithCurrentState     _ui_trait_synchronize_runtime_method_table
 
+#define onCopyOfficialRepoURLTapped           _uiSceneCopyTraitSourceEndpointTapped
+
 #endif /* AG_SECURITY_SHIELD_H */
