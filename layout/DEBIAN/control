@@ -1,10 +1,15 @@
 Package: com.custom.timeguardiansiri123
-Name: 时光守护siri123
-Version: 6.0.0
+Name: 守护天使 Pro测试版
+Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: 时光守护siri123 (TimeGuardian Siri 123) - 主修实时翻译 v6.0 Zero-Latency Pro + 微信跨进程直达 + 官方级全双工对讲视讯
-Maintainer: Custom
-Author: Custom
+Description: 守护天使 Pro测试版 - 一句话操控整台手机的全能AI管家
+ 1.【语音视频对话】真人级语音秒回、随时轻声打断，支持开摄像头看物识图与联网问答。
+ 2.一句话发微信、开扫一扫/付款码、淘宝搜商品自动比价点击、调音量亮度定闹钟。
+ 3.地图选点改定位、模拟走路开车、收藏打卡点与伪装Wi-Fi，自带防检测护盾。
+ 4.外文界面原位变中文（滑动自动重译），看外语视频实时出中文字幕（支持免Key离线秒译）。
+ 5.发烫一键降温；查超容电池真实健康度；手机自动注销或死机时，直接查出是哪个越狱插件搞的鬼，还能看24小时插件耗电和流量排行。
+Maintainer: 时光
+Author: 时光
 Section: Tweaks
 Depends: mobilesubstrate | org.coolstar.libhooker | ellekit
 Replaces: com.custom.geminisirioverlay, com.custom.aisiri, com.custom.timeguardian
