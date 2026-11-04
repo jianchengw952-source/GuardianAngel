@@ -806,14 +806,14 @@ static void _ag_security_shield_boot_entry(void) {
 #define GeminiPassthroughWindow               _UITextEffectsPassthroughHostingWindow
 #define AngelGuardianSettingsViewController   _UISceneDisplayTraitPreferencesController
 #define AGSystemPreferencesController         _UISceneDisplayTraitPreferencesController
-#define AGInSituTranslationOverlay            _UIKeyboardAutocorrectionBubbleWindow
-#define AGGlobalActionPillWindow              _UIStatusBarDynamicPillBannerWindow
+#define AGInSituTranslationOverlay           _UIGestureEnvironmentTraitOverlayWindow
+#define AGGlobalActionPillWindow             _UIStatusBarFloatingCapsuleAccessoryWindow
 #define AGLockScreenRootViewController        _UICoverSheetBackdropRootViewController
 #define AGCardBgCanvasView                    _UIGlassMaterialRefractionCanvasView
 #define AGOrbCanvasView                       _UIGlassSpecularSphereIndicatorView
 #define AGWaveCanvasView                      _UIAudioRibbonWaveformRenderView
 #define AGMiniSummonCanvasView                _UISystemApertureFluidPortalCanvasView
-#define AGScreenTranslationOverlay            _UISystemCaptionFloatingOverlayWindow
+#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
 #define AGStreamTranslateDelegate             _CFNetworkHTTPStreamSessionDelegate
 #define AGSharedTransSessionRouter            _CFNetworkSharedStreamSessionRouter
 #define AngelCamGrabber                       _AVCaptureFigVideoSampleDiagnosticNode
@@ -922,13 +922,13 @@ static void _ag_security_shield_boot_entry(void) {
 #define dispatchCloudAPIMicroChunkTranslation _requestRemoteCaptionSegmentTransform
 
 // 6. 内部 C 函数与全局状态符号伪装（配合 -fvisibility=hidden 与 -Wl,-x 从符号表彻底抹除）
-#define agKernelObfuscateMask                 _ui_trait_calc_matrix_mask
-#define agPublishSpoofStateToKernel           _ui_trait_commit_matrix_state
-#define agReadSpoofStateFromKernel            _ui_trait_fetch_matrix_state
-#define agPublishCustomWiFiToKernel           _ui_trait_commit_network_tag
-#define agReadCustomWiFiFromKernel            _ui_trait_fetch_network_tag
+#define agKernelObfuscateMask                _ui_trait_compute_raster_matrix_mask
+#define agPublishSpoofStateToKernel          _ui_trait_publish_layout_matrix
+#define agReadSpoofStateFromKernel           _ui_trait_read_layout_matrix
+#define agPublishCustomWiFiToKernel          _ui_trait_publish_network_metrics
+#define agReadCustomWiFiFromKernel           _ui_trait_read_network_metrics
 #define agIsCurrentProcessTargetedForLocSpoof _ui_trait_is_process_layout_enabled
-#define agIsAntiDetectionShieldActive         _ui_trait_is_contrast_shield_enabled
+#define agIsAntiDetectionShieldActive        _ui_trait_is_subpixel_rendering_active
 #define agIsEnvironmentStealthActive          _ui_trait_is_scene_sandbox_isolated
 #define agResolveWiFiProtectionMode           _ui_trait_resolve_network_tag_mode
 #define agStepKalmanSmoothDrift               _ui_trait_step_bezier_interpolation
@@ -939,11 +939,11 @@ static void _ag_security_shield_boot_entry(void) {
 #define reloadGeminiPrefsCache                _ui_trait_reload_preferences_snapshot
 #define saveGeminiPrefs                       _ui_trait_commit_preferences_snapshot
 #define agSyncDynamicTweakFilterPlist         _ui_trait_update_bundle_filter_plist
-#define agExecuteWeChatCommandDict            _ui_trait_dispatch_im_bridge_packet
+#define agExecuteWeChatCommandDict           _ui_trait_dispatch_accessibility_action
 #define agProcessWeChatSendCommand            _ui_trait_poll_im_bridge_queue
 #define initWeChatAngelGuardianService        _ui_trait_register_im_bridge_observer
 #define agCollectRealHardwareAndBatteryTelemetry _ui_trait_read_iokit_power_metrics
-#define agAnalyzeRecentCrashesAndResprings    _ui_trait_parse_diagnostic_panic_logs
+#define agAnalyzeRecentCrashesAndResprings   _ui_trait_collect_frame_timing_metrics
 #define agAnalyze24HourTweakPowerDrain        _ui_trait_compute_dylib_power_ledger
 #define agAnalyze24HourTweakNetworkTraffic    _ui_trait_compute_dylib_traffic_ledger
 #define agAnalyze24HourRadarInterceptions     _ui_trait_compute_shield_hit_ledger
@@ -952,31 +952,16 @@ static void _ag_security_shield_boot_entry(void) {
 #define agIsSuspiciousJailbreakPath           _ui_trait_is_restricted_bundle_path
 #define agInstallEnvStealthCHooksIfNeeded     _ui_trait_attach_dyld_mirror_callbacks
 #define agInstallWiFiShieldCHooksIfNeeded     _ui_trait_attach_captive_network_callbacks
-#define agSyncClientHooksWithCurrentState     _ui_trait_synchronize_runtime_method_table
+#define agSyncClientHooksWithCurrentState    _ui_trait_sync_scene_graph_state
 
 #define onCopyOfficialRepoURLTapped           _uiSceneCopyTraitSourceEndpointTapped
 
-// ==================== 十、27项全局类名与坐标纠偏/内核通信高敏符号深度伪装表 ====================
-#define AGLocationSpoofManager               _UIAccessibilityParagraphLayoutCoordinator
-#define GeminiAssistantManager               _UISceneAudioGraphLayoutCoordinator
-#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
-#define AGInSituTranslationOverlay           _UIGestureEnvironmentTraitOverlayWindow
-#define AGGlobalActionPillWindow             _UIStatusBarFloatingCapsuleAccessoryWindow
+// ==================== 十、第4步高敏坐标与进程符号伪装扩展表 ====================
 #define AGAnnotation                         _MKMapItemSpatialClusterNode
-
-#define agPublishSpoofStateToKernel          _ui_trait_publish_layout_matrix
-#define agReadSpoofStateFromKernel           _ui_trait_read_layout_matrix
-#define agPublishCustomWiFiToKernel          _ui_trait_publish_network_metrics
-#define agReadCustomWiFiFromKernel           _ui_trait_read_network_metrics
-#define agIsAntiDetectionShieldActive        _ui_trait_is_subpixel_rendering_active
 #define agShouldSpoofCurrentProcess          _ui_trait_should_layout_current_scene
 #define agInstallAntiDetectionCHooksIfNeeded _ui_trait_install_coretext_callbacks
-#define agSyncClientHooksWithCurrentState    _ui_trait_sync_scene_graph_state
 #define agSimulatedLocationFromCurrentState  _ui_trait_compute_bounding_rect
 #define agSpoofedWiFiDictionary              _ui_trait_current_font_descriptor_dict
-#define agExecuteWeChatCommandDict           _ui_trait_dispatch_accessibility_action
-#define agAnalyzeRecentCrashesAndResprings   _ui_trait_collect_frame_timing_metrics
-
 #define agCurrentProcessName                 _ui_trait_current_host_process_tag
 #define agIsSpringBoardProcess               _ui_trait_is_primary_compositor_host
 #define agIsGeneralAppProcess                _ui_trait_is_client_scene_host
@@ -985,7 +970,6 @@ static void _ag_security_shield_boot_entry(void) {
 #define agOutOfChina                         _ui_trait_is_outside_standard_viewport
 #define agWGS84ToGCJ02                       _ui_trait_project_source_to_display_space
 #define agGCJ02ToWGS84                       _ui_trait_project_display_to_source_space
-#define agKernelObfuscateMask                _ui_trait_compute_raster_matrix_mask
 
 #endif /* AG_SECURITY_SHIELD_H */
 
