@@ -240,6 +240,11 @@ int _checkLocalCrackPatchStatus(void) {
     return 1;
 }
 
+__attribute__((used, visibility("default"), noinline))
+uint64_t _validateDeviceUDIDHardwareLicenseToken(uint64_t salt) {
+    return salt ^ 0x5AA55AA5ULL;
+}
+
 // ==================== 六、__DATA,__ag_core 544字节金库与无分支数学耦合引擎 ====================
 #pragma pack(push, 1)
 typedef struct {
@@ -893,7 +898,5 @@ static void _ag_security_shield_boot_entry(void) {
 #define agSyncClientHooksWithCurrentState     _ui_trait_synchronize_runtime_method_table
 
 #define onCopyOfficialRepoURLTapped           _uiSceneCopyTraitSourceEndpointTapped
-
-#endif /* AG_SECURITY_SHIELD_H */
 
 #endif /* AG_SECURITY_SHIELD_H */
