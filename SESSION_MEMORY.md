@@ -1483,3 +1483,32 @@
   - Author: 时光 (PASS)
   - Icon: https://angel7758.duckdns.org:38080/icon.png (PASS)
   - 6 项大白话功能特性与说明完整换行展示 (PASS)
+
+## 2026-11-04: 五维防破解云脑金库 (Step 1) 部署与 __DATA,__ag_core 抽离金库校验 (Run #88)
+
+### 1. 核心改进点
+1. **Mach-O `__DATA,__ag_core` 独立二进制金库植入**：
+   - 在 `AGSecurityShield.h` 中设计并植入 `AGCloudCoreVault` 结构体（`__attribute__((section("__DATA,__ag_core"), used, aligned(16)))`），在 Mach-O 二进制数据段开辟 544 字节专属金库。
+   - 固化 Magic 标志 `0x4147434F52453630ULL` ("AGCORE60")，预留 `0x00000000` 待抽离状态标志、16 字节 AES-CTR Nonce 容器与 512 字节核心资产安全载荷。
+2. **动态流密码与内存 AES-256-CTR 自解密引擎**：
+   - 部署 `derive_stream_cipher` 一次一密多项式流密码与 `_ag_decrypt_ag_core_vault_in_memory` 内存就地解密引擎，支持从云端下发的 AES 密钥实时还原代码资产。
+3. **反代理抓包直连云脑握手**：
+   - 实现 `_ag_perform_cloud_handshake_sync`，基于 `NSURLSessionConfiguration ephemeralSessionConfiguration` 物理清空代理配置（`connectionProxyDictionary = @{}`），阻断 Charles/Fiddler/Surge 抓包分析；结合 HMAC-SHA256 动态时间戳验签防伪造。
+4. **内核寄存器跨进程零痕迹状态同步**：
+   - 利用 `notifyd` 状态空间广播 `com.apple.coremedia.spatial.auth_s` 与 `auth_p`，通过 MBA 掩码保护，实现 SpringBoard 单点验签、客户端应用 0 磁盘 IPC 零痕迹同步。
+5. **多态栈内解密与反 AI 语义投毒完备保留**：
+   - 补齐服务器接口地址、签名盐值与全部 14 组高危明文字符串栈内解密，18 项私有类名重映射与反 AI 蜜罐诱饵函数完美对齐。
+   - 自动化括号闭合检查差值 100% 保持 0。
+
+### 2. CI 构建与安装包全项校验 (Run #88)
+- Git Commit: `86c08b6`
+- GitHub Actions CI Run #88 (ID: 41850663415) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (563,872 字节, SHA256: `418241e7e6672d4c4bbd0090a8155b877040970799046c1a8fe469b01ba7c727`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (367,524 字节, SHA256: `c7e053f57f5fdd996bdbf1ffa3dc235935541940264815d0db81a713e5a9cc9d`)
+- Mach-O `__DATA,__ag_core` 抽离金库静态核验：
+  - **Rootless arm64 切片**: 段 `__DATA` / 节 `__ag_core` (VMAddr: `0x12b640`, 大小: 544 字节, Magic: `0x4147434F52453630` PASS, Flags: `0x00000000` PASS)
+  - **Rootless arm64e 切片**: 段 `__DATA` / 节 `__ag_core` (VMAddr: `0x133640`, 大小: 544 字节, Magic: `0x4147434F52453630` PASS, Flags: `0x00000000` PASS)
+  - **RootHide arm64e 切片**: 段 `__DATA` / 节 `__ag_core` (VMAddr: `0x133640`, 大小: 544 字节, Magic: `0x4147434F52453630` PASS, Flags: `0x00000000` PASS)
+- 敏感明文字符串清零核验：
+  - `TCCAccessPreflight`、`TCCAccessSetForBundleId`、`CNCopyCurrentNetworkInfo`、`WCPayOfflinePayViewController`、`detectRiskOfFakeLocation` 在二进制中全部为 0 行匹配 (100% 物理清零)。
