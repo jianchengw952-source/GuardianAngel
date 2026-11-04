@@ -1427,3 +1427,33 @@
   - Version: 1.0.0 (PASS)
   - Author: 时光 (PASS)
   - 5 项大白话功能特性描述完好展示 (PASS)
+
+---
+
+## 2026-11-04: Sileo 独立换行描述优化与设置页面增加官方软件源卡片 (Run #84)
+
+### 1. 核心改进点
+1. **Sileo `<ol><li>` 独立逐行换行优化**：
+   - `control` 与 `layout/DEBIAN/control` 中将功能清单更新为 ` 1. ` ~ ` 6. ` 开头格式（严格保留数字与小数点后的空格），解决 Sileo Markdown 引擎解析行尾空格连行问题。
+   - 包含大白话功能特性及钉钉企业增强检测说明。
+2. **设置页面底部增加官方软件源卡片**：
+   - 在 `AngelGuardianSettingsViewController` 的 `reloadSettingsLayoutAnimated:` 底部追加官方软件源卡片（`https://angel7758.duckdns.org:38080`）。
+   - 支持点击一键复制至剪贴板，带有 `UIImpactFeedbackStyleMedium` 震动触感、按钮文字动态变更为 `✅ 已复制`（2秒后复原）及全局顶部小胶囊弹窗提示。
+3. **符号与方法伪装**：
+   - 在 `AGSecurityShield.h` 中为卡片点击事件注入方法伪装宏：`#define onCopyOfficialRepoURLTapped _uiSceneCopyTraitSourceEndpointTapped`。
+4. **六大镜像文件 100% 字节级一致**：
+   - 字节大小：1,440,958 字节
+   - SHA256：`eb3a767efe27e9004687cfa8d41829cb47b18e70ac495b66539e98d5838bc9d9`
+   - 括号平衡校验：`{ brace: 0, paren: 0, bracket: 0 }` (100% PASS)
+
+### 2. CI 构建与安装包全项校验 (Run #84)
+- Git Commit: `62498ee`
+- GitHub Actions CI Run #84 (ID: 41771507453) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (563444 字节, SHA256: `1c1d7b105f78e23a51b70099e7457c6fda3644a6d7e464c2030a6a67ae32e793`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (367392 字节, SHA256: `d3c08cc467708199213e73f597bb90f2a088d8d994b38d1cc90ce79decb45312`)
+- dpkg-deb 元数据核验：
+  - Name: 守护天使 Pro测试版 (PASS)
+  - Version: 1.0.0 (PASS)
+  - Author: 时光 (PASS)
+  - 6 项大白话功能特性与说明完整换行展示 (PASS)
