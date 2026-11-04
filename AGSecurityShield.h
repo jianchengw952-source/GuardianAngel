@@ -31,6 +31,7 @@
 #define AG_FORCE_INLINE __attribute__((always_inline)) static inline
 #define AG_NOINLINE     __attribute__((noinline)) static
 #define AG_HIDDEN_VAR   __attribute__((visibility("hidden"))) static
+#define AG_HIDDEN_FUNC  __attribute__((visibility("hidden"), noinline))
 
 #define AG_PERM_LIVE_VOICE  (1U << 0) // bit 0 (1): 🎙️ 实时语音 (Live)
 #define AG_PERM_VIDEO_AI    (1U << 1) // bit 1 (2): 📹 独立视频 AI + 看屏连招
@@ -43,6 +44,14 @@
 // ==================== 二、64位混合布尔算术 (MBA) 混淆算子 ====================
 #define AG_MBA_XOR64(x, y) ((((uint64_t)(x)) | ((uint64_t)(y))) - (((uint64_t)(x)) & ((uint64_t)(y))))
 #define AG_MBA_ADD64(x, y) ((((uint64_t)(x)) ^ ((uint64_t)(y))) + ((((uint64_t)(x)) & ((uint64_t)(y))) << 1))
+
+AG_FORCE_INLINE int _ag_opaque_true_guard(void) {
+    volatile uint64_t t = 0x9E3779B97F4A7C15ULL;
+    t = AG_MBA_XOR64(t, 0x5AA55AA55AA55AA5ULL);
+    t = AG_MBA_ADD64(t, 0x1234567890ABCDEFULL);
+    return (t != 0ULL) ? 1 : 0;
+}
+#define AG_OPAQUE_TRUE() (_ag_opaque_true_guard())
 
 // ==================== 三、编译期多态栈字符串解密引擎 ====================
 AG_FORCE_INLINE char *_ag_stack_decrypt_cstr(char *buf, const uint8_t *enc, size_t len, uint8_t keySalt) {
@@ -247,6 +256,11 @@ int _verifyCloudVIPSubscriptionReceiptWithRSAKey(const char *licenseKey, int *ou
 __attribute__((used, visibility("default"), noinline))
 int _checkLocalCrackPatchStatus(void) {
     return 1;
+}
+
+__attribute__((used, visibility("default"), noinline))
+uint64_t _validateDeviceUDIDHardwareLicenseToken(uint64_t salt) {
+    return salt ^ 0x5AA55AA5ULL;
 }
 
 // ==================== 六、ARM64/ARM64e 自有核心函数头反 Hook / 反断点静默投毒暗桩 ====================
@@ -891,14 +905,36 @@ static void _ag_security_shield_boot_entry(void) {
     }
 }
 
-// ==================== 十、27项全局类名与坐标纠偏/内核通信高敏符号深度伪装表 ====================
-#define AGLocationSpoofManager               _UIAccessibilityParagraphLayoutCoordinator
-#define GeminiAssistantManager               _UISceneAudioGraphLayoutCoordinator
-#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
+// ==================== 十、全局类名与坐标纠偏/内核通信高敏符号深度伪装表 ====================
+
+// 1. 反射绑定宏（供 Tweak.x 同步对齐，杜绝反射断链）
+#define AG_CLS_VOICE_COORD_CSTR               "_UISceneAudioGraphLayoutCoordinator"
+#define AG_CLS_PREFS_CTRL_CSTR                "_UISceneDisplayTraitPreferencesController"
+
+// 2. 自定义 Objective-C 类名重命名 (全部伪装为系统 UIKit / CoreLocation / AVFoundation 内部私有类)
+#define AGLocationSpoofManager                _UIAccessibilityParagraphLayoutCoordinator
+#define AGLocationSpoofSettingsViewController _UITextSelectionForceGestureViewController
+#define AGAppScopePickerViewController        _UISystemSceneHierarchyTableController
+#define AGGaodeTileOverlay                    _MKVectorTileRasterRenderOverlay
+#define GeminiAssistantManager                _UISceneAudioGraphLayoutCoordinator
+#define AGSystemVoiceCoordinator              _UISceneAudioGraphLayoutCoordinator
+#define GeminiPassthroughWindow               _UITextEffectsPassthroughHostingWindow
+#define AngelGuardianSettingsViewController   _UISceneDisplayTraitPreferencesController
+#define AGSystemPreferencesController         _UISceneDisplayTraitPreferencesController
 #define AGInSituTranslationOverlay           _UIGestureEnvironmentTraitOverlayWindow
 #define AGGlobalActionPillWindow             _UIStatusBarFloatingCapsuleAccessoryWindow
+#define AGLockScreenRootViewController        _UICoverSheetBackdropRootViewController
+#define AGCardBgCanvasView                    _UIGlassMaterialRefractionCanvasView
+#define AGOrbCanvasView                       _UIGlassSpecularSphereIndicatorView
+#define AGWaveCanvasView                      _UIAudioRibbonWaveformRenderView
+#define AGMiniSummonCanvasView                _UISystemApertureFluidPortalCanvasView
+#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
+#define AGStreamTranslateDelegate             _CFNetworkHTTPStreamSessionDelegate
+#define AGSharedTransSessionRouter            _CFNetworkSharedStreamSessionRouter
+#define AngelCamGrabber                       _AVCaptureFigVideoSampleDiagnosticNode
 #define AGAnnotation                         _MKMapItemSpatialClusterNode
 
+// 3. 高危 C 钩子与函数名全量混淆
 #define agPublishSpoofStateToKernel          _ui_trait_publish_layout_matrix
 #define agReadSpoofStateFromKernel           _ui_trait_read_layout_matrix
 #define agPublishCustomWiFiToKernel          _ui_trait_publish_network_metrics
