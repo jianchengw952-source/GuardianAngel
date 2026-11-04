@@ -5,3 +5,5 @@ packages/
 *.o
 .DS_Store
 *.backup*
+GuardianAngel_AI_Studio_Project.txt
+*.bat
