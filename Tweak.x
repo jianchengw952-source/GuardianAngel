@@ -2078,6 +2078,14 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
                                             (__bridge CFStringRef)kAGLocMasterSyncNotification,
                                             NULL,
                                             CFNotificationSuspensionBehaviorDeliverImmediately);
+            [[NSNotificationCenter defaultCenter] addObserver:self
+                                                     selector:@selector(handleCloudAuthUnlockedResync:)
+                                                         name:@"AGCloudAuthUnlockedResyncNotification"
+                                                       object:nil];
+            [[NSNotificationCenter defaultCenter] addObserver:self
+                                                     selector:@selector(handleCloudForceDisableAllFeatures:)
+                                                         name:@"AGCloudForceDisableAllFeaturesNotification"
+                                                       object:nil];
         }
 
         NSDictionary *p = isSB ? agReadOnlyPrefs() : @{};
@@ -2135,6 +2143,16 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
     return self;
 }
 
+
+- (void)handleCloudAuthUnlockedResync:(NSNotification *)note {
+    [self syncMasterStateFromPrefsAndRestartTimer];
+    agPublishSpoofStateToKernelSync();
+}
+
+- (void)handleCloudForceDisableAllFeatures:(NSNotification *)note {
+    [self stopAndResetToRealLocation];
+    agPublishSpoofStateToKernelSync();
+}
 
 - (void)syncMasterStateFromPrefsAndRestartTimer {
     reloadGeminiPrefsCache();
@@ -3334,6 +3352,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     [self stopSpoofing];
     [self updateLiveMapBlueDotAndRoute];
     [self.tableView reloadData];
+    ag_enforce_cloud_auth_or_lock_vc(self);
 }
 
 - (void)viewDidLoad {
@@ -3694,6 +3713,9 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     CLLocationCoordinate2D coord = self.mapView.centerCoordinate;
     NSString *name = self.previewPlaceName.length > 0 ? self.previewPlaceName : @"地图选点位置";
     [[AGLocationSpoofManager sharedSpoofer] pinLocationWithCoordinate:coord coordSystem:@"GCJ02" placeName:name];
+    NSMutableDictionary *p = loadGeminiPrefs();
+    p[@"AG_LocSpoof_Active"] = @YES;
+    saveGeminiPrefs(p);
     agPublishSpoofStateToKernelSync();
     reloadGeminiPrefsCache();
     [self updateLiveMapBlueDotAndRoute];
@@ -3993,10 +4015,16 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 - (void)masterSpoofSwitchChanged:(UISwitch *)sender {
     if (sender.isOn) {
+        NSMutableDictionary *p = loadGeminiPrefs();
+        p[@"AG_LocSpoof_Active"] = @YES;
+        saveGeminiPrefs(p);
         [self confirmMapPinTapped];
         agPublishSpoofStateToKernelSync();
     } else {
         [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
+        NSMutableDictionary *p = loadGeminiPrefs();
+        p[@"AG_LocSpoof_Active"] = @NO;
+        saveGeminiPrefs(p);
         agPublishSpoofStateToKernelSync();
         [self updateLiveMapBlueDotAndRoute];
     }
@@ -20761,6 +20789,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 
 - (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
     [self reloadSettingsLayoutAnimated:YES];
+    ag_enforce_cloud_auth_or_lock_vc(self);
 }
 
 - (void)dealloc {

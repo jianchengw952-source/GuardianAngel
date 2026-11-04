@@ -1706,3 +1706,10 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，下发 `core_key` (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+
+### 4. Step 5 Perfect 4项漏项全面闭环补齐
+1. **漏项 1 闭环**：`AGLocationSpoofManager` 在 `init` 中监听 `AGCloudAuthUnlockedResyncNotification`，收到后立即调用 `syncMasterStateFromPrefsAndRestartTimer` 与 `agPublishSpoofStateToKernelSync()`，消除 0.0s 启动与 1.5s 联网授权时间差造成的坐标掩码脱节。
+2. **漏项 2 闭环**：在 `AGSecurityShield.h` 中实现 512 字节原始密文备份（`_s_vault_cipher_backup`）与动态回滚；封停时原地回滚为纯密文锁死，解封或输入新卡密免重启 0.1s 当场激活。
+3. **漏项 3 闭环**：设置页（`AngelGuardianSettingsViewController` 与 `AGLocationSpoofSettingsViewController`）与 `GeminiAssistantManager` 接收 `AGCloudForceDisableAllFeaturesNotification` 时，停用所有引擎并调用 `ag_enforce_cloud_auth_or_lock_vc(self)` 强弹窗拦截并回退菜单。
+4. **漏项 4 闭环**：在 `masterSpoofSwitchChanged:` 与 `confirmMapPinTapped` 中立即将 `AG_LocSpoof_Active` 置为 `@YES` 并触发 `[self.tableView reloadData]`，使「防止检测」开关即时解锁可点，同屏即开即用。

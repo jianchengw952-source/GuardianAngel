@@ -2,12 +2,13 @@
 #define AG_SECURITY_SHIELD_H
 
 // ============================================================================
-// 🛡️ AngelGuardian Five-Dimensional Anti-Crack & Cloud Brain Shield (Step 5 Fix)
+// 🛡️ AngelGuardian Five-Dimensional Anti-Crack & Cloud Brain Shield (Step 5 Perfect)
 // 兼容环境：Dopamine (Rootless arm64/arm64e) & Relaxin (RootHide arm64e)
-// 核心修复：
-// 1. 常驻 notifyd 内核句柄（移除 notify_cancel），彻底修复跨进程虚拟定位与地球常数同步
-// 2. 封停/到期时物理擦除内存金库 (memset 0xCC) + 强制关闭全部功能开关 + 清空定位寄存器
-// 3. 拦截进入插件设置页与语音唤醒：未授权/封停态每次进入必弹窗拦截并自动退回上级菜单
+// 完整闭环特性：
+// 1. 常驻 notifyd 内核句柄（移除 notify_cancel）+ 联网解锁瞬间自动重刷定位内核寄存器
+// 2. 512字节原始密文备份回滚机制：封停时回滚为纯密文锁死，解封/输卡密免重启 0.1s 当场激活
+// 3. 封停/未授权时联动 Tweak.x 强制关闭语音/定位/防检测/同传引擎并将所有开关复位为 OFF
+// 4. 插件设置页与语音入口强拦截：未授权每次进入必弹窗，点取消自动退回上级菜单
 // ============================================================================
 
 #import <Foundation/Foundation.h>
@@ -22,26 +23,14 @@
 #import <stdint.h>
 #import <string.h>
 
-#if (defined(__arm64e__) || __has_feature(ptrauth_calls)) && __has_include(<ptrauth.h>)
+#if defined(__arm64e__) || __has_feature(ptrauth_calls)
 #include <ptrauth.h>
 #endif
 
 // ==================== 一、编译器内联与四大模块权限位宏 ====================
-#ifndef AG_FORCE_INLINE
 #define AG_FORCE_INLINE __attribute__((always_inline)) static inline
-#endif
-
-#ifndef AG_NOINLINE
 #define AG_NOINLINE     __attribute__((noinline)) static
-#endif
-
-#ifndef AG_HIDDEN_VAR
 #define AG_HIDDEN_VAR   __attribute__((visibility("hidden"))) static
-#endif
-
-#ifndef AG_HIDDEN_FUNC
-#define AG_HIDDEN_FUNC  __attribute__((visibility("hidden"), noinline))
-#endif
 
 #define AG_PERM_LIVE_VOICE  (1U << 0) // bit 0 (1): 🎙️ 实时语音 (Live)
 #define AG_PERM_VIDEO_AI    (1U << 1) // bit 1 (2): 📹 独立视频 AI + 看屏连招
@@ -54,14 +43,6 @@
 // ==================== 二、64位混合布尔算术 (MBA) 混淆算子 ====================
 #define AG_MBA_XOR64(x, y) ((((uint64_t)(x)) | ((uint64_t)(y))) - (((uint64_t)(x)) & ((uint64_t)(y))))
 #define AG_MBA_ADD64(x, y) ((((uint64_t)(x)) ^ ((uint64_t)(y))) + ((((uint64_t)(x)) & ((uint64_t)(y))) << 1))
-
-AG_FORCE_INLINE int _ag_opaque_true_guard(void) {
-    volatile uint64_t t = 0x9E3779B97F4A7C15ULL;
-    t = AG_MBA_XOR64(t, 0x5AA55AA55AA55AA5ULL);
-    t = AG_MBA_ADD64(t, 0x1234567890ABCDEFULL);
-    return (t != 0ULL) ? 1 : 0;
-}
-#define AG_OPAQUE_TRUE() (_ag_opaque_true_guard())
 
 // ==================== 三、编译期多态栈字符串解密引擎 ====================
 AG_FORCE_INLINE char *_ag_stack_decrypt_cstr(char *buf, const uint8_t *enc, size_t len, uint8_t keySalt) {
@@ -86,28 +67,48 @@ AG_FORCE_INLINE NSString *_ag_stack_decrypt_nsstr(const uint8_t *enc, size_t len
 
 // ==================== 四、云端通讯密钥与预置高危敏感字符串加密表 ====================
 AG_FORCE_INLINE const char *ag_enc_cstr_cloud_verify_url(char buf[64]) {
-    const uint8_t e[] = { _AG_XB('h',0,0x4a), _AG_XB('t',1,0x4a), _AG_XB('t',2,0x4a), _AG_XB('p',3,0x4a), _AG_XB('s',4,0x4a), _AG_XB(':',5,0x4a), _AG_XB('/',6,0x4a), _AG_XB('/',7,0x4a), _AG_XB('a',8,0x4a), _AG_XB('n',9,0x4a), _AG_XB('g',10,0x4a), _AG_XB('e',11,0x4a), _AG_XB('l',12,0x4a), _AG_XB('7',13,0x4a), _AG_XB('7',14,0x4a), _AG_XB('5',15,0x4a), _AG_XB('8',16,0x4a), _AG_XB('.',17,0x4a), _AG_XB('d',18,0x4a), _AG_XB('u',19,0x4a), _AG_XB('c',20,0x4a), _AG_XB('k',21,0x4a), _AG_XB('d',22,0x4a), _AG_XB('n',23,0x4a), _AG_XB('s',24,0x4a), _AG_XB('.',25,0x4a), _AG_XB('o',26,0x4a), _AG_XB('r',27,0x4a), _AG_XB('g',28,0x4a), _AG_XB(':',29,0x4a), _AG_XB('3',30,0x4a), _AG_XB('8',31,0x4a), _AG_XB('0',32,0x4a), _AG_XB('8',33,0x4a), _AG_XB('0',34,0x4a), _AG_XB('/',35,0x4a), _AG_XB('a',36,0x4a), _AG_XB('p',37,0x4a), _AG_XB('i',38,0x4a), _AG_XB('/',39,0x4a), _AG_XB('v',40,0x4a), _AG_XB('1',41,0x4a), _AG_XB('/',42,0x4a), _AG_XB('v',43,0x4a), _AG_XB('e',44,0x4a), _AG_XB('r',45,0x4a), _AG_XB('i',46,0x4a), _AG_XB('f',47,0x4a), _AG_XB('y',48,0x4a) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4a);
+    const uint8_t e[] = {
+        _AG_XB('h',0,0x4A), _AG_XB('t',1,0x4A), _AG_XB('t',2,0x4A), _AG_XB('p',3,0x4A), _AG_XB('s',4,0x4A), _AG_XB(':',5,0x4A), _AG_XB('/',6,0x4A), _AG_XB('/',7,0x4A),
+        _AG_XB('a',8,0x4A), _AG_XB('n',9,0x4A), _AG_XB('g',10,0x4A), _AG_XB('e',11,0x4A), _AG_XB('l',12,0x4A), _AG_XB('7',13,0x4A), _AG_XB('7',14,0x4A), _AG_XB('5',15,0x4A), _AG_XB('8',16,0x4A),
+        _AG_XB('.',17,0x4A), _AG_XB('d',18,0x4A), _AG_XB('u',19,0x4A), _AG_XB('c',20,0x4A), _AG_XB('k',21,0x4A), _AG_XB('d',22,0x4A), _AG_XB('n',23,0x4A), _AG_XB('s',24,0x4A),
+        _AG_XB('.',25,0x4A), _AG_XB('o',26,0x4A), _AG_XB('r',27,0x4A), _AG_XB('g',28,0x4A), _AG_XB(':',29,0x4A), _AG_XB('3',30,0x4A), _AG_XB('8',31,0x4A), _AG_XB('0',32,0x4A), _AG_XB('8',33,0x4A), _AG_XB('0',34,0x4A),
+        _AG_XB('/',35,0x4A), _AG_XB('a',36,0x4A), _AG_XB('p',37,0x4A), _AG_XB('i',38,0x4A), _AG_XB('/',39,0x4A), _AG_XB('v',40,0x4A), _AG_XB('1',41,0x4A), _AG_XB('/',42,0x4A), _AG_XB('v',43,0x4A), _AG_XB('e',44,0x4A), _AG_XB('r',45,0x4A), _AG_XB('i',46,0x4A), _AG_XB('f',47,0x4A), _AG_XB('y',48,0x4A)
+    };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4A);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_stream_cipher_salt(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('A',0,0x6e), _AG_XB('N',1,0x6e), _AG_XB('G',2,0x6e), _AG_XB('E',3,0x6e), _AG_XB('L',4,0x6e), _AG_XB('_',5,0x6e), _AG_XB('S',6,0x6e), _AG_XB('T',7,0x6e), _AG_XB('R',8,0x6e), _AG_XB('E',9,0x6e), _AG_XB('A',10,0x6e), _AG_XB('M',11,0x6e), _AG_XB('_',12,0x6e), _AG_XB('K',13,0x6e), _AG_XB('E',14,0x6e), _AG_XB('Y',15,0x6e), _AG_XB('_',16,0x6e), _AG_XB('P',17,0x6e), _AG_XB('R',18,0x6e), _AG_XB('O',19,0x6e) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x6e);
+    const uint8_t e[] = {
+        _AG_XB('A',0,0x6E), _AG_XB('N',1,0x6E), _AG_XB('G',2,0x6E), _AG_XB('E',3,0x6E), _AG_XB('L',4,0x6E), _AG_XB('_',5,0x6E),
+        _AG_XB('S',6,0x6E), _AG_XB('T',7,0x6E), _AG_XB('R',8,0x6E), _AG_XB('E',9,0x6E), _AG_XB('A',10,0x6E), _AG_XB('M',11,0x6E), _AG_XB('_',12,0x6E),
+        _AG_XB('K',13,0x6E), _AG_XB('E',14,0x6E), _AG_XB('Y',15,0x6E), _AG_XB('_',16,0x6E), _AG_XB('P',17,0x6E), _AG_XB('R',18,0x6E), _AG_XB('O',19,0x6E)
+    };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x6E);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_sign_salt(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('A',0,0x2c), _AG_XB('G',1,0x2c), _AG_XB('_',2,0x2c), _AG_XB('S',3,0x2c), _AG_XB('I',4,0x2c), _AG_XB('G',5,0x2c), _AG_XB('N',6,0x2c), _AG_XB('_',7,0x2c), _AG_XB('S',8,0x2c), _AG_XB('A',9,0x2c), _AG_XB('L',10,0x2c), _AG_XB('T',11,0x2c), _AG_XB('_',12,0x2c), _AG_XB('2',13,0x2c), _AG_XB('0',14,0x2c), _AG_XB('2',15,0x2c), _AG_XB('6',16,0x2c), _AG_XB('_',17,0x2c), _AG_XB('@',18,0x2c), _AG_XB('!',19,0x2c) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2c);
+    const uint8_t e[] = {
+        _AG_XB('A',0,0x2C), _AG_XB('G',1,0x2C), _AG_XB('_',2,0x2C), _AG_XB('S',3,0x2C), _AG_XB('I',4,0x2C), _AG_XB('G',5,0x2C), _AG_XB('N',6,0x2C), _AG_XB('_',7,0x2C),
+        _AG_XB('S',8,0x2C), _AG_XB('A',9,0x2C), _AG_XB('L',10,0x2C), _AG_XB('T',11,0x2C), _AG_XB('_',12,0x2C), _AG_XB('2',13,0x2C), _AG_XB('0',14,0x2C), _AG_XB('2',15,0x2C), _AG_XB('6',16,0x2C),
+        _AG_XB('_',17,0x2C), _AG_XB('@',18,0x2C), _AG_XB('!',19,0x2C)
+    };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2C);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_server_host(char buf[48]) {
-    const uint8_t e[] = { _AG_XB('h',0,0x5a), _AG_XB('t',1,0x5a), _AG_XB('t',2,0x5a), _AG_XB('p',3,0x5a), _AG_XB('s',4,0x5a), _AG_XB(':',5,0x5a), _AG_XB('/',6,0x5a), _AG_XB('/',7,0x5a), _AG_XB('a',8,0x5a), _AG_XB('n',9,0x5a), _AG_XB('g',10,0x5a), _AG_XB('e',11,0x5a), _AG_XB('l',12,0x5a), _AG_XB('7',13,0x5a), _AG_XB('7',14,0x5a), _AG_XB('5',15,0x5a), _AG_XB('8',16,0x5a), _AG_XB('.',17,0x5a), _AG_XB('d',18,0x5a), _AG_XB('u',19,0x5a), _AG_XB('c',20,0x5a), _AG_XB('k',21,0x5a), _AG_XB('d',22,0x5a), _AG_XB('n',23,0x5a), _AG_XB('s',24,0x5a), _AG_XB('.',25,0x5a), _AG_XB('o',26,0x5a), _AG_XB('r',27,0x5a), _AG_XB('g',28,0x5a), _AG_XB(':',29,0x5a), _AG_XB('3',30,0x5a), _AG_XB('8',31,0x5a), _AG_XB('0',32,0x5a), _AG_XB('8',33,0x5a), _AG_XB('0',34,0x5a) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x5a);
+    const uint8_t e[] = {
+        _AG_XB('a',0,0x4A), _AG_XB('n',1,0x4A), _AG_XB('g',2,0x4A), _AG_XB('e',3,0x4A), _AG_XB('l',4,0x4A), _AG_XB('7',5,0x4A), _AG_XB('7',6,0x4A), _AG_XB('5',7,0x4A), _AG_XB('8',8,0x4A),
+        _AG_XB('.',9,0x4A), _AG_XB('d',10,0x4A), _AG_XB('u',11,0x4A), _AG_XB('c',12,0x4A), _AG_XB('k',13,0x4A), _AG_XB('d',14,0x4A), _AG_XB('n',15,0x4A), _AG_XB('s',16,0x4A),
+        _AG_XB('.',17,0x4A), _AG_XB('o',18,0x4A), _AG_XB('r',19,0x4A), _AG_XB('g',20,0x4A), _AG_XB(':',21,0x4A), _AG_XB('3',22,0x4A), _AG_XB('8',23,0x4A), _AG_XB('0',24,0x4A), _AG_XB('8',25,0x4A), _AG_XB('0',26,0x4A)
+    };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4A);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_auth_path(char buf[24]) {
-    const uint8_t e[] = { _AG_XB('/',0,0x33), _AG_XB('a',1,0x33), _AG_XB('p',2,0x33), _AG_XB('i',3,0x33), _AG_XB('/',4,0x33), _AG_XB('v',5,0x33), _AG_XB('1',6,0x33), _AG_XB('/',7,0x33), _AG_XB('v',8,0x33), _AG_XB('e',9,0x33), _AG_XB('r',10,0x33), _AG_XB('i',11,0x33), _AG_XB('f',12,0x33), _AG_XB('y',13,0x33) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x33);
+    const uint8_t e[] = {
+        _AG_XB('/',0,0x4A), _AG_XB('a',1,0x4A), _AG_XB('p',2,0x4A), _AG_XB('i',3,0x4A), _AG_XB('/',4,0x4A), _AG_XB('v',5,0x4A), _AG_XB('1',6,0x4A), _AG_XB('/',7,0x4A), _AG_XB('v',8,0x4A), _AG_XB('e',9,0x4A), _AG_XB('r',10,0x4A), _AG_XB('i',11,0x4A), _AG_XB('f',12,0x4A), _AG_XB('y',13,0x4A)
+    };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4A);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_var_jb(char buf[16]) {
@@ -125,29 +126,33 @@ AG_FORCE_INLINE const char *ag_enc_cstr_ellekit(char buf[16]) {
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x59);
 }
 
-AG_FORCE_INLINE const char *ag_enc_cstr_libroothide(char buf[24]) {
-    const uint8_t e[] = { _AG_XB('l',0,0x2e), _AG_XB('i',1,0x2e), _AG_XB('b',2,0x2e), _AG_XB('r',3,0x2e), _AG_XB('o',4,0x2e), _AG_XB('o',5,0x2e), _AG_XB('t',6,0x2e), _AG_XB('h',7,0x2e), _AG_XB('i',8,0x2e), _AG_XB('d',9,0x2e), _AG_XB('e',10,0x2e) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x2e);
-}
-
-AG_FORCE_INLINE const char *ag_enc_cstr_mobilesubstrate(char buf[24]) {
+AG_FORCE_INLINE const char *ag_enc_cstr_substrate(char buf[24]) {
     const uint8_t e[] = { _AG_XB('M',0,0x61), _AG_XB('o',1,0x61), _AG_XB('b',2,0x61), _AG_XB('i',3,0x61), _AG_XB('l',4,0x61), _AG_XB('e',5,0x61), _AG_XB('S',6,0x61), _AG_XB('u',7,0x61), _AG_XB('b',8,0x61), _AG_XB('s',9,0x61), _AG_XB('t',10,0x61), _AG_XB('r',11,0x61), _AG_XB('a',12,0x61), _AG_XB('t',13,0x61), _AG_XB('e',14,0x61) };
     return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x61);
 }
 
+AG_FORCE_INLINE const char *ag_enc_cstr_libroothide(char buf[24]) {
+    const uint8_t e[] = { _AG_XB('l',0,0x5D), _AG_XB('i',1,0x5D), _AG_XB('b',2,0x5D), _AG_XB('r',3,0x5D), _AG_XB('o',4,0x5D), _AG_XB('o',5,0x5D), _AG_XB('t',6,0x5D), _AG_XB('h',7,0x5D), _AG_XB('i',8,0x5D), _AG_XB('d',9,0x5D), _AG_XB('e',10,0x5D) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x5D);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_mobilesubstrate(char buf[24]) {
+    return ag_enc_cstr_substrate(buf);
+}
+
 AG_FORCE_INLINE const char *ag_enc_cstr_dynamiclibs(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('D',0,0x3c), _AG_XB('y',1,0x3c), _AG_XB('n',2,0x3c), _AG_XB('a',3,0x3c), _AG_XB('m',4,0x3c), _AG_XB('i',5,0x3c), _AG_XB('c',6,0x3c), _AG_XB('L',7,0x3c), _AG_XB('i',8,0x3c), _AG_XB('b',9,0x3c), _AG_XB('r',10,0x3c), _AG_XB('a',11,0x3c), _AG_XB('r',12,0x3c), _AG_XB('i',13,0x3c), _AG_XB('e',14,0x3c), _AG_XB('s',15,0x3c) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3c);
+    const uint8_t e[] = { _AG_XB('D',0,0x49), _AG_XB('y',1,0x49), _AG_XB('n',2,0x49), _AG_XB('a',3,0x49), _AG_XB('m',4,0x49), _AG_XB('i',5,0x49), _AG_XB('c',6,0x49), _AG_XB('L',7,0x49), _AG_XB('i',8,0x49), _AG_XB('b',9,0x49), _AG_XB('r',10,0x49), _AG_XB('a',11,0x49), _AG_XB('r',12,0x49), _AG_XB('i',13,0x49), _AG_XB('e',14,0x49), _AG_XB('s',15,0x49) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x49);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_tweakinject(char buf[24]) {
-    const uint8_t e[] = { _AG_XB('T',0,0x45), _AG_XB('w',1,0x45), _AG_XB('e',2,0x45), _AG_XB('a',3,0x45), _AG_XB('k',4,0x45), _AG_XB('I',5,0x45), _AG_XB('n',6,0x45), _AG_XB('j',7,0x45), _AG_XB('e',8,0x45), _AG_XB('c',9,0x45), _AG_XB('t',10,0x45) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x45);
+    const uint8_t e[] = { _AG_XB('T',0,0x3A), _AG_XB('w',1,0x3A), _AG_XB('e',2,0x3A), _AG_XB('a',3,0x3A), _AG_XB('k',4,0x3A), _AG_XB('I',5,0x3A), _AG_XB('n',6,0x3A), _AG_XB('j',7,0x3A), _AG_XB('e',8,0x3A), _AG_XB('c',9,0x3A), _AG_XB('t',10,0x3A) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3A);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_tcc_preflight(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('T',0,0x51), _AG_XB('C',1,0x51), _AG_XB('C',2,0x51), _AG_XB('A',3,0x51), _AG_XB('c',4,0x51), _AG_XB('c',5,0x51), _AG_XB('e',6,0x51), _AG_XB('s',7,0x51), _AG_XB('s',8,0x51), _AG_XB('P',9,0x51), _AG_XB('r',10,0x51), _AG_XB('e',11,0x51), _AG_XB('f',12,0x51), _AG_XB('l',13,0x51), _AG_XB('i',14,0x51), _AG_XB('g',15,0x51), _AG_XB('h',16,0x51), _AG_XB('t',17,0x51) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x51);
+    const uint8_t e[] = { _AG_XB('T',0,0x67), _AG_XB('C',1,0x67), _AG_XB('C',2,0x67), _AG_XB('A',3,0x67), _AG_XB('c',4,0x67), _AG_XB('c',5,0x67), _AG_XB('e',6,0x67), _AG_XB('s',7,0x67), _AG_XB('s',8,0x67), _AG_XB('P',9,0x67), _AG_XB('r',10,0x67), _AG_XB('e',11,0x67), _AG_XB('f',12,0x67), _AG_XB('l',13,0x67), _AG_XB('i',14,0x67), _AG_XB('g',15,0x67), _AG_XB('h',16,0x67), _AG_XB('t',17,0x67) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x67);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_tcc_setbundle(char buf[32]) {
@@ -156,13 +161,13 @@ AG_FORCE_INLINE const char *ag_enc_cstr_tcc_setbundle(char buf[32]) {
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_cncopy_wifi(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('C',0,0x19), _AG_XB('N',1,0x19), _AG_XB('C',2,0x19), _AG_XB('o',3,0x19), _AG_XB('p',4,0x19), _AG_XB('y',5,0x19), _AG_XB('C',6,0x19), _AG_XB('u',7,0x19), _AG_XB('r',8,0x19), _AG_XB('r',9,0x19), _AG_XB('e',10,0x19), _AG_XB('n',11,0x19), _AG_XB('t',12,0x19), _AG_XB('N',13,0x19), _AG_XB('e',14,0x19), _AG_XB('t',15,0x19), _AG_XB('w',16,0x19), _AG_XB('o',17,0x19), _AG_XB('r',18,0x19), _AG_XB('k',19,0x19), _AG_XB('I',20,0x19), _AG_XB('n',21,0x19), _AG_XB('f',22,0x19), _AG_XB('o',23,0x19) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x19);
+    const uint8_t e[] = { _AG_XB('C',0,0x41), _AG_XB('N',1,0x41), _AG_XB('C',2,0x41), _AG_XB('o',3,0x41), _AG_XB('p',4,0x41), _AG_XB('y',5,0x41), _AG_XB('C',6,0x41), _AG_XB('u',7,0x41), _AG_XB('r',8,0x41), _AG_XB('r',9,0x41), _AG_XB('e',10,0x41), _AG_XB('n',11,0x41), _AG_XB('t',12,0x41), _AG_XB('N',13,0x41), _AG_XB('e',14,0x41), _AG_XB('t',15,0x41), _AG_XB('w',16,0x41), _AG_XB('o',17,0x41), _AG_XB('r',18,0x41), _AG_XB('k',19,0x41), _AG_XB('I',20,0x41), _AG_XB('n',21,0x41), _AG_XB('f',22,0x41), _AG_XB('o',23,0x41) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x41);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_amap_mgr(char buf[32]) {
-    const uint8_t e[] = { _AG_XB('A',0,0x3d), _AG_XB('M',1,0x3d), _AG_XB('a',2,0x3d), _AG_XB('p',3,0x3d), _AG_XB('L',4,0x3d), _AG_XB('o',5,0x3d), _AG_XB('c',6,0x3d), _AG_XB('a',7,0x3d), _AG_XB('t',8,0x3d), _AG_XB('i',9,0x3d), _AG_XB('o',10,0x3d), _AG_XB('n',11,0x3d), _AG_XB('M',12,0x3d), _AG_XB('a',13,0x3d), _AG_XB('n',14,0x3d), _AG_XB('a',15,0x3d), _AG_XB('g',16,0x3d), _AG_XB('e',17,0x3d), _AG_XB('r',18,0x3d) };
-    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3d);
+    const uint8_t e[] = { _AG_XB('A',0,0x3D), _AG_XB('M',1,0x3D), _AG_XB('a',2,0x3D), _AG_XB('p',3,0x3D), _AG_XB('L',4,0x3D), _AG_XB('o',5,0x3D), _AG_XB('c',6,0x3D), _AG_XB('a',7,0x3D), _AG_XB('t',8,0x3D), _AG_XB('i',9,0x3D), _AG_XB('o',10,0x3D), _AG_XB('n',11,0x3D), _AG_XB('M',12,0x3D), _AG_XB('a',13,0x3D), _AG_XB('n',14,0x3D), _AG_XB('a',15,0x3D), _AG_XB('g',16,0x3D), _AG_XB('e',17,0x3D), _AG_XB('r',18,0x3D) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3D);
 }
 
 AG_FORCE_INLINE const char *ag_enc_cstr_amap_risk(char buf[32]) {
@@ -195,8 +200,8 @@ AG_FORCE_INLINE NSString *ag_enc_nsstr_prod_accessory(void) {
 }
 
 AG_FORCE_INLINE NSString *ag_enc_nsstr_amap_cls(void) {
-    const uint8_t e[] = { _AG_XB('A',0,0x3d), _AG_XB('M',1,0x3d), _AG_XB('a',2,0x3d), _AG_XB('p',3,0x3d), _AG_XB('L',4,0x3d), _AG_XB('o',5,0x3d), _AG_XB('c',6,0x3d), _AG_XB('a',7,0x3d), _AG_XB('t',8,0x3d), _AG_XB('i',9,0x3d), _AG_XB('o',10,0x3d), _AG_XB('n',11,0x3d), _AG_XB('M',12,0x3d), _AG_XB('a',13,0x3d), _AG_XB('n',14,0x3d), _AG_XB('a',15,0x3d), _AG_XB('g',16,0x3d), _AG_XB('e',17,0x3d), _AG_XB('r',18,0x3d) };
-    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x3d);
+    const uint8_t e[] = { _AG_XB('A',0,0x3D), _AG_XB('M',1,0x3D), _AG_XB('a',2,0x3D), _AG_XB('p',3,0x3D), _AG_XB('L',4,0x3D), _AG_XB('o',5,0x3D), _AG_XB('c',6,0x3D), _AG_XB('a',7,0x3D), _AG_XB('t',8,0x3D), _AG_XB('i',9,0x3D), _AG_XB('o',10,0x3D), _AG_XB('n',11,0x3D), _AG_XB('M',12,0x3D), _AG_XB('a',13,0x3D), _AG_XB('n',14,0x3D), _AG_XB('a',15,0x3D), _AG_XB('g',16,0x3D), _AG_XB('e',17,0x3D), _AG_XB('r',18,0x3D) };
+    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x3D);
 }
 
 AG_FORCE_INLINE NSString *ag_enc_nsstr_amap_detect_sel(void) {
@@ -215,8 +220,8 @@ AG_FORCE_INLINE NSString *ag_enc_nsstr_wcpay_offline_vc(void) {
 }
 
 AG_FORCE_INLINE NSString *ag_enc_nsstr_wcpay_receive_vc(void) {
-    const uint8_t e[] = { _AG_XB('W',0,0x7b), _AG_XB('C',1,0x7b), _AG_XB('P',2,0x7b), _AG_XB('a',3,0x7b), _AG_XB('y',4,0x7b), _AG_XB('F',5,0x7b), _AG_XB('a',6,0x7b), _AG_XB('c',7,0x7b), _AG_XB('i',8,0x7b), _AG_XB('n',9,0x7b), _AG_XB('g',10,0x7b), _AG_XB('R',11,0x7b), _AG_XB('e',12,0x7b), _AG_XB('c',13,0x7b), _AG_XB('e',14,0x7b), _AG_XB('i',15,0x7b), _AG_XB('v',16,0x7b), _AG_XB('e',17,0x7b), _AG_XB('Q',18,0x7b), _AG_XB('R',19,0x7b), _AG_XB('C',20,0x7b), _AG_XB('o',21,0x7b), _AG_XB('d',22,0x7b), _AG_XB('e',23,0x7b), _AG_XB('V',24,0x7b), _AG_XB('i',25,0x7b), _AG_XB('e',26,0x7b), _AG_XB('w',27,0x7b), _AG_XB('C',28,0x7b), _AG_XB('o',29,0x7b), _AG_XB('n',30,0x7b), _AG_XB('t',31,0x7b), _AG_XB('r',32,0x7b), _AG_XB('o',33,0x7b), _AG_XB('l',34,0x7b), _AG_XB('l',35,0x7b), _AG_XB('e',36,0x7b), _AG_XB('r',37,0x7b) };
-    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x7b);
+    const uint8_t e[] = { _AG_XB('W',0,0x7B), _AG_XB('C',1,0x7B), _AG_XB('P',2,0x7B), _AG_XB('a',3,0x7B), _AG_XB('y',4,0x7B), _AG_XB('F',5,0x7B), _AG_XB('a',6,0x7B), _AG_XB('c',7,0x7B), _AG_XB('i',8,0x7B), _AG_XB('n',9,0x7B), _AG_XB('g',10,0x7B), _AG_XB('R',11,0x7B), _AG_XB('e',12,0x7B), _AG_XB('c',13,0x7B), _AG_XB('e',14,0x7B), _AG_XB('i',15,0x7B), _AG_XB('v',16,0x7B), _AG_XB('e',17,0x7B), _AG_XB('Q',18,0x7B), _AG_XB('R',19,0x7B), _AG_XB('C',20,0x7B), _AG_XB('o',21,0x7B), _AG_XB('d',22,0x7B), _AG_XB('e',23,0x7B), _AG_XB('V',24,0x7B), _AG_XB('i',25,0x7B), _AG_XB('e',26,0x7B), _AG_XB('w',27,0x7B), _AG_XB('C',28,0x7B), _AG_XB('o',29,0x7B), _AG_XB('n',30,0x7B), _AG_XB('t',31,0x7B), _AG_XB('r',32,0x7B), _AG_XB('o',33,0x7B), _AG_XB('l',34,0x7B), _AG_XB('l',35,0x7B), _AG_XB('e',36,0x7B), _AG_XB('r',37,0x7B) };
+    return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x7B);
 }
 
 AG_FORCE_INLINE NSString *ag_enc_nsstr_wc_moments_vc(void) {
@@ -244,15 +249,10 @@ int _checkLocalCrackPatchStatus(void) {
     return 1;
 }
 
-__attribute__((used, visibility("default"), noinline))
-uint64_t _validateDeviceUDIDHardwareLicenseToken(uint64_t salt) {
-    return salt ^ 0x5AA55AA5ULL;
-}
-
 // ==================== 六、ARM64/ARM64e 自有核心函数头反 Hook / 反断点静默投毒暗桩 ====================
 AG_FORCE_INLINE const uint32_t *_ag_strip_pac_fn_ptr(const void *fnPtr) {
     if (!fnPtr) return NULL;
-#if (defined(__arm64e__) || __has_feature(ptrauth_calls)) && __has_include(<ptrauth.h>)
+#if defined(__arm64e__) || __has_feature(ptrauth_calls)
     return (const uint32_t *)ptrauth_strip(fnPtr, ptrauth_key_asia);
 #else
     return (const uint32_t *)((uintptr_t)fnPtr & 0x0000007FFFFFFFFFULL);
@@ -265,13 +265,11 @@ AG_FORCE_INLINE uint64_t _ag_inspect_arm64_prologue_poison(const uint32_t *insns
     uint32_t i0 = insns[0];
     uint32_t i1 = insns[1];
     uint32_t i2 = insns[2];
-    // 1. 检测软件断点指令 BRK #imm ((insn & 0xFFE0001F) == 0xD4200000)
     if (((i0 & 0xFFE0001FU) == 0xD4200000U) ||
         ((i1 & 0xFFE0001FU) == 0xD4200000U) ||
         ((i2 & 0xFFE0001FU) == 0xD4200000U)) {
         return 0xDEAD10CC55AA55AAULL;
     }
-    // 2. 精确检测 Frida / Substrate 连续跳板对 (LDR X16/X17, #8 + BR X16/X17)，杜绝编译优化误报
     if ((i0 == 0x58000050U && i1 == 0xD61F0200U) ||
         (i0 == 0x58000051U && i1 == 0xD61F0220U) ||
         (i1 == 0x58000050U && i2 == 0xD61F0200U)) {
@@ -284,11 +282,11 @@ AG_FORCE_INLINE uint64_t _ag_inspect_arm64_prologue_poison(const uint32_t *insns
 #endif
 }
 
-// ==================== 七、__DATA,__ag_core 544字节金库与常驻内核寄存器同步引擎 ====================
+// ==================== 七、__DATA,__ag_core 544字节金库、密文备份回滚与常驻内核同步引擎 ====================
 #pragma pack(push, 1)
 typedef struct {
     uint64_t magic;         // 0x4147434F52453630ULL ("AGCORE60")
-    uint32_t flags;         // 0x00000000: 待服务器抽离; 0x00000001: 已由服务器抽离加密
+    uint32_t flags;         // 0x00000000: 待服务器抽离; 0x00000001: 已由服务器抽离加密; 0x00000002: 本地异或锁死
     uint32_t payloadLen;    // 实际 payload 字节长度 (64)
     uint8_t  nonce[16];     // AES-CTR 128位初始化向量
     uint8_t  payload[512];  // 核心灵魂资产加密容器
@@ -304,18 +302,21 @@ static AGCloudCoreVault _g_ag_core_vault = {
     .payload = "AngelGuardian_Pro_Cloud_Brain_2026_Security_Vault_Initial_Seed!"
 };
 
-AG_HIDDEN_VAR volatile uint64_t _g_ui_trait_layout_seed        = 0x0ULL;
-AG_HIDDEN_VAR volatile uint32_t _g_ui_trait_auth_perms         = 0x0FU;
-AG_HIDDEN_VAR volatile int      _g_ag_cloud_explicitly_locked  = 0;
-AG_HIDDEN_VAR NSString         *_g_ag_last_lock_reason_msg     = nil;
-AG_HIDDEN_VAR NSDictionary     *_g_ag_cloud_brain_dict         = nil;
+// 备份首次解密前的 512 字节服务端原始 AES 密文：
+// 封停时将金库回滚为纯密文锁死；解封或输入有效卡密时无需重启桌面即可再次原地解密激活！
+AG_HIDDEN_VAR uint8_t  _s_vault_cipher_backup[512]      = {0};
+AG_HIDDEN_VAR BOOL     _s_vault_cipher_backed_up        = NO;
+AG_HIDDEN_VAR volatile uint64_t _g_ui_trait_layout_seed = 0x0ULL;
+AG_HIDDEN_VAR volatile uint32_t _g_ui_trait_auth_perms  = 0x0FU;
+AG_HIDDEN_VAR volatile int      _g_ag_cloud_explicitly_locked = 0;
+AG_HIDDEN_VAR NSString         *_g_ag_last_lock_reason_msg    = nil;
+AG_HIDDEN_VAR NSDictionary     *_g_ag_cloud_brain_dict        = nil;
 
 AG_NOINLINE void _ag_publish_auth_state_to_kernel(void);
 AG_NOINLINE void _ag_sync_auth_state_from_kernel(void);
 AG_NOINLINE BOOL _ag_decrypt_ag_core_vault_in_memory(const uint8_t *aesKey32);
 AG_NOINLINE BOOL _ag_perform_cloud_handshake_ex(NSString *udid, NSString *appVer, NSString *manualCard, NSString *actionCmd, BOOL interactive);
 
-// 进程级常驻 notifyd 句柄（绝不调用 notify_cancel，确保跨进程虚拟定位与微信/高德/设置 100% 实时读取）
 static int *_ag_get_persistent_auth_tokens(void) {
     static int sTokens[3] = {0, 0, 0};
     static dispatch_once_t onceToken;
@@ -346,9 +347,9 @@ AG_FORCE_INLINE uint64_t _ag_derive_seed_from_vault_payload(void) {
 AG_NOINLINE void _ag_publish_auth_state_to_kernel(void) {
     int *tokens = _ag_get_persistent_auth_tokens();
     if (tokens[0] != 0) {
-        if (_g_ag_cloud_explicitly_locked || _g_ui_trait_layout_seed == 0x0ULL) {
+        if (_g_ag_cloud_explicitly_locked || _g_ui_trait_layout_seed != 0x7F4A7C159E3779B9ULL) {
             notify_set_state(tokens[0], AG_KERNEL_BANNED_SENTINEL);
-            if (tokens[2] != 0) notify_set_state(tokens[2], 0ULL); // 立即清空虚拟定位内核寄存器
+            if (tokens[2] != 0) notify_set_state(tokens[2], 0ULL);
         } else {
             uint64_t obfSeed = AG_MBA_XOR64(_g_ui_trait_layout_seed, 0x9E3779B97F4A7C15ULL);
             notify_set_state(tokens[0], obfSeed);
@@ -361,27 +362,33 @@ AG_NOINLINE void _ag_publish_auth_state_to_kernel(void) {
     notify_post("com.apple.coremedia.spatial.auth_changed");
 }
 
-// 当服务器返回封停/到期/未授权时：物理销毁内存金库 + 强制将插件所有开关复位为关闭 (OFF)
 static void _ag_force_lock_and_disable_all_switches(NSString *reasonMsg) {
     _g_ag_cloud_explicitly_locked = 1;
     _g_ui_trait_layout_seed = 0x0ULL;
     _g_ui_trait_auth_perms = 0U;
     _g_ag_last_lock_reason_msg = reasonMsg ?: @"⚠️ 该设备或卡密未激活或已被管理员封停";
 
-    // 物理覆写内存中的 __DATA,__ag_core 金库明文，彻底杜绝 flags==0 自愈复活！
-    _g_ag_core_vault.flags = 0xFFFFFFFFU;
-    memset(_g_ag_core_vault.payload, 0xCC, sizeof(_g_ag_core_vault.payload));
+    // 将内存金库回滚为服务端 AES 密文态（若無备份密文则异或锁死），既防内存自愈，又支持输卡密免重启当场再解密！
+    if (_s_vault_cipher_backed_up) {
+        memcpy(_g_ag_core_vault.payload, _s_vault_cipher_backup, sizeof(_g_ag_core_vault.payload));
+        _g_ag_core_vault.flags = 1U;
+    } else if (_g_ag_core_vault.flags == 0) {
+        for (size_t i = 0; i < sizeof(_g_ag_core_vault.payload); i++) {
+            _g_ag_core_vault.payload[i] ^= 0xA5U;
+        }
+        _g_ag_core_vault.flags = 2U;
+    }
 
     _ag_publish_auth_state_to_kernel();
 
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     [ud removeObjectForKey:@"AG_CLOUD_CORE_KEY"];
     [ud setInteger:0 forKey:@"AG_CLOUD_EXPIRE_TS"];
-    // 将插件全部功能开关强制置为关闭 (NO)
     NSArray *switchKeys = @[
         @"AGLocationSpoofEnabled", @"AGAntiDetectionEnabled", @"AGLocationAntiDetectEnabled",
         @"ag_spoof_enabled", @"ag_anti_detect_enabled", @"AngelGuardianEnabled",
-        @"AGLiveVoiceEnabled", @"AGScreenTransEnabled", @"AGVideoAIEnabled"
+        @"AGLiveVoiceEnabled", @"AGScreenTransEnabled", @"AGVideoAIEnabled",
+        @"gemini_enabled", @"gemini_loc_spoof_enabled", @"gemini_anti_detect_enabled"
     ];
     for (NSString *k in switchKeys) {
         [ud setBool:NO forKey:k];
@@ -415,7 +422,6 @@ AG_NOINLINE void _ag_sync_auth_state_from_kernel(void) {
         _g_ui_trait_auth_perms = (uint32_t)AG_MBA_XOR64(obfPerms, 0xBF58476D1CE4E5B9ULL);
     }
 
-    // 仅在未被服务器显式封停且金库处于明文态时才允许从本地金库派生
     if (!_g_ag_cloud_explicitly_locked && _g_ui_trait_layout_seed != 0x7F4A7C159E3779B9ULL && _g_ag_core_vault.flags == 0) {
         uint64_t derived = _ag_derive_seed_from_vault_payload();
         if (derived == 0x7F4A7C159E3779B9ULL) {
@@ -543,17 +549,31 @@ AG_FORCE_INLINE NSString *ag_sec_cloud_trans_sys_prompt(NSString *fallbackPrompt
     return (_ag_sec_zero_bias_mask() == 0ULL) ? (fallbackPrompt ?: @"") : @"";
 }
 
-// ==================== 九、金库原地解密、6408字节云脑缓存与设置页/桌面双重强制拦截中心 ====================
+// ==================== 九、金库可逆密文回滚解密、6408字节云脑缓存与设置页/桌面双重强制拦截 ====================
 AG_NOINLINE BOOL _ag_decrypt_ag_core_vault_in_memory(const uint8_t *aesKey32) {
     if (!aesKey32) return NO;
     if (_g_ag_core_vault.magic != 0x4147434F52453630ULL) return NO;
+
+    // 若处于本地异或锁死态 (flags == 2)，先还原回明文
+    if (_g_ag_core_vault.flags == 2U) {
+        for (size_t i = 0; i < sizeof(_g_ag_core_vault.payload); i++) {
+            _g_ag_core_vault.payload[i] ^= 0xA5U;
+        }
+        _g_ag_core_vault.flags = 0U;
+    }
+
     if (_g_ag_core_vault.flags == 0) {
         _g_ag_cloud_explicitly_locked = 0;
         _g_ui_trait_layout_seed = _ag_derive_seed_from_vault_payload();
         return (_g_ui_trait_layout_seed == 0x7F4A7C159E3779B9ULL);
     }
-    if (_g_ag_core_vault.flags == 0xFFFFFFFFU) {
-        return NO;
+
+    // 首次解密前备份 512 字节服务端原始 AES 密文，供封停后再次输入新卡密免重启原地解密
+    if (!_s_vault_cipher_backed_up && _g_ag_core_vault.flags == 1U) {
+        memcpy(_s_vault_cipher_backup, _g_ag_core_vault.payload, sizeof(_g_ag_core_vault.payload));
+        _s_vault_cipher_backed_up = YES;
+    } else if (_s_vault_cipher_backed_up) {
+        memcpy(_g_ag_core_vault.payload, _s_vault_cipher_backup, sizeof(_g_ag_core_vault.payload));
     }
 
     CCCryptorRef cryptor = NULL;
@@ -632,7 +652,6 @@ static NSDictionary *_ag_decrypt_cloud_stream_payload(NSString *payloadB64, NSSt
     return [dict isKindOfClass:[NSDictionary class]] ? dict : nil;
 }
 
-// 支持在 SpringBoard 桌面和 Preferences (系统设置) 中弹出授权拦截框；若传入 hostVC，点取消/返回自动退回上级菜单或关闭弹窗
 static void ag_present_cloud_license_center_alert_on_vc(NSString *serverMsg, UIViewController *hostVC) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (![bid isEqualToString:@"com.apple.springboard"] && ![bid isEqualToString:@"com.apple.Preferences"]) return;
@@ -654,8 +673,8 @@ static void ag_present_cloud_license_center_alert_on_vc(NSString *serverMsg, UIV
         NSString *msgText = serverMsg.length > 0 ? serverMsg : (_g_ag_last_lock_reason_msg ?: @"⚠️ 当前设备未激活或已被封停，所有功能已自动关闭。请输入有效卡密激活：");
 
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🛡️ 守护天使 Pro · 云端授权中心"
-                                                                        message:msgText
-                                                                 preferredStyle:UIAlertControllerStyleAlert];
+                                                                       message:msgText
+                                                                preferredStyle:UIAlertControllerStyleAlert];
         [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
             tf.placeholder = @"请输入 AG-XXXX-XXXX 授权卡密";
             tf.text = ([savedCard isEqualToString:@"AUTO"]) ? @"" : savedCard;
@@ -672,15 +691,9 @@ static void ag_present_cloud_license_center_alert_on_vc(NSString *serverMsg, UIV
             }
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                 BOOL ok = _ag_perform_cloud_handshake_ex(udid, @"1.0.0", inputKey, @"", YES);
-                if (!ok && hostVC) {
+                if (!ok && hostVC.navigationController) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        if (hostVC.navigationController && hostVC.navigationController.viewControllers.count > 1) {
-                            [hostVC.navigationController popViewControllerAnimated:YES];
-                        } else if (hostVC.presentingViewController) {
-                            [hostVC dismissViewControllerAnimated:YES completion:nil];
-                        } else if (hostVC.navigationController.presentingViewController) {
-                            [hostVC.navigationController dismissViewControllerAnimated:YES completion:nil];
-                        }
+                        [hostVC.navigationController popViewControllerAnimated:YES];
                     });
                 }
             });
@@ -694,14 +707,10 @@ static void ag_present_cloud_license_center_alert_on_vc(NSString *serverMsg, UIV
         }]];
 
         [alert addAction:[UIAlertAction actionWithTitle:(hostVC ? @"返回上级菜单" : @"关闭") style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
-            if (hostVC) {
-                if (hostVC.navigationController && hostVC.navigationController.viewControllers.count > 1) {
-                    [hostVC.navigationController popViewControllerAnimated:YES];
-                } else if (hostVC.presentingViewController) {
-                    [hostVC dismissViewControllerAnimated:YES completion:nil];
-                } else if (hostVC.navigationController.presentingViewController) {
-                    [hostVC.navigationController dismissViewControllerAnimated:YES completion:nil];
-                }
+            if (hostVC.navigationController) {
+                [hostVC.navigationController popViewControllerAnimated:YES];
+            } else if (hostVC.presentingViewController) {
+                [hostVC dismissViewControllerAnimated:YES completion:nil];
             }
         }]];
         [topVC presentViewController:alert animated:YES completion:nil];
@@ -712,7 +721,6 @@ static void ag_present_cloud_license_center_alert(NSString *serverMsg) {
     ag_present_cloud_license_center_alert_on_vc(serverMsg, nil);
 }
 
-// 供 Tweak.x 的插件设置页 (viewWillAppear) 与语音唤醒入口直接调用的强拦截门禁
 static BOOL ag_enforce_cloud_auth_or_lock_vc(UIViewController *vc) {
     _ag_sync_auth_state_from_kernel();
     if (_ag_sec_zero_bias_mask() == 0ULL && !_g_ag_cloud_explicitly_locked) {
@@ -807,6 +815,11 @@ AG_NOINLINE BOOL _ag_perform_cloud_handshake_ex(NSString *udid, NSString *appVer
                             }
                             [[NSUserDefaults standardUserDefaults] synchronize];
 
+                            // 关键修复（漏项1）：联网解锁真种子成功后，立即通知定位管理器用新掩码重新刷新一次内核坐标寄存器！
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [[NSNotificationCenter defaultCenter] postNotificationName:@"AGCloudAuthUnlockedResyncNotification" object:nil];
+                            });
+
                             NSString *notice = json[@"capsule_notice"] ?: (json[@"announcement"] ?: @"");
                             if (interactive) {
                                 ag_present_cloud_license_center_alert(notice.length > 0 ? notice : @"✅ 云端卡密授权验证通过！全部核心模块已解锁。");
@@ -815,7 +828,6 @@ AG_NOINLINE BOOL _ag_perform_cloud_handshake_ex(NSString *udid, NSString *appVer
                         memset(aesKey, 0, sizeof(aesKey));
                     }
                 } else {
-                    // 服务器明确拒绝（封停 403 / 过期 402 / 未激活 401）：物理销毁内存金库 + 强制关闭全部开关
                     NSString *errMsg = json[@"msg"] ?: @"⚠️ 该设备或卡密已被管理员停用或已到期，所有功能已自动关闭";
                     _ag_force_lock_and_disable_all_switches(errMsg);
                     ag_present_cloud_license_center_alert(errMsg);
@@ -835,7 +847,10 @@ static BOOL _ag_perform_cloud_handshake_sync(NSString *udid, NSString *appVer) {
 
 __attribute__((constructor))
 static void _ag_security_shield_boot_entry(void) {
-    if (_g_ag_core_vault.flags == 0) {
+    if (_g_ag_core_vault.flags == 1U && !_s_vault_cipher_backed_up) {
+        memcpy(_s_vault_cipher_backup, _g_ag_core_vault.payload, sizeof(_g_ag_core_vault.payload));
+        _s_vault_cipher_backed_up = YES;
+    } else if (_g_ag_core_vault.flags == 0) {
         _g_ui_trait_layout_seed = _ag_derive_seed_from_vault_payload();
     }
 
@@ -876,36 +891,14 @@ static void _ag_security_shield_boot_entry(void) {
     }
 }
 
-// ==================== 十、全局类名与坐标纠偏/内核通信高敏符号深度伪装表 ====================
-
-// 1. 反射绑定宏（供 Tweak.x 同步对齐，杜绝反射断链）
-#define AG_CLS_VOICE_COORD_CSTR               "_UISceneAudioGraphLayoutCoordinator"
-#define AG_CLS_PREFS_CTRL_CSTR                "_UISceneDisplayTraitPreferencesController"
-
-// 2. 自定义 Objective-C 类名重命名 (全部伪装为系统 UIKit / CoreLocation / AVFoundation 内部私有类)
-#define AGLocationSpoofManager                _UIAccessibilityParagraphLayoutCoordinator
-#define AGLocationSpoofSettingsViewController _UITextSelectionForceGestureViewController
-#define AGAppScopePickerViewController        _UISystemSceneHierarchyTableController
-#define AGGaodeTileOverlay                    _MKVectorTileRasterRenderOverlay
-#define GeminiAssistantManager                _UISceneAudioGraphLayoutCoordinator
-#define AGSystemVoiceCoordinator              _UISceneAudioGraphLayoutCoordinator
-#define GeminiPassthroughWindow               _UITextEffectsPassthroughHostingWindow
-#define AngelGuardianSettingsViewController   _UISceneDisplayTraitPreferencesController
-#define AGSystemPreferencesController         _UISceneDisplayTraitPreferencesController
+// ==================== 十、27项全局类名与坐标纠偏/内核通信高敏符号深度伪装表 ====================
+#define AGLocationSpoofManager               _UIAccessibilityParagraphLayoutCoordinator
+#define GeminiAssistantManager               _UISceneAudioGraphLayoutCoordinator
+#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
 #define AGInSituTranslationOverlay           _UIGestureEnvironmentTraitOverlayWindow
 #define AGGlobalActionPillWindow             _UIStatusBarFloatingCapsuleAccessoryWindow
-#define AGLockScreenRootViewController        _UICoverSheetBackdropRootViewController
-#define AGCardBgCanvasView                    _UIGlassMaterialRefractionCanvasView
-#define AGOrbCanvasView                       _UIGlassSpecularSphereIndicatorView
-#define AGWaveCanvasView                      _UIAudioRibbonWaveformRenderView
-#define AGMiniSummonCanvasView                _UISystemApertureFluidPortalCanvasView
-#define AGScreenTranslationOverlay           _UITextCanvasSubpixelRenderingView
-#define AGStreamTranslateDelegate             _CFNetworkHTTPStreamSessionDelegate
-#define AGSharedTransSessionRouter            _CFNetworkSharedStreamSessionRouter
-#define AngelCamGrabber                       _AVCaptureFigVideoSampleDiagnosticNode
 #define AGAnnotation                         _MKMapItemSpatialClusterNode
 
-// 3. 高危 C 钩子与函数名全量混淆
 #define agPublishSpoofStateToKernel          _ui_trait_publish_layout_matrix
 #define agReadSpoofStateFromKernel           _ui_trait_read_layout_matrix
 #define agPublishCustomWiFiToKernel          _ui_trait_publish_network_metrics
