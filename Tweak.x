@@ -507,8 +507,9 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
         }
     });
 
-    // 铁律：若定位总开关关闭，内核中的防检测与伪装 Wi-Fi 强制同步关闭
-    if (!isActive) {
+    // 铁律：若定位总开关关闭或未获得定位模块授权，内核中的防检测与伪装 Wi-Fi 强制同步关闭
+    if (!isActive || !_ag_sec_feature_gate_allow(AG_PERM_LOC_SPOOF)) {
+        isActive = NO;
         shieldOn = NO;
         wifiMode = 0;
         isMoving = NO;
@@ -12494,6 +12495,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 
 - (void)startCameraSession {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_VIDEO_AI)) {
+        return;
+    }
     @try {
         if (self.layoutElementAssertion && [self.layoutElementAssertion respondsToSelector:@selector(invalidate)]) {
             [self.layoutElementAssertion performSelector:@selector(invalidate)];
@@ -12551,6 +12555,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 
 - (void)startInProcessCameraCaptureWithToken:(NSString *)token {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_VIDEO_AI)) {
+        return;
+    }
     ensureSpringBoardTCCGranted();
     [self transitionCameraStateTo:AGCameraStateCameraInitializing
                            detail:(self.useFrontCamera ? @"正在启动前置硬件摄像头..." : @"正在启动后置硬件摄像头...")];
@@ -13247,6 +13254,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     });
 }
 - (void)startAdaptiveVoiceSessionForTab:(AGConfigTab)tab {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)) {
+        return;
+    }
     ensureSpringBoardTCCGranted();
     [self stopAllVoiceEngines];
     pauseBackgroundMediaPlayback();
@@ -14159,7 +14169,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 if ([part[@"thought"] boolValue]) continue;
                 // 【方案 4：双轨解析】从模型原生 parts 中提前提取 [ACTION:...] 协议，杜绝转录语音口语漏掉 Action 导致无法自检的问题！
                 NSString *rawPartText = part[@"text"];
-                if ([rawPartText isKindOfClass:[NSString class]] && [rawPartText containsString:@"[ACTION:"]) {
+                NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+                if ([rawPartText isKindOfClass:[NSString class]] && actPrefix.length > 0 && [rawPartText containsString:actPrefix]) {
                     BOOL actionDirectExecuted = NO;
                     [self parseAndExecuteActions:rawPartText executed:&actionDirectExecuted];
                 }
@@ -14185,7 +14196,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             [self.currentVoiceQueryBuffer setString:@""];
             [self flushPCM24kStagingBuffer];
             self.isLastTranscriptLineUser = NO;
-            if ([self.accumulatedReplyText containsString:@"[ACTION:"]) {
+            NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+            if (actPrefix.length > 0 && [self.accumulatedReplyText containsString:actPrefix]) {
                 BOOL actionExecuted = NO;
                 [self parseAndExecuteActions:self.accumulatedReplyText executed:&actionExecuted];
                 if (actionExecuted) {
@@ -14194,8 +14206,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 }
             }
             NSMutableString *curTrans = [self currentTabTranscript];
-            if ([curTrans containsString:@"[ACTION:"]) {
-                NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:.*?\\]" options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+            if (actPrefix.length > 0 && [curTrans containsString:actPrefix]) {
+                NSString *pat = [NSString stringWithFormat:@"%@.*?\\]", [NSRegularExpression escapedPatternForString:actPrefix]];
+                NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionDotMatchesLineSeparators error:nil];
                 NSString *cleanedTrans = [actionReg stringByReplacingMatchesInString:curTrans options:0 range:NSMakeRange(0, curTrans.length) withTemplate:@""];
                 [curTrans setString:cleanedTrans];
             }
@@ -15198,7 +15211,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     static NSRegularExpression *sActionRegex = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sActionRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:(\\{.*?\\})\\]"
+        NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+        NSString *actPat = (actPrefix.length > 0) ? [NSString stringWithFormat:@"%@(\\{.*?\\})\\]", [NSRegularExpression escapedPatternForString:actPrefix]] : @"\\[ACTION:(\\{.*?\\})\\]";
+        sActionRegex = [NSRegularExpression regularExpressionWithPattern:actPat
                                                                  options:NSRegularExpressionDotMatchesLineSeparators
                                                                    error:nil];
     });
@@ -20451,7 +20466,8 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     [self.accumulatedReplyText appendString:delta];
     [self.pendingSpeechChunk appendString:delta];
 
-    if ([self.accumulatedReplyText containsString:@"[ACTION:"] && [self.accumulatedReplyText containsString:@"]"]) {
+    NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+    if (actPrefix.length > 0 && [self.accumulatedReplyText containsString:actPrefix] && [self.accumulatedReplyText containsString:@"]"]) {
         BOOL actionExecuted = NO;
         [self parseAndExecuteActions:self.accumulatedReplyText executed:&actionExecuted];
         if (actionExecuted) {
@@ -20465,8 +20481,9 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
         [curTrans appendFormat:@"✨ %@：", [self currentVendorBrandName]];
     }
     [curTrans appendString:delta];
-    if ([curTrans containsString:@"[ACTION:"]) {
-        NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:.*?\\]" options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+    if (actPrefix.length > 0 && [curTrans containsString:actPrefix]) {
+        NSString *pat = [NSString stringWithFormat:@"%@.*?\\]", [NSRegularExpression escapedPatternForString:actPrefix]];
+        NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionDotMatchesLineSeparators error:nil];
         NSString *cleanedTrans = [actionReg stringByReplacingMatchesInString:curTrans options:0 range:NSMakeRange(0, curTrans.length) withTemplate:@""];
         [curTrans setString:cleanedTrans];
     }
@@ -20480,7 +20497,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     [self throttledExpandAndScrollTextViewForce:NO];
 
     // 关键修复：将最小朗读分句长度从 >= 4 提升至 >= 14，防止前 4 个字 ("你好！我") 刚出就被切碎提前触发 didFinishSpeechUtterance！
-    if (self.activeModeTab != AGConfigTabPureText && !self.isWebSocketConnected && ![self.accumulatedReplyText containsString:@"[ACTION:"]) {
+    if (self.activeModeTab != AGConfigTabPureText && !self.isWebSocketConnected && (actPrefix.length == 0 || ![self.accumulatedReplyText containsString:actPrefix])) {
         NSCharacterSet *punctSet = [NSCharacterSet characterSetWithCharactersInString:@"。！？；.!?;:\n"];
         NSRange punctRange = [self.pendingSpeechChunk rangeOfCharacterFromSet:punctSet options:NSBackwardsSearch];
         if (punctRange.location != NSNotFound && punctRange.location >= 14) {
@@ -22102,6 +22119,10 @@ static NSMutableSet<NSString *> *agRemindedMissingOfflineLocales(void) {
 }
 
 static void agRawLTTranslatorInvoke(NSString *sourceText, NSString *srcLocaleStr, BOOL forceOffline, void (^completion)(NSString *zhText, NSError *error)) {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) {
+        if (completion) completion(nil, [NSError errorWithDomain:@"AGAuthDenied" code:-403 userInfo:@{NSLocalizedDescriptionKey: @"未获翻译功能授权"}]);
+        return;
+    }
     NSString *cleanSrc = [sourceText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (cleanSrc.length == 0) {
         if (completion) completion(nil, nil);
@@ -22114,9 +22135,9 @@ static void agRawLTTranslatorInvoke(NSString *sourceText, NSString *srcLocaleStr
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dlopen("/System/Library/PrivateFrameworks/Translation.framework/Translation", RTLD_LAZY);
-        Class transCls = objc_getClass("_LTTranslator");
-        sLTParaReqCls  = objc_getClass("_LTParagraphTranslationRequest");
-        sLTTextReqCls  = objc_getClass("_LTTextTranslationRequest");
+        Class transCls = NSClassFromString(ag_sec_cloud_trans_lt_cls());
+        sLTParaReqCls  = NSClassFromString(ag_sec_cloud_trans_para_cls());
+        sLTTextReqCls  = NSClassFromString(ag_sec_cloud_trans_text_cls());
         if (transCls) {
             sSharedLTTranslator = [[transCls alloc] init];
         }
@@ -22244,8 +22265,8 @@ static NSString *gLatestNativeDiagDetailedReport = @"";
 static void agRunNativeOfflineTranslationDiagnostics(void (^completion)(NSString *shortCardSummary, NSString *fullAlertReport, BOOL allCoreReady)) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         dlopen("/System/Library/PrivateFrameworks/Translation.framework/Translation", RTLD_LAZY);
-        Class transCls = objc_getClass("_LTTranslator");
-        Class reqCls   = objc_getClass("_LTParagraphTranslationRequest") ?: objc_getClass("_LTTextTranslationRequest");
+        Class transCls = NSClassFromString(ag_sec_cloud_trans_lt_cls());
+        Class reqCls   = NSClassFromString(ag_sec_cloud_trans_para_cls()) ?: NSClassFromString(ag_sec_cloud_trans_text_cls());
 
         if (!transCls || !reqCls) {
             NSString *shortMsg = @"❌ 无法使用苹果离线翻译：未检测到系统自带「翻译」功能\n👉 原因：您的系统低于 iOS 14 或删掉了苹果自带的「翻译」App。";
@@ -22915,6 +22936,7 @@ static void agResetRealtimeTranslationState(void) {
 }
 
 - (void)showTranslatorFloatingBox {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) return;
     if (!agTransIsEnabled()) return;
     self.isAudioTranslatingActive = YES;
     [self resetAllTranslationHistoryAndUI];
@@ -23706,6 +23728,7 @@ static void initInSituGlobalTouchMonitor(void) {
 }
 
 - (void)startInSituTranslation {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) return;
     if (!agTransIsEnabled()) {
         [[GeminiAssistantManager sharedManager] showActionBanner:@"⚠️ 请先在《设置 -> ✨天使守护》启用实时翻译"];
         return;
