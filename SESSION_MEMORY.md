@@ -1302,3 +1302,49 @@
 - 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (560,360 字节, SHA256: `21908353e938dd6e82b04bbd9f33f59057c497497bf8d441f39066c20662f686`)
   - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (365,508 字节, SHA256: `e51ce19d2bfab0573e5bed3d12d4b2b9b2d7c81a0595106befbdb74f9089c2ce`)
+---
+
+## 2026-11-04: 全量接入五维防破解与反AI逆向护盾（MBA混淆/栈内加解密/蜜罐诱饵/符号伪装） (Run #80)
+
+### 1. 核心改进点（6 处精准替换 + 独立护盾头文件接入）
+1. **新建防破解与反逆向护盾头文件 `AGSecurityShield.h`**：
+   - 包含编译器符号隐藏宏、MBA 混合布尔算术、不透明谓词、编译期多态栈内字符串加解密引擎、反 AI 蜜罐诱饵函数与全量系统 UIKit/CoreLocation 私有排版符号映射表。
+2. **替换点 1：引入 `AGSecurityShield.h` 替换顶部旧明文宏表**：
+   - 彻底用统一安全头文件替代原有旧宏，18 个类、10 个 Category、所有定位与防检测核心方法全部伪装为字体排版私有符号。
+3. **替换点 2：隐藏 TCC 私有符号与升级 MBA 状态耦合内核掩码**：
+   - `ensureSpringBoardTCCGranted` 中 `TCCAccessSetForBundleId` 改为栈内实时解密；
+   - `agKernelObfuscateMask` 升级为 64 位 MBA 混合布尔算术 + 状态耦合零偏置掩码，数学结果 100% 等价但打断 IDA F5 与 AI 模式识别。
+4. **替换点 3：隐藏微信付款码私有类名与对齐雷达反射类名**：
+   - `WCPayOfflinePayViewController` 改为 `ag_enc_cstr_wcpay_vc` 栈内解密；
+   - 雷达回调中反射类名对齐为 `AG_CLS_VOICE_COORD_CSTR`。
+5. **替换点 4：移除翻译模块重复宏并对齐反射与 `%hook`**：
+   - 移除多余的 `AGSharedTransSessionRouter` 宏定义；
+   - 设置卡片 Hook 构造函数中反射类名对齐为 `AG_CLS_PREFS_CTRL_CSTR`，`%hook` 对齐为 `_UISceneAudioGraphLayoutCoordinator`。
+6. **替换点 5：全量栈内加密底部防检测路径、Wi-Fi 与高德符号**：
+   - `agIsSuspiciousJailbreakPath` 与 `hooked_dladdr` 中高危越狱特征词（`/var/jb`, `.jbroot`, `MobileSubstrate`, `DynamicLibraries`, `TweakInject`, `ellekit`, `libroothide`）全部改为栈内实时解密；
+   - `CNCopyCurrentNetworkInfo` 改为栈内解密；
+   - 高德定位 SDK 的 `AMapLocationManager`、`detectRiskOfFakeLocation`、`setDetectRiskOfFakeLocation:` 全量栈内解密。
+7. **替换点 6：%ctor 入口挂载反 AI 蜜罐诱饵与栈内加密 `TCCAccessPreflight`**：
+   - 在永真不透明谓词守卫下引用 `_verifyCloudVIPSubscriptionReceiptWithRSAKey` 与 `_validateDeviceUDIDHardwareLicenseToken`，诱导逆向 AI 锁定假验证函数；
+   - `TCCAccessPreflight` 改为栈内动态解密。
+8. **相机辅助模块 `AngelCameraHelper.m` 接入护盾**：
+   - 引入 `AGSecurityShield.h` 并映射重命名内部方法与 C 函数符号。
+
+### 2. 六大镜像文件 100% 字节级一致性
+- 文件大小：1,437,556 字节
+- SHA256 校验和：`fa076890101f03b764c72cb4ca0183de72a48300c2d92b80d0a10f300088b7c9`
+- 括号平衡校验：`{ brace: 0, paren: 0, bracket: 0 }` (100% PASS)
+- 镜像列表：
+  1. `D:\双工具版本\Tweak.x`
+  2. `D:\双工具版本\Tweak.xm`
+  3. `D:\双工具版本\主修实时翻译.txt`
+  4. `D:\双工具版本\dopamine测试版本.txt`
+  5. `D:\dopamine测试版本.txt`
+  6. `C:\Users\57132\Desktop\relaxin调教版本.txt`
+
+### 3. CI 构建与安装包验证
+- Git Commit: `ea8d55a`
+- GitHub Actions CI Run #80 (ID: 41761959501) - 100% 成功
+- 安装包验证（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64.deb` (562,488 字节, SHA256: `d856a76b08e72275f7c4ab719cf3620ab0ebc0c15eed3df53f3c370620109f02`)
+  - `com.custom.timeguardiansiri123_6.0.0_iphoneos-arm64e.deb` (367,092 字节, SHA256: `51f57191955204fc14171713d654a3641855d58a475ec3b1b97114b5d8174f5f`)
