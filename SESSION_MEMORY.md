@@ -1940,3 +1940,21 @@
    - **系统/白名单进程**：若不是第三方受控客户端 App (`!sIsClientApp`)，直接返回 `NO`，保证系统桌面、设置、插件以及系统网络代理工具 100% 零侵入。
    - **关定位模式**：当客户端 App 未开启虚拟定位 (`!agIsCurrentProcessTargetedForLocSpoof()`) 时，始终返回 `YES` 保持越狱环境与注入痕迹隐藏（`.jbroot`、`/var/jb`、`ellekit`、`libroothide`），彻底消除关闭虚拟定位时的第三方客户端环境被检测风险。
    - **开定位模式**：当客户端 App 处于虚拟定位生效状态 (`agIsCurrentProcessTargetedForLocSpoof()`) 时，门禁严格受控于用户的「防检测开关」(`agIsAntiDetectionShieldActive()`)：不开启防检测时 100% 进行纯虚拟定位（不干预环境拦截），开启防检测时才全面激活越狱环境隐身与深层防封保护。
+
+### 2. CI 构建与安装包全项校验 (Run #114 / Build #117)
+- Git Commit: `0f69019` (Run ID: 42004536858) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (593,484 字节, SHA256: `ab1b8d7a19ee5b4890acbe4406d406e41e8b4290a8af3bf4da68d19a06fc96b3`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,416 字节, SHA256: `eb2efef90e7474dd4beb3a94ddf4426e95179788cca6a2b1bc7d9c2ccee28c5b`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,408 字节 (SHA256: `dfeec0109ad5ecc6b0bfaedec6fc33971ca6079db5a514115be5c10e68c415e3`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 433,954 字节 (SHA256: `e4e903a1e52871aa794878c96f497a9d3c19db23a006a9ac8e366dcf96a1839e`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
