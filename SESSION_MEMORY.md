@@ -1902,3 +1902,13 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 恢复第三方App常驻越狱环境隐藏 + hooked_dladdr关闭开关时全量隐藏越狱路径 (Run #113)
+
+### 1. 核心改进要点 (2处精准修正)
+1. **修正 1（常驻第三方客户端 App 越狱环境隐藏门禁）**：
+   - 将 `agIsEnvironmentStealthActive` 恢复为常驻客户端自隐身：通过 `sIsClientApp`（过滤 SpringBoard、Preferences、appex、系统组件与 VPN 代理）在第三方 App 内始终返回 `YES`，无论虚拟定位和防检测开关是否开启，均始终隐藏 `.jbroot`、`/var/jb`、`ellekit`、`libroothide` 等越狱痕迹。
+2. **修正 2（hooked_dladdr 全场景完整越狱路径隐藏）**：
+   - 简化并强化 `hooked_dladdr`：在第三方受控客户端 App 处于自隐身状态时，直接统一执行 `shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) || strstr(info->dli_fname, "AngelGuardian") != NULL || agIsSuspiciousJailbreakPath(info->dli_fname))`，无论防检测与虚拟定位开或关，均完整隐藏插件自身基址、插件名及所有越狱依赖库路径，100% 伪装为系统 CoreLocation。

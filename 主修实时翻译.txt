@@ -1771,9 +1771,33 @@ static BOOL agIsAntiDetectionShieldActive(void) {
     return NO;
 }
 
-// 恢复为与防检测开关严格一致（确保关闭防检测时 100% 卸载环境拦截）
+// 常驻越狱环境隐藏（Dopamine 与 Relaxin 通用）：无论虚拟定位和防检测开关是否关闭，始终对第三方 App 隐藏越狱路径与注入痕迹
 static BOOL agIsEnvironmentStealthActive(void) {
-    return agIsAntiDetectionShieldActive();
+    static BOOL sIsClientApp = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+        NSString *lowerBID = [bid lowercaseString];
+        NSString *execPath = [[[NSBundle mainBundle] executablePath] lowercaseString] ?: @"";
+        if (bid.length > 0 &&
+            ![execPath containsString:@".appex/"] &&
+            ![bid isEqualToString:@"com.apple.springboard"] &&
+            ![bid isEqualToString:@"com.apple.Preferences"] &&
+            ![bid hasPrefix:@"com.apple."] &&
+            ![lowerBID containsString:@"tunnel"] &&
+            ![lowerBID containsString:@"shadowrocket"] &&
+            ![lowerBID containsString:@"quantumult"] &&
+            ![lowerBID containsString:@"surge"] &&
+            ![lowerBID containsString:@"clash"] &&
+            ![lowerBID containsString:@"stash"] &&
+            ![lowerBID containsString:@"loon"] &&
+            ![lowerBID containsString:@"singbox"] &&
+            ![lowerBID containsString:@"v2ray"] &&
+            ![lowerBID containsString:@"vpn"]) {
+            sIsClientApp = YES;
+        }
+    });
+    return sIsClientApp;
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
@@ -24811,19 +24835,10 @@ AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
 static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
-    if (ret != 0 && info && info->dli_fname && ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) || agIsEnvironmentStealthActive())) {
-        BOOL shouldMask = NO;
-        if (agIsAntiDetectionShieldActive()) {
-            shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
-                          agIsSuspiciousJailbreakPath(info->dli_fname));
-        } else {
-            char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
-            shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
-                          strstr(info->dli_fname, "AngelGuardian") != NULL ||
-                          strstr(info->dli_fname, ag_enc_cstr_ellekit(bEk)) != NULL ||
-                          strstr(info->dli_fname, ag_enc_cstr_libroothide(bRh)) != NULL ||
-                          strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
-        }
+    if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
+        BOOL shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
+                           strstr(info->dli_fname, "AngelGuardian") != NULL ||
+                           agIsSuspiciousJailbreakPath(info->dli_fname));
         if (shouldMask) {
             BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr);
             info->dli_fname = gCoreLocationPath;
