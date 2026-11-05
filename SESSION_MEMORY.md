@@ -1786,3 +1786,21 @@
    - 在 `tryExecuteDirectLocalCommand:` 中扩充虚拟定位关闭词（“关闭定位”、“关掉虚拟定位”、“定位关了”等）与防检测同音词（“房前车”、“防前车”、“房检查”、“防检查”），严禁在听不清“关闭”时盲目进 else 误开启。
 5. **替换块 5（受控第三方 App 从后台切回前台瞬间 0 延迟同步开关并卸载防检测 Hook）**：
    - 在文件最底部 `%ctor` 中增加 `UIApplicationDidBecomeActiveNotification` 监听，App 切回前台瞬间立即触发 `agClientAppMasterSyncCallback`，0 延迟卸载 Hook 并同步内核状态。
+
+### 2. CI 构建与安装包全项校验 (Run #109)
+- Git Commit: `df77de2` (Run ID: 41976849891) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (592,712 字节, SHA256: `88f245016b4c919de62908b7d7738b8ed59167b88cdac73941ebd690416f2733`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (379,488 字节, SHA256: `6c35db27d00b67db25a2e1b32ab4e3a9327fee549d6a8b71dde7b9c0bb0ad5db`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 680,910 字节 (SHA256: `b9bd2d4138c73adc742b6b6d492d811d47d1a5073c1dd547047e15e7ba1da4d8`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 432,948 字节 (SHA256: `3bd0253abcd14bc3dfd3a8701f5ee5f8cc2e67dd89a0042dc0e77efc9e8a715b`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.gz`、`Packages.bz2`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
