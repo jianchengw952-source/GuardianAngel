@@ -1822,3 +1822,21 @@
    - 3-B：在 `primeFullDuplexAudioEngineWithSilentPulse` 中增加输入路由与引擎状态检查，输入设备为空时直接返回，杜绝看视频时触发 `player did not see an IO cycle` 阻塞 5 秒；
    - 3-B：在 `setupAndStartFullDuplexPCMAudioEngine` 中为 `AVAudioSessionCategoryPlayAndRecord` 启用 `AVAudioSessionCategoryOptionMixWithOthers | AVAudioSessionCategoryOptionDuckOthers`，视频背景音自动压低 80%，彻底消除前台视频 App 争抢音频会话引发的 15 秒死锁；
    - 3-B：在 `handleAudioSessionRouteChange:` 中过滤自身启动的 `CategoryChange(3)` 与 `RouteConfigurationChange(8)`，仅在真正硬件设备插拔时触发重连。
+
+### 2. CI 构建与安装包全项校验 (Run #110)
+- Git Commit: `13fa4f0` (Run ID: 41980177051) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (591,980 字节, SHA256: `003d0e358d457e45bb60c400bb7ae0b52fa35bfe6e9ab38c6cebb3a8bcfccf33`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (379,456 字节, SHA256: `1911e51330b42d5e89c98485ec4ccde54ff71184afbd5672ad841c512440d7f4`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 682,760 字节 (SHA256: `860935b3e2ce2506307cd35c2ae06af6d0e6de9227d509033110d59c11b8644b`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 433,018 字节 (SHA256: `e01532026336f95178a84d8b6069e0416f3dfed2ac2a17269904487ddcdfd035`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.gz`、`Packages.bz2`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
