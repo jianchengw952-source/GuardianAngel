@@ -1787,9 +1787,7 @@ static BOOL agIsAntiDetectionShieldActive(void) {
     return NO;
 }
 
-// 三态精准分流：
-// 1. 虚拟定位关闭时 (!agIsCurrentProcessTargetedForLocSpoof)：保持纯越狱环境隐藏 (返回 YES)，确保关定位+关防检测时 0 风险；
-// 2. 虚拟定位开启时 (agIsCurrentProcessTargetedForLocSpoof)：严格由「防检测开关」决定！不开防检测就 100% 纯虚拟定位（返回 NO），开防检测才开启保护（返回 YES）！
+// 常驻屏蔽越狱环境（Dopamine 与 Relaxin 通用）：无论虚拟定位和防检测开关是否关闭，始终保留屏蔽越狱环境
 static BOOL agIsEnvironmentStealthActive(void) {
     static BOOL sIsClientApp = NO;
     static dispatch_once_t onceToken;
@@ -1815,11 +1813,7 @@ static BOOL agIsEnvironmentStealthActive(void) {
             sIsClientApp = YES;
         }
     });
-    if (!sIsClientApp) return NO;
-    if (!agIsCurrentProcessTargetedForLocSpoof()) {
-        return YES;
-    }
-    return agIsAntiDetectionShieldActive();
+    return sIsClientApp;
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
@@ -1963,10 +1957,17 @@ static void agStepKalmanSmoothDrift(BOOL enableJitter, double *ioLat, double *io
     if (outVAcc) *outVAcc = sOUSmoothVAcc;
 }
 
-// 构造 iOS 15 ~ iOS 17 全字段硬件级 CLLocation（修复静止时 course 恒为 0.0° 正北与速度恒为 0.0 的风控破绽）
+// 构造 CLLocation：未开启防检测开关时只返回单纯的经纬度对象；仅在开启防检测开关 (shieldOn) 时才注入硬件级防检测参数！
 static CLLocation *agCreateHardwareGradeLocation(CLLocationCoordinate2D coord, double alt, double hAcc, double vAcc, double course, double speed) {
     BOOL shieldOn = NO;
     agReadSpoofStateFromKernel(NULL, NULL, &shieldOn, NULL, NULL, NULL, NULL, NULL, NULL);
+
+    if (!shieldOn) {
+        sIsCreatingInternalSpoofLocation = YES;
+        CLLocation *plainLoc = [[CLLocation alloc] initWithLatitude:coord.latitude longitude:coord.longitude];
+        sIsCreatingInternalSpoofLocation = NO;
+        return plainLoc;
+    }
 
     double validCourse = course;
     double validSpeed  = (speed >= 0.0) ? speed : 0.0;
@@ -25051,15 +25052,25 @@ static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
     if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
+        BOOL shieldOn = agIsAntiDetectionShieldActive();
+        BOOL spoofOn  = agIsCurrentProcessTargetedForLocSpoof();
+        BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr && gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase);
+
+        // 当开启了虚拟定位 (spoofOn=YES) 但未开启防检测开关 (shieldOn=NO) 时：
+        // 不对 CLLocation 被 Hook 的方法指针入口做防检测伪装（让防检测开关的功能严格随防检测开关运行）；
+        // 其余任何时候（含关闭虚拟定位和防检测时），始终屏蔽越狱环境路径！
+        if (spoofOn && !shieldOn && isDirectFunctionEntryQuery) {
+            return ret;
+        }
+
         BOOL shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
                            strstr(info->dli_fname, "AngelGuardian") != NULL ||
                            agIsSuspiciousJailbreakPath(info->dli_fname));
         if (shouldMask) {
-            BOOL isDirectFunctionEntryQuery = (info->dli_saddr == addr);
             info->dli_fname = gCoreLocationPath;
             uintptr_t addrHash = ((uintptr_t)addr >> 4) & 0x7;
             info->dli_sname = kAGNativeCLSymbolPool[addrHash];
-            if (isDirectFunctionEntryQuery && gCoreLocationBase != NULL) {
+            if (shieldOn && isDirectFunctionEntryQuery && gCoreLocationBase != NULL) {
                 info->dli_fbase = gCoreLocationBase;
                 if (gCoreLocationValidSym != NULL) {
                     info->dli_saddr = gCoreLocationValidSym;

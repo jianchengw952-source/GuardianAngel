@@ -1958,3 +1958,15 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 常驻锁定越狱屏蔽门禁 + 关防检测只生成单纯经纬度 + hooked_dladdr拆分常驻越狱隐藏与动态Hook指针伪装 (Run #115)
+
+### 1. 核心改进要点 (3处精准优化)
+1. **优化 1（agIsEnvironmentStealthActive 锁定常驻屏蔽越狱环境）**：
+   - 锁定为常驻 `return sIsClientApp;`：无论虚拟定位总开关和防检测开关如何切换，对第三方受控客户端 App 永远保留屏蔽 `.jbroot`、`/var/jb`、`ellekit`、`libroothide` 等越狱环境痕迹。
+2. **优化 2（agCreateHardwareGradeLocation 纯定位与硬件级防检测解耦）**：
+   - 在 `agCreateHardwareGradeLocation` 中：通过 `agReadSpoofStateFromKernel` 读取 `shieldOn`。若用户未开启防检测，设置 `sIsCreatingInternalSpoofLocation = YES` 并直接返回 `[[CLLocation alloc] initWithLatitude:coord.latitude longitude:coord.longitude]` 纯经纬度对象，不附带任何硬件级航向/速度算法；仅在 `shieldOn == YES` 时才注入全套全字段硬件仿真参数。
+3. **优化 3（hooked_dladdr 拆分常驻越狱隐藏与动态 Hook 指针伪装）**：
+   - 当开启了虚拟定位 (`spoofOn=YES`) 但未开启防检测开关 (`shieldOn=NO`) 时，对 CLLocation 被 Hook 的方法指针入口 (`isDirectFunctionEntryQuery`) 直接放行原始 `ret`，使防检测开关的功能 100% 严格随防检测开关运行；而在任何其他时候（含关闭虚拟定位和防检测时），始终屏蔽所有自身基址与越狱依赖库路径。
