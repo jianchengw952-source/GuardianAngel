@@ -2020,3 +2020,41 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+
+---
+
+## 2026-11-05: 还原原版 agIsEnvironmentStealthActive、硬件级定位创建、全双工音频引擎与 hooked_dladdr 门禁 (Run #117)
+
+### 1. 核心还原与基线对齐要点 (4 大模块 100% 还原)
+1. **模块 1（还原原版 agIsEnvironmentStealthActive）**：
+   - Dopamine 下与防检测开关完全一致 (`return agIsAntiDetectionShieldActive();`)；
+   - Relaxin (ROOTHIDE) 下在第三方受控客户端 App 内保持隐藏 `.jbroot` 与 `ellekit` (`return sIsClientApp;`)。
+2. **模块 2（还原原版 agCreateHardwareGradeLocation 硬件级全字段构造）**：
+   - 移除临时增加的 `if (!shieldOn) { ... }` 单纯经纬度短路分支；
+   - 无论开关状态，完整构造 iOS 15 ~ iOS 17 全字段硬件级 `CLLocation`（修复静止时 course 恒为 0.0° 正北与速度恒为 0.0 的风控破绽）。
+3. **模块 3（还原原版全双工音频引擎）**：
+   - **`startNativeAppleNeuralVADIfNeeded` 末尾**：移除打断后的延迟派发本地指令调度代码，回归纯粹的神经引擎音节即时打断 (`triggerNativeSiriGradeInstantBargeIn`)；
+   - **`primeFullDuplexAudioEngineWithSilentPulse`**：移除临时 `inputs.count == 0` 判断与重启保护，还原为零分贝静音脉冲毫秒级激活 VoiceProcessingIO 功放与时钟；
+   - **`setupAndStartFullDuplexPCMAudioEngine`**：确保**绝无** `MixWithOthers | DuckOthers` 标志，保障 iOS 硬件回声消除 AEC 与麦克风独占质量；
+   - **`handleAudioSessionRouteChange:`**：移除过滤 `reason != AVAudioSessionRouteChangeReasonNewDeviceAvailable` 的 4 行，还原原版平滑路由变化响应与声卡恢复。
+4. **模块 4（还原原版 hooked_dladdr）**：
+   - 还原原版 `if (agIsAntiDetectionShieldActive()) ... else ...` 简洁分支逻辑与 `isDirectFunctionEntryQuery = (info->dli_saddr == addr)`。
+
+### 2. CI 构建与安装包全项校验 (Run #117 / Build #123)
+- Git Commit: `3843b19` (Run ID: 42022541637) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (592,024 字节, SHA256: `c36b3d424d4dfd816f6e40adf0844a79a8511813c6bc77863d80cd927fcb312f`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,252 字节, SHA256: `d392ff65d2f9e51ae8c0dc8ec4acce4cfc359759f2d399a492f79b2d3c9da643`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 682,776 字节 (SHA256: `e67c88265c5b9d0d865b3bfa33b71d4c46deafa23ec25866b9af3790f0bfeebe`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 433,732 字节 (SHA256: `bc8a7ccbfaa1fd165e0a764d74dc3ffca530777411412486247e15c54cd6c1c4`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
