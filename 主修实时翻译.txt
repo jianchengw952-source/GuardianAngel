@@ -889,6 +889,20 @@ static NSMutableDictionary *loadGeminiPrefs(void) {
 
 static BOOL gIsSavingFromSettingsUI = NO;
 
+static void agPublishSpoofStateToKernelSync(void) {
+    NSDictionary *p = agReadOnlyPrefs();
+    BOOL isActive = [p[@"AG_LocSpoof_Active"] boolValue];
+    NSInteger scopeMode = [p[@"AG_LocSpoof_ScopeMode"] integerValue];
+    NSInteger moveMode = [p[@"AG_LocSpoof_MoveMode"] integerValue];
+    BOOL shieldOn = [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
+    NSInteger wifiMode = [p[@"AG_AntiDet_WiFiMode"] integerValue];
+    BOOL isMoving = [p[@"AG_LocSpoof_IsMoving"] boolValue];
+    double wgsLat = [p[@"AG_LocSpoof_Lat"] doubleValue];
+    double wgsLon = [p[@"AG_LocSpoof_Lon"] doubleValue];
+    NSArray *targetApps = [p[@"AG_LocSpoof_TargetApps"] isKindOfClass:[NSArray class]] ? p[@"AG_LocSpoof_TargetApps"] : @[];
+    agPublishSpoofStateToKernel(isActive, scopeMode, moveMode, shieldOn, wifiMode, isMoving, wgsLat, wgsLon, -1.0, 0.0, targetApps);
+}
+
 static void agSyncDynamicTweakFilterPlist(BOOL isActive, NSInteger scopeMode, NSArray<NSString *> *targetApps) {
     NSString *myBID = [[NSBundle mainBundle] bundleIdentifier];
     if (![myBID isEqualToString:@"com.apple.springboard"] && ![myBID isEqualToString:@"com.apple.Preferences"]) {
@@ -1650,8 +1664,8 @@ static double agTransformLon(double x, double y) {
 
 static CLLocationCoordinate2D agWGS84ToGCJ02(double wgsLat, double wgsLon) {
     if (agIsOutOfChina(wgsLat, wgsLon)) return CLLocationCoordinate2DMake(wgsLat, wgsLon);
-    const double a = 6378245.0;
-    const double ee = 0.00669342162296594323;
+    const double a = ag_sec_coupled_earth_a();
+    const double ee = ag_sec_coupled_earth_ee();
     double dLat = agTransformLat(wgsLon - 105.0, wgsLat - 35.0);
     double dLon = agTransformLon(wgsLon - 105.0, wgsLat - 35.0);
     double radLat = wgsLat / 180.0 * M_PI;
@@ -2065,6 +2079,14 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
                                             (__bridge CFStringRef)kAGLocMasterSyncNotification,
                                             NULL,
                                             CFNotificationSuspensionBehaviorDeliverImmediately);
+            [[NSNotificationCenter defaultCenter] addObserver:self
+                                                     selector:@selector(handleCloudAuthUnlockedResync:)
+                                                         name:@"AGCloudAuthUnlockedResyncNotification"
+                                                       object:nil];
+            [[NSNotificationCenter defaultCenter] addObserver:self
+                                                     selector:@selector(handleCloudForceDisableAllFeatures:)
+                                                         name:@"AGCloudForceDisableAllFeaturesNotification"
+                                                       object:nil];
         }
 
         NSDictionary *p = isSB ? agReadOnlyPrefs() : @{};
@@ -2122,6 +2144,16 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
     return self;
 }
 
+
+- (void)handleCloudAuthUnlockedResync:(NSNotification *)note {
+    [self syncMasterStateFromPrefsAndRestartTimer];
+    agPublishSpoofStateToKernelSync();
+}
+
+- (void)handleCloudForceDisableAllFeatures:(NSNotification *)note {
+    [self stopAndResetToRealLocation];
+    agPublishSpoofStateToKernelSync();
+}
 
 - (void)syncMasterStateFromPrefsAndRestartTimer {
     reloadGeminiPrefsCache();
@@ -3333,6 +3365,25 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 @implementation AGLocationSpoofSettingsViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
+    reloadGeminiPrefsCache();
+    [self.tableView reloadData];
+}
+
+- (void)stopSpoofing {
+    [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
+    agPublishSpoofStateToKernelSync();
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self stopSpoofing];
+    [self updateLiveMapBlueDotAndRoute];
+    [self.tableView reloadData];
+    ag_enforce_cloud_auth_or_lock_vc(self);
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"📍虚拟定位与防检测";
@@ -3356,6 +3407,11 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     [self.view addSubview:self.tableView];
 
     [self setupInteractiveMapHeader];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleForceLockDisableAllFeatures:)
+                                                 name:@"AGCloudForceDisableAllFeaturesNotification"
+                                               object:nil];
 
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     (__bridge const void *)(self),
@@ -3686,6 +3742,11 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     CLLocationCoordinate2D coord = self.mapView.centerCoordinate;
     NSString *name = self.previewPlaceName.length > 0 ? self.previewPlaceName : @"地图选点位置";
     [[AGLocationSpoofManager sharedSpoofer] pinLocationWithCoordinate:coord coordSystem:@"GCJ02" placeName:name];
+    NSMutableDictionary *p = loadGeminiPrefs();
+    p[@"AG_LocSpoof_Active"] = @YES;
+    saveGeminiPrefs(p);
+    agPublishSpoofStateToKernelSync();
+    reloadGeminiPrefsCache();
     [self updateLiveMapBlueDotAndRoute];
     [self.tableView reloadData];
 }
@@ -3983,12 +4044,21 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 - (void)masterSpoofSwitchChanged:(UISwitch *)sender {
     if (sender.isOn) {
+        NSMutableDictionary *p = loadGeminiPrefs();
+        p[@"AG_LocSpoof_Active"] = @YES;
+        saveGeminiPrefs(p);
         [self confirmMapPinTapped];
+        agPublishSpoofStateToKernelSync();
     } else {
         [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
+        NSMutableDictionary *p = loadGeminiPrefs();
+        p[@"AG_LocSpoof_Active"] = @NO;
+        saveGeminiPrefs(p);
+        agPublishSpoofStateToKernelSync();
         [self updateLiveMapBlueDotAndRoute];
-        [self.tableView reloadData];
     }
+    reloadGeminiPrefsCache();
+    [self.tableView reloadData];
 }
 
 - (void)scopeModeSegChanged:(UISegmentedControl *)seg {
@@ -10494,6 +10564,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         _audioPlayQueue = dispatch_queue_create("com.angelguardian.audioplayqueue", DISPATCH_QUEUE_SERIAL);
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioSessionInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioSessionRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleForceLockDisableAllFeatures:) name:@"AGCloudForceDisableAllFeaturesNotification" object:nil];
         _inProcessCIContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
         _synthesizer = [[AVSpeechSynthesizer alloc] init];
         _synthesizer.delegate = self;
@@ -11010,6 +11081,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         });
     }
     return self;
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self stopAllVoiceEngines];
+    [self dismissOverlay];
 }
 
 - (NSMutableString *)currentTabTranscript {
@@ -12542,6 +12618,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 
 - (void)startCameraSession {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_VIDEO_AI)) {
+        return;
+    }
     @try {
         if (self.layoutElementAssertion && [self.layoutElementAssertion respondsToSelector:@selector(invalidate)]) {
             [self.layoutElementAssertion performSelector:@selector(invalidate)];
@@ -12599,6 +12678,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 
 - (void)startInProcessCameraCaptureWithToken:(NSString *)token {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_VIDEO_AI)) {
+        return;
+    }
     ensureSpringBoardTCCGranted();
     [self transitionCameraStateTo:AGCameraStateCameraInitializing
                            detail:(self.useFrontCamera ? @"正在启动前置硬件摄像头..." : @"正在启动后置硬件摄像头...")];
@@ -13295,6 +13377,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     });
 }
 - (void)startAdaptiveVoiceSessionForTab:(AGConfigTab)tab {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)) {
+        ag_present_cloud_license_center_alert(nil);
+        return;
+    }
     ensureSpringBoardTCCGranted();
     [self stopAllVoiceEngines];
     pauseBackgroundMediaPlayback();
@@ -14215,7 +14301,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 if ([part[@"thought"] boolValue]) continue;
                 // 【方案 4：双轨解析】从模型原生 parts 中提前提取 [ACTION:...] 协议，杜绝转录语音口语漏掉 Action 导致无法自检的问题！
                 NSString *rawPartText = part[@"text"];
-                if ([rawPartText isKindOfClass:[NSString class]] && [rawPartText containsString:@"[ACTION:"]) {
+                NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+                if ([rawPartText isKindOfClass:[NSString class]] && actPrefix.length > 0 && [rawPartText containsString:actPrefix]) {
                     BOOL actionDirectExecuted = NO;
                     [self parseAndExecuteActions:rawPartText executed:&actionDirectExecuted];
                 }
@@ -14241,7 +14328,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             [self.currentVoiceQueryBuffer setString:@""];
             [self flushPCM24kStagingBuffer];
             self.isLastTranscriptLineUser = NO;
-            if ([self.accumulatedReplyText containsString:@"[ACTION:"]) {
+            NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+            if (actPrefix.length > 0 && [self.accumulatedReplyText containsString:actPrefix]) {
                 BOOL actionExecuted = NO;
                 [self parseAndExecuteActions:self.accumulatedReplyText executed:&actionExecuted];
                 if (actionExecuted) {
@@ -14250,8 +14338,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 }
             }
             NSMutableString *curTrans = [self currentTabTranscript];
-            if ([curTrans containsString:@"[ACTION:"]) {
-                NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:.*?\\]" options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+            if (actPrefix.length > 0 && [curTrans containsString:actPrefix]) {
+                NSString *pat = [NSString stringWithFormat:@"%@.*?\\]", [NSRegularExpression escapedPatternForString:actPrefix]];
+                NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionDotMatchesLineSeparators error:nil];
                 NSString *cleanedTrans = [actionReg stringByReplacingMatchesInString:curTrans options:0 range:NSMakeRange(0, curTrans.length) withTemplate:@""];
                 [curTrans setString:cleanedTrans];
             }
@@ -15266,7 +15355,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     static NSRegularExpression *sActionRegex = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sActionRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:(\\{.*?\\})\\]"
+        NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+        NSString *actPat = (actPrefix.length > 0) ? [NSString stringWithFormat:@"%@(\\{.*?\\})\\]", [NSRegularExpression escapedPatternForString:actPrefix]] : @"\\[ACTION:(\\{.*?\\})\\]";
+        sActionRegex = [NSRegularExpression regularExpressionWithPattern:actPat
                                                                  options:NSRegularExpressionDotMatchesLineSeparators
                                                                    error:nil];
     });
@@ -19941,6 +20032,10 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
 }
 
 - (void)triggerFromSystemHook {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_LIVE_VOICE)) {
+        ag_present_cloud_license_center_alert(nil);
+        return;
+    }
     agWakeScreenBacklightIfNeeded();
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - self.lastTriggerTime < 0.45) return;
@@ -20519,7 +20614,8 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     [self.accumulatedReplyText appendString:delta];
     [self.pendingSpeechChunk appendString:delta];
 
-    if ([self.accumulatedReplyText containsString:@"[ACTION:"] && [self.accumulatedReplyText containsString:@"]"]) {
+    NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+    if (actPrefix.length > 0 && [self.accumulatedReplyText containsString:actPrefix] && [self.accumulatedReplyText containsString:@"]"]) {
         BOOL actionExecuted = NO;
         [self parseAndExecuteActions:self.accumulatedReplyText executed:&actionExecuted];
         if (actionExecuted) {
@@ -20533,8 +20629,9 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
         [curTrans appendFormat:@"✨ %@：", [self currentVendorBrandName]];
     }
     [curTrans appendString:delta];
-    if ([curTrans containsString:@"[ACTION:"]) {
-        NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:@"\\[ACTION:.*?\\]" options:NSRegularExpressionDotMatchesLineSeparators error:nil];
+    if (actPrefix.length > 0 && [curTrans containsString:actPrefix]) {
+        NSString *pat = [NSString stringWithFormat:@"%@.*?\\]", [NSRegularExpression escapedPatternForString:actPrefix]];
+        NSRegularExpression *actionReg = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionDotMatchesLineSeparators error:nil];
         NSString *cleanedTrans = [actionReg stringByReplacingMatchesInString:curTrans options:0 range:NSMakeRange(0, curTrans.length) withTemplate:@""];
         [curTrans setString:cleanedTrans];
     }
@@ -20548,7 +20645,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     [self throttledExpandAndScrollTextViewForce:NO];
 
     // 关键修复：将最小朗读分句长度从 >= 4 提升至 >= 14，防止前 4 个字 ("你好！我") 刚出就被切碎提前触发 didFinishSpeechUtterance！
-    if (self.activeModeTab != AGConfigTabPureText && !self.isWebSocketConnected && ![self.accumulatedReplyText containsString:@"[ACTION:"]) {
+    if (self.activeModeTab != AGConfigTabPureText && !self.isWebSocketConnected && (actPrefix.length == 0 || ![self.accumulatedReplyText containsString:actPrefix])) {
         NSCharacterSet *punctSet = [NSCharacterSet characterSetWithCharactersInString:@"。！？；.!?;:\n"];
         NSRange punctRange = [self.pendingSpeechChunk rangeOfCharacterFromSet:punctSet options:NSBackwardsSearch];
         if (punctRange.location != NSNotFound && punctRange.location >= 14) {
@@ -20752,7 +20849,18 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 
 @implementation AngelGuardianSettingsViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
+}
+
+- (void)handleForceLockDisableAllFeatures:(NSNotification *)note {
+    [self reloadSettingsLayoutAnimated:YES];
+    ag_enforce_cloud_auth_or_lock_vc(self);
+}
+
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"AGCloudForceDisableAllFeaturesNotification" object:nil];
     if (self.keyboardFrameObserver) {
         [[NSNotificationCenter defaultCenter] removeObserver:self.keyboardFrameObserver];
         self.keyboardFrameObserver = nil;
@@ -20787,6 +20895,11 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
             [self.overlayWindow _setSecure:NO];
         }
     }
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleForceLockDisableAllFeatures:)
+                                                 name:@"AGCloudForceDisableAllFeaturesNotification"
+                                               object:nil];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"保存并关闭" style:UIBarButtonItemStyleDone target:self action:@selector(saveAndDismissTapped)];
     closeItem.tintColor = [UIColor colorWithRed:0.35 green:0.92 blue:0.70 alpha:1.0];
@@ -22170,6 +22283,10 @@ static NSMutableSet<NSString *> *agRemindedMissingOfflineLocales(void) {
 }
 
 static void agRawLTTranslatorInvoke(NSString *sourceText, NSString *srcLocaleStr, BOOL forceOffline, void (^completion)(NSString *zhText, NSError *error)) {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) {
+        if (completion) completion(nil, [NSError errorWithDomain:@"AGAuthDenied" code:-403 userInfo:@{NSLocalizedDescriptionKey: @"未获翻译功能授权"}]);
+        return;
+    }
     NSString *cleanSrc = [sourceText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (cleanSrc.length == 0) {
         if (completion) completion(nil, nil);
@@ -22182,9 +22299,9 @@ static void agRawLTTranslatorInvoke(NSString *sourceText, NSString *srcLocaleStr
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dlopen("/System/Library/PrivateFrameworks/Translation.framework/Translation", RTLD_LAZY);
-        Class transCls = objc_getClass("_LTTranslator");
-        sLTParaReqCls  = objc_getClass("_LTParagraphTranslationRequest");
-        sLTTextReqCls  = objc_getClass("_LTTextTranslationRequest");
+        Class transCls = NSClassFromString(ag_sec_cloud_trans_lt_cls());
+        sLTParaReqCls  = NSClassFromString(ag_sec_cloud_trans_para_cls());
+        sLTTextReqCls  = NSClassFromString(ag_sec_cloud_trans_text_cls());
         if (transCls) {
             sSharedLTTranslator = [[transCls alloc] init];
         }
@@ -22312,8 +22429,8 @@ static NSString *gLatestNativeDiagDetailedReport = @"";
 static void agRunNativeOfflineTranslationDiagnostics(void (^completion)(NSString *shortCardSummary, NSString *fullAlertReport, BOOL allCoreReady)) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         dlopen("/System/Library/PrivateFrameworks/Translation.framework/Translation", RTLD_LAZY);
-        Class transCls = objc_getClass("_LTTranslator");
-        Class reqCls   = objc_getClass("_LTParagraphTranslationRequest") ?: objc_getClass("_LTTextTranslationRequest");
+        Class transCls = NSClassFromString(ag_sec_cloud_trans_lt_cls());
+        Class reqCls   = NSClassFromString(ag_sec_cloud_trans_para_cls()) ?: NSClassFromString(ag_sec_cloud_trans_text_cls());
 
         if (!transCls || !reqCls) {
             NSString *shortMsg = @"❌ 无法使用苹果离线翻译：未检测到系统自带「翻译」功能\n👉 原因：您的系统低于 iOS 14 或删掉了苹果自带的「翻译」App。";
@@ -22983,6 +23100,7 @@ static void agResetRealtimeTranslationState(void) {
 }
 
 - (void)showTranslatorFloatingBox {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) return;
     if (!agTransIsEnabled()) return;
     self.isAudioTranslatingActive = YES;
     [self resetAllTranslationHistoryAndUI];
@@ -23774,6 +23892,7 @@ static void initInSituGlobalTouchMonitor(void) {
 }
 
 - (void)startInSituTranslation {
+    if (!_ag_sec_feature_gate_allow(AG_PERM_TRANSLATE)) return;
     if (!agTransIsEnabled()) {
         [[GeminiAssistantManager sharedManager] showActionBanner:@"⚠️ 请先在《设置 -> ✨天使守护》启用实时翻译"];
         return;
@@ -25954,7 +26073,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
 // 挂载反 AI 蜜罐诱饵引用（防止被链接器 dead_strip 剥离，诱导逆向 AI 锁定假验证函数）
             if (!AG_OPAQUE_TRUE()) {
-                (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", 0x100);
+                (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", NULL);
                 (void)_validateDeviceUDIDHardwareLicenseToken(0x9E3779B9ULL);
             }
             void *tccHandle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW);
