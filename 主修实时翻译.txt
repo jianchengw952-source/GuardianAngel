@@ -14646,7 +14646,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     return;
                 }
             }
-            // 【核心修复】时钟与时间轴重置仅在引擎重启或一轮全新 AI 回复的首包（TurnID 改变）时触发一次！
             BOOL isFirstPacketOfNewTurn = (self.lastResetPlayerTurnID != capturedTurnID);
             if ((engineWasOff || isFirstPacketOfNewTurn || !self.pcmPlayerNode.isPlaying) && self.liveAudioEngine.isRunning) {
                 self.lastResetPlayerTurnID = capturedTurnID;
@@ -14662,6 +14661,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 self.aiTurnAudioStartTime = now;
                 AVAudioSession *sess = [AVAudioSession sharedInstance];
                 NSString *outPortType = sess.currentRoute.outputs.firstObject.portType ?: @"unknown";
+                if ([outPortType isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
+                    [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
+                    outPortType = sess.currentRoute.outputs.firstObject.portType ?: @"SpeakerOverridden";
+                }
                 agLiveDiagLog(@"SPEAKER_FIRST_PLAY_DIAG", @"Turn first audio packet #%lu: samples=%lu | engineRunning=%d | playerPlaying=%d | outPort=%@ | vol=%.2f",
                               (unsigned long)pktIdx, (unsigned long)inSampleCount, self.liveAudioEngine.isRunning, self.pcmPlayerNode.isPlaying, outPortType, sess.outputVolume);
             }
@@ -14781,7 +14784,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             [session setPreferredIOBufferDuration:0.02 error:nil];
             [session setActive:YES withOptions:0 error:nil];
 
-            // 在创建和启动 AVAudioEngine 之前提前锁定扬声器端口，严禁在 engine 启动后再改端口震断音频图！
+            // 在创建和启动 AVAudioEngine 之前提前锁定扬声器端口，严禁在 engine 启动后再改端口震断音频图
             AVAudioSessionPortDescription *preOut = session.currentRoute.outputs.firstObject;
             if ([preOut.portType isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
                 [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
@@ -14789,7 +14792,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
             AVAudioEngine *engine = [[AVAudioEngine alloc] init];
 
-            // 1. 苹果 VPIO 硬件铁律：必须先挂载并连接单声道播放链路 (Bus 0 参考源)，最后才能激活 inputNode 的 VoiceProcessing！
             double hwOutRate = [engine.outputNode outputFormatForBus:0].sampleRate;
             if (hwOutRate <= 0) hwOutRate = session.sampleRate > 0 ? session.sampleRate : 48000.0;
             AVAudioFormat *mixerFormat = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:hwOutRate channels:1];
@@ -14799,7 +14801,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             [engine connect:player to:engine.mainMixerNode format:mixerFormat];
             (void)engine.outputNode;
 
-            // 2. 播放参考链路就绪后，再开启硬件 VoiceProcessingIO 与硬件 AGC
             AVAudioInputNode *inputNode = engine.inputNode;
             NSError *vpErr = nil;
             if ([inputNode respondsToSelector:@selector(setVoiceProcessingEnabled:error:)]) {
@@ -14844,7 +14845,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
                 self.micFramesSinceEngineStart = 0;
                 self.engineStartTimestamp = [[NSDate date] timeIntervalSince1970];
-                // 统一在主线程启动本地神经引擎离线语音 VAD，杜绝与主线程 stopNativeAppleNeuralVAD 产生多线程冲突
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (!self.isDismissed && expectedToken == self.sessionGenerationToken) {
                         [self startNativeAppleNeuralVADIfNeeded];
@@ -14852,7 +14852,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 });
                 [self primeFullDuplexAudioEngineWithSilentPulse:@"FRESH_START"];
 
-                // 0.85 秒麦克风硬件看门狗：带严格 isRunning 校验与异常捕获
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.85 * NSEC_PER_SEC)), agAudioSerialQueue(), ^{
                     if (self.isDismissed || expectedToken != self.sessionGenerationToken || self.activeModeTab == AGConfigTabPureText) return;
                     if (self.micFramesSinceEngineStart == 0 && self.liveAudioEngine) {
@@ -15031,9 +15030,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionRouteChange:(NSNotification *)note {
     if (self.isDismissed || !self.overlayWindow || self.overlayWindow.hidden) return;
     NSUInteger reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
-    // 过滤自身启动切换 Category(3)、Override(4) 或 ConfigurationChange(8) 引发的假通知，仅在真实耳机/蓝牙设备插拔 (1/2) 时恢复路由
-    if (reason != AVAudioSessionRouteChangeReasonNewDeviceAvailable &&
-        reason != AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
+    // 仅忽略引擎刚点火前 0.45s 内的自身切换类别通知，保留后续全时段听筒切回扬声器与蓝牙恢复能力
+    if ((reason == AVAudioSessionRouteChangeReasonCategoryChange || reason == AVAudioSessionRouteChangeReasonOverride) &&
+        ([[NSDate date] timeIntervalSince1970] - self.engineStartTimestamp < 0.45)) {
         return;
     }
     AVAudioSession *sess = [AVAudioSession sharedInstance];
