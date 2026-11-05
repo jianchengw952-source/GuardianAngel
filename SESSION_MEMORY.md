@@ -1912,3 +1912,21 @@
    - 将 `agIsEnvironmentStealthActive` 恢复为常驻客户端自隐身：通过 `sIsClientApp`（过滤 SpringBoard、Preferences、appex、系统组件与 VPN 代理）在第三方 App 内始终返回 `YES`，无论虚拟定位和防检测开关是否开启，均始终隐藏 `.jbroot`、`/var/jb`、`ellekit`、`libroothide` 等越狱痕迹。
 2. **修正 2（hooked_dladdr 全场景完整越狱路径隐藏）**：
    - 简化并强化 `hooked_dladdr`：在第三方受控客户端 App 处于自隐身状态时，直接统一执行 `shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) || strstr(info->dli_fname, "AngelGuardian") != NULL || agIsSuspiciousJailbreakPath(info->dli_fname))`，无论防检测与虚拟定位开或关，均完整隐藏插件自身基址、插件名及所有越狱依赖库路径，100% 伪装为系统 CoreLocation。
+
+### 2. CI 构建与安装包全项校验 (Run #113 / Build #115)
+- Git Commit: `440a59d` (Run ID: 42001857513) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (593,420 字节, SHA256: `24cb1b628effe52e76accfd845839c78b8efb53c595083e35357567ec9456325`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,468 字节, SHA256: `e8d1b5eb16c8c2f43e7b8f6b26494537e70a944946ba5b4917949bfc1a483239`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,528 字节 (SHA256: `c474b6f878f3d17612d52b43e7316938324246f7016bb7a01f8df0982c9010d4`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 434,058 字节 (SHA256: `17cc3eddc5eb2ef10f7950bff7e53b9c8d8c0fad618c89c27e2211f9303d6721`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
