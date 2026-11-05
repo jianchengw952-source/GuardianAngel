@@ -1988,3 +1988,35 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+
+---
+
+## 2026-11-05: 常驻锁定越狱屏蔽门禁 + 关防检测生成纯经纬度 + hooked_dladdr 双分支越狱依赖库全场景屏蔽 (Run #116)
+
+### 1. 核心改进要点 (3 处定稿重构)
+1. **优化 1（agIsEnvironmentStealthActive 锁定常驻屏蔽越狱环境）**：
+   - 锁定为常驻 `return sIsClientApp;`：无论虚拟定位和防检测开关是否开启或关闭，对第三方受控客户端 App 永远保留屏蔽 `.jbroot`、`/var/jb`、`ellekit`、`libroothide`、`cydia://` 等越狱环境痕迹。
+2. **优化 2（agCreateHardwareGradeLocation 纯经纬度与硬件级防检测解耦）**：
+   - 在 `agCreateHardwareGradeLocation` 开头检测 `!shieldOn` 时，通过 `sIsCreatingInternalSpoofLocation = YES` 保护并直接返回 `[[CLLocation alloc] initWithLatitude:coord.latitude longitude:coord.longitude]` 纯坐标对象，绝不掺入防检测的假海拔与假精度；仅在开启防检测开关 (`shieldOn`) 时才注入全套硬件级防检测参数。
+3. **优化 3（hooked_dladdr 双分支越狱依赖库全场景屏蔽与定位 Hook 入口精准控制）**：
+   - **定位 Hook 入口解耦**：当只开启虚拟定位 (`spoofOn=YES`) 但未开启防检测开关 (`shieldOn=NO`) 时，不对 `CLLocation` 的 Hook 方法入口指针 (`isDirectFunctionEntryQuery`) 做符号与基址伪装，直接返回原始 `ret`；开启防检测后才全面伪装为 `gCoreLocationBase` / `gCoreLocationValidSym`。
+   - **全场景越狱依赖库常驻屏蔽**：在 `shieldOn` 与 `!shieldOn` 双分支中均全面检测插件基址、`AngelGuardian`、`ellekit`、`libroothide`、`mobilesubstrate` 及所有疑似越狱路径 (`agIsSuspiciousJailbreakPath`)，并在命中时始终将 `info->dli_fname` 伪装重定向为系统 `gCoreLocationPath`。
+
+### 2. CI 构建与安装包全项校验 (Run #116 / Build #121)
+- Git Commit: `31896ad` (Run ID: 42011797010) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (592,464 字节, SHA256: `7e2c5c1b72817adb56c1b2d204213c8aec0e8cb722ab4c341854e39d96604adb`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,708 字节, SHA256: `bbd9692720a6fd5c5c70a0d6f30a753b3737c7278927a1ce45c7fb0568b6a43c`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,780 字节 (SHA256: `181408b02281b0ce77cbf105f4100dad0e58a30a28ef1e7f2efa3f6a5b7f2663`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 434,406 字节 (SHA256: `a1e5e500a67bc36a9b6017049f4bcbccf8cb2197fad3497531ea51ac3bd0c92d`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
