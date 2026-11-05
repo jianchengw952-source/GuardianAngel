@@ -2195,3 +2195,52 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流完全解密就绪 (PASS)。
+
+
+---
+
+## 2026-11-06: 防反作用加固最终版（零副作用版）音频路由与扬声器锁定上线 (Run #133 / Commit f83cd06)
+
+### 1. 核心精修要点 (零副作用版)
+1. **音频会话路由过滤防反作用加固**：
+   - 在 `handleAudioSessionRouteChange:` 中，由之前一刀切仅放行 `NewDeviceAvailable` / `OldDeviceUnavailable`，精修升级为：**仅忽略引擎刚点火前 0.45s 内的自身切换类别通知 (`CategoryChange` / `Override`)**；
+   - 彻底解除对运行期听筒掉落恢复、蓝牙耳机连接、车载 CarPlay 切换的误拦截，保持全时段听筒切回扬声器与蓝牙自愈能力。
+2. **播放调度段扬声器二次兜底**：
+   - 在 `enqueueAndPlayIncomingPCM24kData:` 首包调度逻辑中增加实时检测：若 `outPortType` 意外回落至 `AVAudioSessionPortBuiltInReceiver`，立即就地调用 `overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker` 强制切回外放，并打上 `SpeakerOverridden` 诊断标记。
+3. **引擎初始化前置扬声器锁定与 VAD 异步派发**：
+   - 在 `setupAndStartFullDuplexPCMAudioEngine` 中，在创建和启动 `AVAudioEngine` 之前提前锁定扬声器端口，严禁在 engine 启动后再改端口震断音频图；
+   - 将 `startNativeAppleNeuralVADIfNeeded` 统一派发至主线程执行，杜绝跨线程冲突；麦克风硬件看门狗中的 `player.play` 严格加 `liveAudioEngine.isRunning` 与 `@try/@catch` 保护。
+4. **静音脉冲预热严格运行态校验**：
+   - 在 `primeFullDuplexAudioEngineWithSilentPulse:` 中增加 `if (!self.liveAudioEngine.isRunning || !self.pcmPlayerNode.isPlaying) return;` 阻断。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,455,475` 字节 (完全落在 1,454,000 ~ 1,455,500 黄金标准区间)
+  - SHA256：`910ee9e44719456e55f54b6703b78f83517a345da420518d91749be653915160` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run #133 / Commit f83cd06)
+- Git Commit: `f83cd06` (Run ID: 42113617181) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (609,412 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (386,288 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 596,112 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 379,324 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥下发正常 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)。
