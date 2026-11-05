@@ -2058,3 +2058,36 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+
+---
+
+## 2026-11-05: 100% 精准回滚至 Run #106 (Commit 4d7c7b7) 稳定基线版本 (Run #118)
+
+### 1. 回滚说明与代码对齐
+- **指令要求**：根据用户明确指令，彻底丢弃 Run #107 ~ Run #117 期间引入的所有试验性改动，100% 精准回滚至 **Run #106 (Commit: `4d7c7b7`)**；
+- **回滚范围**：
+  - [AGSecurityShield.h](file:///D:/双工具版本/AGSecurityShield.h) 完整还原至 `4d7c7b7`；
+  - [Tweak.x](file:///D:/双工具版本/Tweak.x) 完整还原至 `4d7c7b7`；
+  - [主修实时翻译.txt](file:///D:/双工具版本/主修实时翻译.txt) 完整还原至 `4d7c7b7`；
+  - 同步更新副本 `Tweak.xm` 与 `dopamine测试版本.txt`。
+- **差异检验**：`git diff 4d7c7b7 -- AGSecurityShield.h Tweak.x "主修实时翻译.txt"` 0 差异，100% 比对一致。
+- **语法校验**：`check_all_syntax.py` 检验 `{curly: 0, paren: 0, bracket: 0}` 零差错。
+
+### 2. CI 构建与安装包全项校验 (Run #118 / Build #125)
+- Git Commit: `b632b92` (Run ID: 42034684093) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (593,396 字节, SHA256: `38c100d00843a06e35f4ede4c64a34b56dc43b9aa9c5ab341c6f2187937e0022`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (381,012 字节, SHA256: `1d5852d2b87edd7d487c5e8a5bf3af4aba641b145e44d7bb8e0a0b1aeef74a8d`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 685,062 字节 (SHA256: `918aba3be15417d7043c530970d95c1b750c27741f9d2ae718662cee4f217274`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 434,856 字节 (SHA256: `59d67cc9828db7b8ef10a52237e289ec3f2e1c4bdecfc93e58375a7e0174a1dd`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
