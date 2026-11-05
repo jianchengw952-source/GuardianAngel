@@ -1852,3 +1852,21 @@
    - **2-1（切换收藏点）**：在 `resolvePlaceAndPin:completion:` 中，先预设到达方式并调用 `pinLocationWithCoordinate` 开启虚拟定位总开关 (`AG_LocSpoof_Active = YES`)；随后 100% 还原该收藏点保存时的防检测开关 (`fav[@"shieldOn"]`)、专属 Wi-Fi (`fav[@"ssid"]` / `fav[@"bssid"]`) 与生效软件名单 (`fav[@"targetApps"]`)，绝不再被清零；最后触发 `sForceInvalidateKernelCache = YES` 并向内核即时广播 `kAGLocMasterSyncNotification` 与 `kAGLocTickUIUpdateNotification`，提示用户 `(🛡️防检测已同步开启)` 或 `(⚡纯定位模式)`。
    - **2-2（覆盖更新收藏点）**：在 `showActionsForFavoriteAtIndex:item:` 的「🔄 用当前地图选点与当前设置覆盖更新」中，前置调用 `sForceInvalidateKernelCache = YES`、`reloadGeminiPrefsCache()` 并通过 `agReadSpoofStateFromKernel` 读取内核真实防检测状态 `curShield`，保证覆盖时真实写入最新的防检测状态。
    - **2-3（新增/编辑收藏点）**：在 `showAddOrEditFavoriteDialogAtIndex:existingItem:` 的「💾 保存常用地点」中，同样从内核寄存器实时读取 `curShield`，并让 `shieldVal` 正确继承真实防检测状态（编辑时若未定义则继承 `curShield`，新增时继承 `curShield || newSSID.length > 0`）。
+
+### 2. CI 构建与安装包全项校验 (Run #111)
+- Git Commit: `2db85aa` (Run ID: 41994303203) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (591,292 字节, SHA256: `863d21f3b4e10b357d8bc4719f60573c48062acc3ede03f0e4a339c270acaa6c`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,292 字节, SHA256: `ff96e8274ddaadd53b014daf1e32ade8c7ac853765c9151cd1a90921d0003fc8`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,416 字节 (SHA256: `7f0f0e985ea266bb008e56f57646fccf5aad6895ce3b52f95805c3e89e485fcc`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 433,846 字节 (SHA256: `ca91592469d6fadb6831902c4f242850c47696a8dc883c5ebee6627c6889653d`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
