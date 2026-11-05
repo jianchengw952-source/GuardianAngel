@@ -1970,3 +1970,21 @@
    - 在 `agCreateHardwareGradeLocation` 中：通过 `agReadSpoofStateFromKernel` 读取 `shieldOn`。若用户未开启防检测，设置 `sIsCreatingInternalSpoofLocation = YES` 并直接返回 `[[CLLocation alloc] initWithLatitude:coord.latitude longitude:coord.longitude]` 纯经纬度对象，不附带任何硬件级航向/速度算法；仅在 `shieldOn == YES` 时才注入全套全字段硬件仿真参数。
 3. **优化 3（hooked_dladdr 拆分常驻越狱隐藏与动态 Hook 指针伪装）**：
    - 当开启了虚拟定位 (`spoofOn=YES`) 但未开启防检测开关 (`shieldOn=NO`) 时，对 CLLocation 被 Hook 的方法指针入口 (`isDirectFunctionEntryQuery`) 直接放行原始 `ret`，使防检测开关的功能 100% 严格随防检测开关运行；而在任何其他时候（含关闭虚拟定位和防检测时），始终屏蔽所有自身基址与越狱依赖库路径。
+
+### 2. CI 构建与安装包全项校验 (Run #115 / Build #119)
+- Git Commit: `d631c49` (Run ID: 42008690267) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (591,176 字节, SHA256: `29d3f042b17d9dc83783694febc76165fe447e9e419a97d68e54dba9ef7c41ff`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,324 字节, SHA256: `ad0d1d5b1dd4adbf012cd34eeeeb104a0d3bd3855a9b6486738a7a8540151273`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,778 字节 (SHA256: `0a544ac8e38b5c5038075f23f87e245e8ac7da9b45d60e55ec9083b6d3f2a4cb`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 434,186 字节 (SHA256: `ad521335c8a56e3bc070c10dfda720ee077e00a5e61f7e876535d8dc362cd268`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
