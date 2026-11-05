@@ -1870,3 +1870,17 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 保护内核/内存生效软件白名单防洗空 + 恢复防检测严格受控门禁并保护插件基址 + 苹果本机中文神经识别直驱本地指令 (Run #112)
+
+### 1. 核心改进要点 (3处精准修正)
+1. **修正 1（保护内核与内存中的「生效软件白名单 (sTokApps)」绝不被洗空）**：
+   - 在 `agPublishSpoofStateToKernel` 中：当传入的 `targetApps` 计数为 0 且 `scopeMode == 1` (指定软件生效) 时，自动从 `sTokState` 读取当前已写入内核的有效应用列表数量；若原有数量大于 0 则自动标记 `preserveExistingKernelApps = YES`，跳过对 `sTokApps[16]` 的清零覆写，彻底根除多模块联动时应用名单被意外洗空的隐患。
+   - 在 `reloadGeminiPrefsCache` 中：进入读取循环前通过 `os_unfair_lock` 拷贝 `gCachedPrefs` 作为基础字典，保留内存中已有的白名单与收藏夹数据，杜绝因文件空读冲掉内存缓存。
+2. **修正 2（恢复 agIsEnvironmentStealthActive 与防检测严格受控 + hooked_dladdr 单独保护插件基址）**：
+   - `agIsEnvironmentStealthActive` 恢复为严格等价于 `agIsAntiDetectionShieldActive()`，确保用户关闭「防检测开关」时 100% 卸载所有越狱环境和路径拦截，0 干扰系统与其他业务。
+   - 在 `hooked_dladdr` 门禁中加入 `(gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase)`：即使未开启防检测，只要被查询地址属于本插件自身基址，也始终将其虚拟伪装为 CoreLocation 符号，杜绝自身基址泄露风险。
+3. **修正 3（苹果本机 zh-CN 神经识别直接驱动本地语音指令执行）**：
+   - 在 `startNativeAppleNeuralVADIfNeeded` 中：当云端字幕未下发 (`transcription=0` 或网络延迟) 时，由苹果本机神经引擎已识别出的中文文本直接喂入 `currentVoiceQueryBuffer`，并在 0.38 秒防抖后自动触发 `checkDeferredVoiceLocalCommand`，确保即使离线或云端静音也能毫秒级精准执行本地动作指令。

@@ -521,6 +521,21 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
     }
 
     NSUInteger appCount = [targetApps isKindOfClass:[NSArray class]] ? MIN((NSUInteger)32, targetApps.count) : 0;
+    BOOL preserveExistingKernelApps = NO;
+    if (appCount == 0 && scopeMode == 1) {
+        uint64_t oldRaw = 0;
+        if (notify_get_state(sTokState, &oldRaw) == NOTIFY_STATUS_OK) {
+            uint64_t oldState = oldRaw ^ agKernelObfuscateMask(0x101);
+            if ((oldState & 0xFFFF000000000000ULL) == 0xA5A5000000000000ULL) {
+                NSUInteger oldCount = (oldState >> 16) & 0xFF;
+                if (oldCount > 0) {
+                    appCount = oldCount;
+                    preserveExistingKernelApps = YES;
+                }
+            }
+        }
+    }
+
     uint64_t stateBits = 0xA5A5000000000000ULL;
     if (isActive) stateBits |= (1ULL << 0);
     stateBits |= (((uint64_t)(scopeMode & 0x3)) << 1);
@@ -546,11 +561,13 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
     notify_set_state(sTokLon,    lonBits    ^ agKernelObfuscateMask(0x103));
     notify_set_state(sTokMotion, motionBits ^ agKernelObfuscateMask(0x104));
 
-    for (int i = 0; i < 16; i++) {
-        uint32_t h0 = (i * 2 < appCount) ? agHashBundleID(targetApps[i * 2]) : 0;
-        uint32_t h1 = (i * 2 + 1 < appCount) ? agHashBundleID(targetApps[i * 2 + 1]) : 0;
-        uint64_t pairBits = (((uint64_t)h0) << 32) | ((uint64_t)h1);
-        notify_set_state(sTokApps[i], pairBits ^ agKernelObfuscateMask(0x200 + i));
+    if (!preserveExistingKernelApps) {
+        for (int i = 0; i < 16; i++) {
+            uint32_t h0 = (i * 2 < appCount) ? agHashBundleID(targetApps[i * 2]) : 0;
+            uint32_t h1 = (i * 2 + 1 < appCount) ? agHashBundleID(targetApps[i * 2 + 1]) : 0;
+            uint64_t pairBits = (((uint64_t)h0) << 32) | ((uint64_t)h1);
+            notify_set_state(sTokApps[i], pairBits ^ agKernelObfuscateMask(0x200 + i));
+        }
     }
     sForceInvalidateKernelCache = YES;
 }
@@ -820,7 +837,9 @@ static void reloadGeminiPrefsCache(void) {
         @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"
     ];
 #endif
-    NSMutableDictionary *merged = [NSMutableDictionary dictionary];
+    os_unfair_lock_lock(&gPrefsLock);
+    NSMutableDictionary *merged = gCachedPrefs ? [gCachedPrefs mutableCopy] : [NSMutableDictionary dictionary];
+    os_unfair_lock_unlock(&gPrefsLock);
     NSDate *newestDate = nil;
     NSDictionary *newestDict = nil;
 
@@ -1768,33 +1787,9 @@ static BOOL agIsAntiDetectionShieldActive(void) {
     return NO;
 }
 
-// 纯越狱环境与注入自隐身门禁（Dopamine 与 Relaxin 通用）：在第三方客户端 App 内始终隐藏插件自身与 .jbroot / /var/jb / ellekit，消除关闭虚拟定位时的被检测风险
+// 恢复为与防检测开关严格一致（确保关闭防检测时 100% 卸载环境拦截）
 static BOOL agIsEnvironmentStealthActive(void) {
-    static BOOL sIsClientApp = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-        NSString *lowerBID = [bid lowercaseString];
-        NSString *execPath = [[[NSBundle mainBundle] executablePath] lowercaseString] ?: @"";
-        if (bid.length > 0 &&
-            ![execPath containsString:@".appex/"] &&
-            ![bid isEqualToString:@"com.apple.springboard"] &&
-            ![bid isEqualToString:@"com.apple.Preferences"] &&
-            ![bid hasPrefix:@"com.apple."] &&
-            ![lowerBID containsString:@"tunnel"] &&
-            ![lowerBID containsString:@"shadowrocket"] &&
-            ![lowerBID containsString:@"quantumult"] &&
-            ![lowerBID containsString:@"surge"] &&
-            ![lowerBID containsString:@"clash"] &&
-            ![lowerBID containsString:@"stash"] &&
-            ![lowerBID containsString:@"loon"] &&
-            ![lowerBID containsString:@"singbox"] &&
-            ![lowerBID containsString:@"v2ray"] &&
-            ![lowerBID containsString:@"vpn"]) {
-            sIsClientApp = YES;
-        }
-    });
-    return sIsClientApp;
+    return agIsAntiDetectionShieldActive();
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
@@ -14581,6 +14576,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.20)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
+                    // 当云端未下发 inputTranscription (如 transcription=0 或网络卡顿) 时，由苹果本机 zh-CN 识别直接驱动本地指令执行！
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (strongSelf.currentVoiceQueryBuffer.length == 0 && strongSelf.lastNativeNeuralChineseText.length > strongSelf.lastConsumedNeuralCharOffset) {
+                            NSString *localSeg = [strongSelf.lastNativeNeuralChineseText substringFromIndex:strongSelf.lastConsumedNeuralCharOffset];
+                            if (localSeg.length >= 2) {
+                                [strongSelf.currentVoiceQueryBuffer setString:localSeg];
+                            }
+                        }
+                        [NSObject cancelPreviousPerformRequestsWithTarget:strongSelf selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+                        [strongSelf performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.38];
+                    });
                 }
             }
         }];
@@ -25014,7 +25020,7 @@ AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
 static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
-    if (ret != 0 && info && info->dli_fname && agIsEnvironmentStealthActive()) {
+    if (ret != 0 && info && info->dli_fname && ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) || agIsEnvironmentStealthActive())) {
         BOOL shouldMask = NO;
         if (agIsAntiDetectionShieldActive()) {
             shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
