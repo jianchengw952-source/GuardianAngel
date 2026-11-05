@@ -2134,3 +2134,8 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、椭球模型与 AI 规则流完全解密就绪 (PASS)。
+
+- **Pure XZ 格式修复**：
+  - 更新服务端 `/opt/angel_cloud/app.py` 与 `angel_cloud.py` 中的 `smart_shield_deb` 打包命令为 `dpkg-deb -Zxz -b`；
+  - 彻底杜绝 Ubuntu 24.04 默认输出 `control.tar.zst` / `data.tar.zst`，确保加固后的 DEB 包 100% 保持标准的 `control.tar.xz` + `data.tar.xz`，完美兼容 Sileo；
+  - 四大源文件镜像 SHA256 统一为：`8a96618cdcb6f8573b079c286e2f15a5b11206c6878a33708e0fa595d84a5de2` (1,450,926 字节)。
