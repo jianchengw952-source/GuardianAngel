@@ -2091,3 +2091,46 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-06: 内核缓存即时废除 (6-A)、SpringBoard 0ms 刷核与设置页刷新 (6-B)、收藏夹防检测保持 (7)、本地语音救火拦截 (10) (Run #129)
+
+### 1. 核心修复与升级要点 (4 大修复项 100% 精准实装)
+1. **修改块 1（对应修复项 6-A：写入内核寄存器时立即废除 0.20s 旧缓存）**：
+   - 前置声明 `static volatile BOOL sForceInvalidateKernelCache = YES;`；
+   - 每次 `agPublishSpoofStateToKernel` 更新内核寄存器后末尾立即执行 `sForceInvalidateKernelCache = YES;`；
+   - 移除原 643 行附近的重复前置声明，消除手动切换开关后 0.20s 内读回旧缓存的问题。
+2. **修改块 2（对应修复项 6-B：SpringBoard 0ms 刷入内核并清空漂移 + 设置页即时刷新）**：
+   - 在 `syncMasterStateFromPrefsAndRestartTimer` 末尾：当 `!shieldOn` 时清零 OU 漂移参数（`sOUDriftLatM = sOUDriftLonM = sOUDriftAltM = 0.0`），调用 `agPublishSpoofStateToKernel(YES, ...)` 刷入内核，若 `wifiMode == 2` 同步下发自定义 Wi-Fi；
+   - 在 `stealthShieldSwitchChanged:` 与 `customWiFiSwitchChanged:` 回调中：保存配置后立即执行 `sForceInvalidateKernelCache = YES; reloadGeminiPrefsCache();` 并广播 `kAGLocTickUIUpdateNotification`，杜绝 1 秒延迟跳回。
+3. **修改块 3（对应修复项 7：修复收藏夹保存与切换时防检测开关被重置清零）**：
+   - 在 `resolvePlaceAndPin:completion:` 中：切换收藏点时，先执行 `pinLocationWithCoordinate:` 开启虚拟定位总开关 (`AG_LocSpoof_Active = YES`)，随后再还原收藏点绑定的 `shieldOn`、专属 Wi-Fi 与生效软件名单并写入内核与缓存，广播通知；
+   - 在 `showActionsForFavoriteAtIndex:item:` 与 `showAddOrEditFavoriteDialogAtIndex:existingItem:` 中：保存或覆盖更新前先调用 `sForceInvalidateKernelCache = YES; reloadGeminiPrefsCache(); agReadSpoofStateFromKernel(...)` 读取内核最新真实防检测状态，彻底杜绝状态被重置。
+4. **修改块 4（对应修复项 10：本地语音指令与救火识别命中后，阻断云端乱码并清晰播报本地报告）**：
+   - 在 `handleIncomingWebSocketJSON:` 中：将静音超时门限调整为 4.5s；当苹果本机 zh-CN 识别器救火命中 (`usedNativeRescue == YES`) 或执行动作指令（清理/降温/释放/后台等）时，开启 `self.isMutedByLocalBargeIn = YES` 拦截云端乱码音频包；
+   - 在 `enqueueAndPlayIncomingPCM24kData:` 头部增加 `if (self.isMutedByLocalBargeIn && (now - timestamp < 4.5)) return;` 阻断音频入队；
+   - 在 `agSpeakAndBroadcastHardwareResult` 与 `enqueueSpeechSentence:` 中：当处于全双工通话且被本地指令静音阻断 (`isMutedByLocalBargeIn == YES`) 时，允许本机语音合成器直接清晰念出真实的耗电/流量/崩溃/雷达/清理报告，彻底消除“屏幕出中文报告、喇叭回答韩语/德语乱码”的问题。
+5. **CI Runner 架构升级**：
+   - 适配 GitHub 最新 Runner 规则，将 `.github/workflows/build.yml` 的 `runs-on` 由受限的 `macos-14` 更新为 `macos-latest`。
+
+### 2. CI 构建与安装包全项校验 (Run #129 / Build #129)
+- Git Commit: `aeadec0` (Run ID: 42107338377) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (609,856 字节, SHA256: `536e6515f582c4d550c997c0347bfcd902ee2100a6ac0babc96fc829223e1ece`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (386,452 字节, SHA256: `04f320a424fc2e7e50774d50c98428efad44ae7d9292acc1a932a12ad8b7c55a`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 703,004 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 440,024 字节
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+  - 静态检查：Mach-O 明文保护段加密率 100%，明文种子 `AngelGuardian_Pro_Cloud_Brain` 100% 擦除 (0 命中)。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1`，核心密钥与 6,420 字符云脑载荷正常下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、椭球模型与 AI 规则流完全解密就绪 (PASS)。
