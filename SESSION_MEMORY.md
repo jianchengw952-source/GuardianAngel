@@ -1726,3 +1726,25 @@
    - 端云联调实测：
      - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，下发 `core_key` (PASS)。
      - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，触发内存物理抹除与设置死锁阻断 (PASS)。
+
+
+---
+
+## 2026-11-05: 5大定稿替换块实施（消除掩码撕裂/防检测受控统一/设置防旧缓存覆盖/同屏绑定/放行Cryptexes）
+
+### 1. 核心改进要点
+1. **替换块 1（消除跨进程 notifyd 掩码撕裂）**：
+   - 移除了 `agKernelObfuscateMask` 中的 `_ag_sec_zero_bias_mask()`，使得 64 位 MBA 混淆掩码跨进程 100% 恒定一致，杜绝不同进程因云端金库解锁时机不同导致读取坐标/状态混乱。
+2. **替换块 2（Dopamine 与 Relaxin 环境防检测统一受控）**：
+   - 将 `agIsEnvironmentStealthActive()` 统一返回 `agIsAntiDetectionShieldActive()`，在 Dopamine 与 Relaxin (RootHide) 下均严格受控于用户的「防检测开关」，关闭防检测时 100% 不干预任何环境与路径。
+3. **替换块 3（修复《设置》旧缓存覆盖内核 + 消除 5 秒跳帧延迟）**：
+   - 3-A：`syncMasterStateFromPrefsAndRestartTimer` 中落盘多路径（含 `/var/jb/var/mobile/Library/Preferences/`）并发送 UI 更新通知。
+   - 3-B：`pinLocationWithCoordinate:coordSystem:placeName:` 选点前强制从内核寄存器刷新最新状态，彻底根除旧内存缓存把关闭的防检测重新写回 YES。
+   - 3-C：`onSimulationTick` 尾部每 5 秒落盘前重新拉取最新开关，并新增 `shieldJustChanged` 立即同步心跳，消除 5 秒延迟。
+   - 3-D：`resolvePlaceAndPin:completion:` 收藏夹分支安全继承当前防检测状态。
+4. **替换块 4（《设置》页面防检测开关 UI 与内核状态 100% 实时绑定）**：
+   - 4-A：`onRealtimeLocTickUpdate` 中刷新 Preferences 缓存并全量刷新表格。
+   - 4-B & 4-C：`cellForRowAtIndexPath:` 直接以 `agReadSpoofStateFromKernel` 内核寄存器状态优先显示，开关状态同屏秒级绑定。
+5. **替换块 5（放行 iOS 16 Cryptexes 系统组件 + 《设置》专属零副作用同步回调）**：
+   - 5-A：`agIsSuspiciousJailbreakPath` 显式放行 `/private/preboot/Cryptexes/` 与 `/System/Cryptexes/`，并限制 `/private/preboot/` 仅匹配 `/jb-` 与 `procursus`。
+   - 5-B：在 `%ctor` 中为 `com.apple.Preferences` 挂载专属 `agPreferencesProcessSyncCallback` 轻量监听，只刷新缓存不触碰其他业务。
