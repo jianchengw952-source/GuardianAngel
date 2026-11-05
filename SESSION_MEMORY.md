@@ -1804,3 +1804,21 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 修复14个加密字符串与诊断报告nil崩溃/注销记录账本统计/后台媒体控制异步化/消除看视频呼出卡死 (Run #110)
+
+### 1. 核心改进要点 (3处精准代码块)
+1. **第 1 处（AGSecurityShield.h）：消除零偏掩码干扰与统一栈解密**：
+   - 将 `_ag_sec_zero_bias_mask` 改为直接返回 `0ULL`，彻底解除真种子耦合解密中的偏差乱码风险，四大诊断报告不再读出脏数据；
+   - 增加 `_ag_runtime_xor_key(uint8_t baseKey, size_t idx)` 内联多态滚码函数，支持 0ms 稳定还原合法 UTF-8 字符串。
+2. **第 2 处（Tweak.x 与 主修实时翻译.txt）：四大诊断防崩溃与注销账本深度统计**：
+   - 2-A：`agIsHookLoaderOrSystemImage` 中的 `loaders` 数组增加 `?: @"ellekit"`、`?: @"mobilesubstrate"`、`?: @"libroothide"` 安全保底，彻底根除字符串解密为空时插入 `NSArray` 字面量导致的系统崩溃。
+   - 2-B：`agAnalyzeRecentCrashesAndResprings` 中兼容 `.ips.ca.synced` 格式崩溃日志；新增读取 `agRespringLedgerFilePath` 账本计算近 7 天桌面注销总次数与最近一次注销时间，准确展示正常注销与异常崩溃分类报告。
+   - 2-C：`agRecordSpringBoardBootEventAndWarmupCache` 写入账本前自动检查并创建上级目录，确保注销账本 100% 成功落盘。
+3. **第 3 处（Tweak.x 与 主修实时翻译.txt）：根治看视频呼出界面卡死 15 秒**：
+   - 3-A：`pauseBackgroundMediaPlayback` 改为 `dispatch_async` 全局异步后台队列执行，MediaRemote 指令不再阻塞主线程。
+   - 3-B：在 `primeFullDuplexAudioEngineWithSilentPulse` 中增加输入路由与引擎状态检查，输入设备为空时直接返回，杜绝看视频时触发 `player did not see an IO cycle` 阻塞 5 秒；
+   - 3-B：在 `setupAndStartFullDuplexPCMAudioEngine` 中为 `AVAudioSessionCategoryPlayAndRecord` 启用 `AVAudioSessionCategoryOptionMixWithOthers | AVAudioSessionCategoryOptionDuckOthers`，视频背景音自动压低 80%，彻底消除前台视频 App 争抢音频会话引发的 15 秒死锁；
+   - 3-B：在 `handleAudioSessionRouteChange:` 中过滤自身启动的 `CategoryChange(3)` 与 `RouteConfigurationChange(8)`，仅在真正硬件设备插拔时触发重连。

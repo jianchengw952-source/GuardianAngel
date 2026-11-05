@@ -453,17 +453,19 @@ static void killZombieCameraHelpers(void) {
 
 typedef Boolean (*MRMediaRemoteSendCommandFunc)(uint32_t command, void *userInfo);
 static void pauseBackgroundMediaPlayback(void) {
-    static MRMediaRemoteSendCommandFunc sendCmd = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
-        if (handle) {
-            sendCmd = (MRMediaRemoteSendCommandFunc)dlsym(handle, "MRMediaRemoteSendCommand");
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        static MRMediaRemoteSendCommandFunc sendCmd = NULL;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+            if (handle) {
+                sendCmd = (MRMediaRemoteSendCommandFunc)dlsym(handle, "MRMediaRemoteSendCommand");
+            }
+        });
+        if (sendCmd) {
+            sendCmd(1, NULL);
         }
     });
-    if (sendCmd) {
-        sendCmd(1, NULL);
-    }
 }
 
 // ==================== 跨进程共享配置 + notifyd 内核级共享内存穿透沙盒通道 ====================
@@ -8827,10 +8829,13 @@ static BOOL agIsHookLoaderOrSystemImage(NSString *pathOrName) {
         return YES;
     }
     char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
+    NSString *sEk = [NSString stringWithUTF8String:ag_enc_cstr_ellekit(bEk)] ?: @"ellekit";
+    NSString *sMs = [NSString stringWithUTF8String:ag_enc_cstr_mobilesubstrate(bMs)] ?: @"mobilesubstrate";
+    NSString *sRh = [NSString stringWithUTF8String:ag_enc_cstr_libroothide(bRh)] ?: @"libroothide";
     NSArray<NSString *> *loaders = @[
-        [NSString stringWithUTF8String:ag_enc_cstr_ellekit(bEk)], @"libsubstitute", @"substrateinserter", [NSString stringWithUTF8String:ag_enc_cstr_mobilesubstrate(bMs)],
+        sEk, @"libsubstitute", @"substrateinserter", sMs,
         @"libhooker", @"libblackjack", @"cydiasubstrate", @"choicy.dylib",
-        [NSString stringWithUTF8String:ag_enc_cstr_libroothide(bRh)], @"opainject", @"oldabi", @"cephei"
+        sRh, @"opainject", @"oldabi", @"cephei"
     ];
     for (NSString *ld in loaders) {
         if ([lower containsString:ld]) return YES;
@@ -8976,7 +8981,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 if (!files) continue;
                 for (NSString *fname in files) {
                     if ([seenFiles containsObject:fname]) continue;
-                    if (![fname hasSuffix:@".ips"] && ![fname hasSuffix:@".crash"]) continue;
+                    if (![fname containsString:@".ips"] && ![fname hasSuffix:@".crash"]) continue;
 
                     NSString *lowerF = [fname lowercaseString];
                     if ([lowerF containsString:@"excresource"] || [lowerF hasPrefix:@"general"] || [lowerF hasPrefix:@"analytics"] || [lowerF hasPrefix:@"stacks"]) {
@@ -9337,19 +9342,41 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 } mutableCopy]];
             }
 
+// 读取 ag_respring_ledger.json 统计近 7 天桌面注销重启总次数与最近一次注销时间
+            NSUInteger respringTotalCount = 0;
+            NSString *latestRespringTimeStr = @"无";
+            NSData *ledgerData = [NSData dataWithContentsOfFile:agRespringLedgerFilePath()];
+            if (ledgerData) {
+                NSArray *savedBoots = [NSJSONSerialization JSONObjectWithData:ledgerData options:0 error:nil];
+                if ([savedBoots isKindOfClass:[NSArray class]]) {
+                    NSTimeInterval latestTs = 0;
+                    for (id item in savedBoots) {
+                        NSNumber *tsNum = agSafeNum(item);
+                        if (tsNum && [tsNum doubleValue] >= sevenDaysAgo) {
+                            respringTotalCount++;
+                            if ([tsNum doubleValue] > latestTs) latestTs = [tsNum doubleValue];
+                        }
+                    }
+                    if (latestTs > 0) {
+                        latestRespringTimeStr = [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:latestTs]];
+                    }
+                }
+            }
+
             NSMutableString *card = [NSMutableString string];
-            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 内存爆满 OOM 报告】\n"];
-            [card appendFormat:@"• 🔄 异常死机重启：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
-            [card appendFormat:@"• 💥 桌面自动注销：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
+            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 桌面注销 / 内存爆满 OOM 报告】\n"];
+            [card appendFormat:@"• 🔄 整机开机状态：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
+            [card appendFormat:@"• 🔁 桌面注销记录：近7天累计注销重启桌面 %lu 次（最近一次：%@）\n", (unsigned long)respringTotalCount, latestRespringTimeStr];
+            [card appendFormat:@"• 💥 异常崩溃统计：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
              (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount];
 
             NSString *pillOut = nil;
             NSString *speechOut = nil;
 
             if (parsedRecords.count == 0) {
-                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，系统运行非常稳定。"];
-                pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃0注销｜%@", bootSummary];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面崩溃与内存爆满注销 0 次，没有发现任何插件冲突。", bootSummary];
+                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，所有注销均为正常桌面重启，系统运行非常稳定。"];
+                pillOut = [NSString stringWithFormat:@"✅ 近7天正常注销%lu次(0崩溃)｜最近:%@", (unsigned long)respringTotalCount, latestRespringTimeStr];
+                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@。近 7 天桌面累计注销重启 %lu 次，最近一次注销时间是 %@；其中整机死机重启 0 次，插件崩溃与内存爆满异常注销 0 次，没有发现任何插件冲突。", bootSummary, (unsigned long)respringTotalCount, latestRespringTimeStr];
             } else {
                 for (NSUInteger i = 0; i < parsedRecords.count; i++) {
                     NSDictionary *rec = parsedRecords[i];
@@ -10222,7 +10249,12 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
                     [bootList addObject:@(now)];
                     NSData *outData = [NSJSONSerialization dataWithJSONObject:bootList options:0 error:nil];
                     if (outData) {
-                        [outData writeToFile:agRespringLedgerFilePath() atomically:YES];
+                        NSString *ledgerPath = agRespringLedgerFilePath();
+                        NSString *ledgerDir = [ledgerPath stringByDeletingLastPathComponent];
+                        if (![[NSFileManager defaultManager] fileExistsAtPath:ledgerDir]) {
+                            [[NSFileManager defaultManager] createDirectoryAtPath:ledgerDir withIntermediateDirectories:YES attributes:nil error:nil];
+                        }
+                        [outData writeToFile:ledgerPath atomically:YES];
                     }
                     agAnalyzeRecentCrashesAndResprings(nil, nil, nil);
                     agAnalyze24HourTweakPowerDrain(nil, nil, nil);
@@ -14650,18 +14682,23 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     });
 }
 
-// 发送 40ms 零分贝静音脉冲，像当年播放提示音一样 0ms 激活 VoiceProcessingIO 全双工时钟与功放，人耳完全无感
+// 发送 40ms 零分贝静音脉冲（增加输入路由与引擎运行检查，彻底杜绝看视频 in=none 时触发 player did not see an IO cycle 阻塞 5 秒）
 - (void)primeFullDuplexAudioEngineWithSilentPulse:(NSString *)reasonTag {
     dispatch_async(self.audioPlayQueue, ^{
         if (self.isDismissed || !self.liveAudioEngine || !self.pcmPlayerNode || !self.playerOutputFormat) return;
         @try {
+            AVAudioSession *sess = [AVAudioSession sharedInstance];
+            if (sess.currentRoute.inputs.count == 0) {
+                return;
+            }
             BOOL engineWasStopped = !self.liveAudioEngine.isRunning;
             if (engineWasStopped) {
                 NSError *reErr = nil;
-                [self.liveAudioEngine startAndReturnError:&reErr];
+                if (![self.liveAudioEngine startAndReturnError:&reErr] || !self.liveAudioEngine.isRunning) {
+                    return;
+                }
                 agLiveDiagLog(@"AUDIO_PRIME_DIAG", @"Restarted stopped engine during prime (%@), err=%@", reasonTag, reErr.localizedDescription ?: @"none");
             }
-            // 【核心修复】只要引擎发生过重启，或者当前没有正在播放的 AI 语音，必须先 stop 再 play 重新绑定渲染时钟，否则第一句必无声！
             if (engineWasStopped || self.pendingPlayBuffersCount == 0 || !self.pcmPlayerNode.isPlaying) {
                 [self.pcmPlayerNode stop];
                 [self.pcmPlayerNode play];
@@ -14687,7 +14724,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     dispatch_async(agAudioSerialQueue(), ^{
         if (self.isDismissed || expectedToken != self.sessionGenerationToken) return;
         @try {
-            // 若音频引擎已在运行，直接保持在线复用，避免重连时反复切换 AVAudioSession 引起 Route changed reason=3
             if (self.liveAudioEngine && self.liveAudioEngine.isRunning && self.pcmPlayerNode && self.playerOutputFormat) {
                 if (!self.pcmPlayerNode.isPlaying) {
                     [self.pcmPlayerNode play];
@@ -14709,11 +14745,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
             AVAudioSession *session = [AVAudioSession sharedInstance];
             NSString *chatMode = self.isVideoChatActive ? AVAudioSessionModeVideoChat : AVAudioSessionModeVoiceChat;
-            // 移除 MixWithOthers，确保 iOS VoiceProcessingIO 硬件回声消除完整激活
+            // 启用 MixWithOthers | DuckOthers：在看视频呼出界面时自动将视频背景音压低 80%，彻底根除前台视频 App 争抢音频会话引发的 15 秒死锁！
             NSError *catErr = nil;
             [session setCategory:AVAudioSessionCategoryPlayAndRecord
                             mode:chatMode
-                         options:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP
+                         options:AVAudioSessionCategoryOptionMixWithOthers | AVAudioSessionCategoryOptionDuckOthers | AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP
                            error:&catErr];
             [session setPreferredIOBufferDuration:0.02 error:nil];
             [session setActive:YES withOptions:0 error:nil];
@@ -14954,27 +14990,33 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionRouteChange:(NSNotification *)note {
     if (self.isDismissed || !self.overlayWindow || self.overlayWindow.hidden) return;
     NSUInteger reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
-    AVAudioSession *sess = [AVAudioSession sharedInstance];
-    NSString *inPort = sess.currentRoute.inputs.firstObject.portType ?: @"none";
-    NSString *outPort = sess.currentRoute.outputs.firstObject.portType ?: @"none";
-    agLiveDiagLog(@"AUDIO_ROUTE", @"Route changed reason=%lu | in=%@ | out=%@ | engineRunning=%d",
-                  (unsigned long)reason, inPort, outPort, (self.liveAudioEngine ? self.liveAudioEngine.isRunning : 0));
-
+    // 过滤自身启动时的 CategoryChange(3) 与 RouteConfigurationChange(8)，仅在真正插拔耳机/蓝牙设备(reason 1 或 2)时执行路由恢复
+    if (reason != AVAudioSessionRouteChangeReasonNewDeviceAvailable &&
+        reason != AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
+        return;
+    }
     if (self.activeModeTab != AGConfigTabPureText) {
         dispatch_async(agAudioSerialQueue(), ^{
             if (self.isDismissed || !self.liveAudioEngine) return;
-            if ([outPort isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
-                [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
-            }
-            if (!self.liveAudioEngine.isRunning) {
-                NSError *err = nil;
-                [self.liveAudioEngine startAndReturnError:&err];
-                agLiveDiagLog(@"AUDIO_ROUTE_HEAL", @"Restarted engine after route change (running=%d, err=%@)", self.liveAudioEngine.isRunning, err.localizedDescription ?: @"none");
-            }
-            if (self.pcmPlayerNode && !self.pcmPlayerNode.isPlaying) {
-                [self.pcmPlayerNode play];
-            }
-            [self primeFullDuplexAudioEngineWithSilentPulse:@"ROUTE_CHANGE"];
+            @try {
+                AVAudioSession *sess = [AVAudioSession sharedInstance];
+                NSString *inPort = sess.currentRoute.inputs.firstObject.portType ?: @"none";
+                NSString *outPort = sess.currentRoute.outputs.firstObject.portType ?: @"none";
+                agLiveDiagLog(@"AUDIO_ROUTE", @"Hardware route changed reason=%lu | in=%@ | out=%@ | engineRunning=%d",
+                              (unsigned long)reason, inPort, outPort, self.liveAudioEngine.isRunning);
+                if ([inPort isEqualToString:@"none"]) return;
+                if ([outPort isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
+                    [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
+                }
+                if (!self.liveAudioEngine.isRunning) {
+                    NSError *err = nil;
+                    [self.liveAudioEngine startAndReturnError:&err];
+                }
+                if (self.liveAudioEngine.isRunning && self.pcmPlayerNode && !self.pcmPlayerNode.isPlaying) {
+                    [self.pcmPlayerNode play];
+                }
+                [self primeFullDuplexAudioEngineWithSilentPulse:@"ROUTE_CHANGE"];
+            } @catch (NSException *e) {}
         });
     }
 }
