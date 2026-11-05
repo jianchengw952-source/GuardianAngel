@@ -1930,3 +1930,13 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 越狱环境与防检测门禁三态精准分流（关定位纯环境隐藏+开定位严格受控于防检测开关）(Run #114)
+
+### 1. 核心改进要点
+1. **`agIsEnvironmentStealthActive` 三态精准分流**：
+   - **系统/白名单进程**：若不是第三方受控客户端 App (`!sIsClientApp`)，直接返回 `NO`，保证系统桌面、设置、插件以及系统网络代理工具 100% 零侵入。
+   - **关定位模式**：当客户端 App 未开启虚拟定位 (`!agIsCurrentProcessTargetedForLocSpoof()`) 时，始终返回 `YES` 保持越狱环境与注入痕迹隐藏（`.jbroot`、`/var/jb`、`ellekit`、`libroothide`），彻底消除关闭虚拟定位时的第三方客户端环境被检测风险。
+   - **开定位模式**：当客户端 App 处于虚拟定位生效状态 (`agIsCurrentProcessTargetedForLocSpoof()`) 时，门禁严格受控于用户的「防检测开关」(`agIsAntiDetectionShieldActive()`)：不开启防检测时 100% 进行纯虚拟定位（不干预环境拦截），开启防检测时才全面激活越狱环境隐身与深层防封保护。

@@ -1787,7 +1787,9 @@ static BOOL agIsAntiDetectionShieldActive(void) {
     return NO;
 }
 
-// 常驻越狱环境隐藏（Dopamine 与 Relaxin 通用）：无论虚拟定位和防检测开关是否关闭，始终对第三方 App 隐藏越狱路径与注入痕迹
+// 三态精准分流：
+// 1. 虚拟定位关闭时 (!agIsCurrentProcessTargetedForLocSpoof)：保持纯越狱环境隐藏 (返回 YES)，确保关定位+关防检测时 0 风险；
+// 2. 虚拟定位开启时 (agIsCurrentProcessTargetedForLocSpoof)：严格由「防检测开关」决定！不开防检测就 100% 纯虚拟定位（返回 NO），开防检测才开启保护（返回 YES）！
 static BOOL agIsEnvironmentStealthActive(void) {
     static BOOL sIsClientApp = NO;
     static dispatch_once_t onceToken;
@@ -1813,7 +1815,11 @@ static BOOL agIsEnvironmentStealthActive(void) {
             sIsClientApp = YES;
         }
     });
-    return sIsClientApp;
+    if (!sIsClientApp) return NO;
+    if (!agIsCurrentProcessTargetedForLocSpoof()) {
+        return YES;
+    }
+    return agIsAntiDetectionShieldActive();
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
