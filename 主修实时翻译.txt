@@ -491,6 +491,8 @@ AG_FORCE_INLINE uint64_t agKernelObfuscateMask(uint32_t channelSalt) {
     return AG_MBA_XOR64(AG_MBA_XOR64(z, (z >> 31)), _ag_sec_zero_bias_mask());
 }
 
+static volatile BOOL sForceInvalidateKernelCache = YES;
+
 static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSInteger moveMode, BOOL shieldOn, NSInteger wifiMode, BOOL isMoving, double wgsLat, double wgsLon, double course, double speed, NSArray<NSString *> *targetApps) {
     static int sTokState = 0, sTokLat = 0, sTokLon = 0, sTokMotion = 0;
     static int sTokApps[16] = {0};
@@ -507,8 +509,9 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
         }
     });
 
-    // 铁律：若定位总开关关闭，内核中的防检测与伪装 Wi-Fi 强制同步关闭
-    if (!isActive) {
+    // 铁律：若定位总开关关闭或未获得定位模块授权，内核中的防检测与伪装 Wi-Fi 强制同步关闭
+    if (!isActive || !_ag_sec_feature_gate_allow(AG_PERM_LOC_SPOOF)) {
+        isActive = NO;
         shieldOn = NO;
         wifiMode = 0;
         isMoving = NO;
@@ -546,6 +549,7 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
         uint64_t pairBits = (((uint64_t)h0) << 32) | ((uint64_t)h1);
         notify_set_state(sTokApps[i], pairBits ^ agKernelObfuscateMask(0x200 + i));
     }
+    sForceInvalidateKernelCache = YES;
 }
 
 // 将用户填写的伪装 Wi-Fi (SSID 与 BSSID) 加密写入 notifyd 内核寄存器，100% 穿透钉钉/企微/飞书沙盒限制
@@ -638,8 +642,6 @@ static BOOL agReadCustomWiFiFromKernel(NSString **outSSID, NSString **outBSSID) 
     }
     return NO;
 }
-
-static volatile BOOL sForceInvalidateKernelCache = YES;
 
 // ====== 防卡顿替换 1 开始（替换 agReadSpoofStateFromKernel 函数） ======
 static BOOL agReadSpoofStateFromKernel(BOOL *outActive, NSInteger *outScopeMode, BOOL *outShieldOn, NSInteger *outWiFiMode, double *outLat, double *outLon, double *outCourse, double *outSpeed, BOOL *outIsTargetAppMatch) {
@@ -2171,6 +2173,18 @@ static void agSpringBoardMasterSyncCallback(CFNotificationCenterRef center, void
     self.isSpoofingActive = YES;
     self.cachedTickLocation = nil;
 
+    BOOL shieldOn = (p[@"AG_AntiDet_ShieldEnabled"] == nil) ? NO : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
+    NSInteger rawWiFi = p[@"AG_AntiDet_WiFiMode"] ? [p[@"AG_AntiDet_WiFiMode"] integerValue] : 1;
+    NSInteger wifiMode = shieldOn ? ((rawWiFi == 2) ? 2 : 1) : 0;
+    if (!shieldOn) {
+        sOUDriftLatM = 0.0;
+        sOUDriftLonM = 0.0;
+        sOUDriftAltM = 0.0;
+    }
+    agPublishSpoofStateToKernel(YES, scopeMode, moveMode, shieldOn, wifiMode, moving, self.currentWGS84Coord.latitude, self.currentWGS84Coord.longitude, self.currentCourse, (moving ? self.moveSpeedMetersPerSec : 0.0), targetApps);
+    if (wifiMode == 2) {
+        agPublishCustomWiFiToKernel(p[@"AG_AntiDet_FakeSSID"], p[@"AG_AntiDet_FakeBSSID"]);
+    }
 
     [self applyPreferencesAndRestartTimerIfNeeded];
     [self pushSimulatedLocationToDaemonWithCourse:self.currentCourse speed:(moving ? self.moveSpeedMetersPerSec : 0.0) forceRestart:YES];
@@ -2768,7 +2782,16 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
             double fLon = [agSafeNum(fav[@"lon"]) doubleValue];
             if (fabs(fLat) > 0.001 || fabs(fLon) > 0.001) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (fav[@"moveMode"] != nil) {
+                        NSMutableDictionary *preMp = loadGeminiPrefs();
+                        preMp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
+                        saveGeminiPrefs(preMp);
+                    }
+                    // 1. 先执行选点将 AG_LocSpoof_Active 置为 YES
+                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
+                    // 2. 再还原该收藏点绑定的防检测开关、专属 Wi-Fi 与生效软件名单，确保绝不被清零
                     NSMutableDictionary *mp = loadGeminiPrefs();
+                    mp[@"AG_LocSpoof_Active"] = @YES;
                     if (fav[@"scopeMode"] != nil) mp[@"AG_LocSpoof_ScopeMode"] = fav[@"scopeMode"];
                     if ([fav[@"targetApps"] isKindOfClass:[NSArray class]]) mp[@"AG_LocSpoof_TargetApps"] = fav[@"targetApps"];
                     if (fav[@"moveMode"] != nil) mp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
@@ -2788,8 +2811,15 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
                         mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @1 : @0;
                     }
                     saveGeminiPrefs(mp);
-                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
-                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(含专属设置)", favName]);
+                    sForceInvalidateKernelCache = YES;
+                    reloadGeminiPrefsCache();
+                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                         (__bridge CFStringRef)kAGLocMasterSyncNotification,
+                                                         NULL, NULL, YES);
+                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                         (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
+                                                         NULL, NULL, YES);
+                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(%@)", favName, (shieldOn ? @"🛡️防检测已同步开启" : @"⚡纯定位模式")]);
                 });
                 return;
             }
@@ -4024,11 +4054,16 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }
     gIsSavingFromSettingsUI = YES;
     saveGeminiPrefs(p);
+    sForceInvalidateKernelCache = YES;
+    reloadGeminiPrefsCache();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         gIsSavingFromSettingsUI = NO;
     });
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)kAGLocMasterSyncNotification,
+                                         NULL, NULL, YES);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
                                          NULL, NULL, YES);
     [self.tableView reloadData];
 }
@@ -4045,11 +4080,16 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }
     gIsSavingFromSettingsUI = YES;
     saveGeminiPrefs(p);
+    sForceInvalidateKernelCache = YES;
+    reloadGeminiPrefsCache();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         gIsSavingFromSettingsUI = NO;
     });
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)kAGLocMasterSyncNotification,
+                                         NULL, NULL, YES);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
                                          NULL, NULL, YES);
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:2] withRowAnimation:UITableViewRowAnimationAutomatic];
 }
@@ -4167,7 +4207,11 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图选点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        sForceInvalidateKernelCache = YES;
+        reloadGeminiPrefsCache();
         NSMutableDictionary *p = loadGeminiPrefs();
+        BOOL curShield = [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
+        agReadSpoofStateFromKernel(NULL, NULL, &curShield, NULL, NULL, NULL, NULL, NULL, NULL);
         NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (idx < favs.count) {
             CLLocationCoordinate2D curCenter = self.mapView.centerCoordinate;
@@ -4178,7 +4222,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             updated[@"scopeMode"] = p[@"AG_LocSpoof_ScopeMode"] ?: @0;
             updated[@"targetApps"] = p[@"AG_LocSpoof_TargetApps"] ?: @[];
             updated[@"moveMode"] = p[@"AG_LocSpoof_MoveMode"] ?: @0;
-            updated[@"shieldOn"] = p[@"AG_AntiDet_ShieldEnabled"] ?: @NO;
+            updated[@"shieldOn"] = @(curShield);
             updated[@"ssid"] = p[@"AG_AntiDet_FakeSSID"] ?: @"";
             updated[@"bssid"] = p[@"AG_AntiDet_FakeBSSID"] ?: @"";
             favs[idx] = updated;
@@ -4265,13 +4309,17 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             finalLat = initLat; finalLon = initLon;
         }
 
+        sForceInvalidateKernelCache = YES;
+        reloadGeminiPrefsCache();
         NSMutableDictionary *mp = loadGeminiPrefs();
+        BOOL curShield = [mp[@"AG_AntiDet_ShieldEnabled"] boolValue];
+        agReadSpoofStateFromKernel(NULL, NULL, &curShield, NULL, NULL, NULL, NULL, NULL, NULL);
         NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (newName.length == 0) {
             newName = (mapAddr.length > 0 && mapAddr.length <= 10) ? mapAddr : [NSString stringWithFormat:@"常用地点%lu", (unsigned long)(favs.count + 1)];
         }
 
-        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? YES : [existing[@"shieldOn"] boolValue]) : ([mp[@"AG_AntiDet_ShieldEnabled"] boolValue] || newSSID.length > 0);
+        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? curShield : [existing[@"shieldOn"] boolValue]) : (curShield || newSSID.length > 0);
         NSDictionary *newEntry = @{
             @"name": newName,
             @"address": (isEdit && [agSafeStr(existing[@"address"]) length] > 0) ? existing[@"address"] : mapAddr,
@@ -14079,7 +14127,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         NSDictionary *outputTrans = serverContent[@"outputTranscription"];
         if ([outputTrans isKindOfClass:[NSDictionary class]] && [outputTrans[@"text"] isKindOfClass:[NSString class]]) {
             NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
-            if (self.isMutedByLocalBargeIn && (nowTs - self.bargeInMuteTimestamp < 1.5)) {
+            if (self.isMutedByLocalBargeIn && (nowTs - self.bargeInMuteTimestamp < 4.5)) {
                 return;
             }
             // 若用户此时正在开口说话（打断后 0.85s 内），忽略旧轮次残留的 outputTranscription，绝不提前清空用户正在说的半句话
@@ -14097,11 +14145,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
                 }
                 BOOL localHandled = NO;
+                BOOL usedNativeRescue = NO;
                 NSString *execCmd = fullVoiceCmd;
 
                 // 若打断时苹果本地识别出的中文比云端残缺文本更长，优先测试本地完整中文
                 if (nativeSeg.length > fullVoiceCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
                     localHandled = YES;
+                    usedNativeRescue = YES;
                     execCmd = nativeSeg;
                     agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued fuller barge-in command via Apple zh-CN: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
                 } else if ([self tryExecuteDirectLocalCommand:fullVoiceCmd]) {
@@ -14109,6 +14159,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     execCmd = fullVoiceCmd;
                 } else if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
                     localHandled = YES;
+                    usedNativeRescue = YES;
                     execCmd = nativeSeg;
                     agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Rescued command via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullVoiceCmd);
                 }
@@ -14120,7 +14171,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 if (localHandled) {
                     NSTimeInterval nowExec = [[NSDate date] timeIntervalSince1970];
                     self.lastLocalActionExecTime = nowExec;
-                    BOOL isPureStatusQuery = ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"清理"] || [execCmd containsString:@"请你"] || [execCmd containsString:@"垃圾"] || [execCmd containsString:@"缓存"] || [execCmd containsString:@"系统数据"] || [execCmd containsString:@"释放"] || [execCmd containsString:@"耗电"] || [execCmd containsString:@"流量"] || [execCmd containsString:@"拦截"] || [execCmd containsString:@"检测记录"] || [execCmd containsString:@"降温"] || [execCmd containsString:@"发烫"] || [execCmd containsString:@"发热"] || [execCmd containsString:@"好烫"]);
+                    BOOL isPureStatusQuery = (!usedNativeRescue &&
+                                              ![execCmd containsString:@"清理"] && ![execCmd containsString:@"请你"] &&
+                                              ![execCmd containsString:@"垃圾"] && ![execCmd containsString:@"缓存"] &&
+                                              ![execCmd containsString:@"后台"] && ![execCmd containsString:@"系统数据"] &&
+                                              ![execCmd containsString:@"释放"] && ![execCmd containsString:@"降温"] &&
+                                              ([execCmd containsString:@"电池"] || [execCmd containsString:@"电量"] || [execCmd containsString:@"健康度"] || [execCmd containsString:@"内存"] || [execCmd containsString:@"运存"] || [execCmd containsString:@"运行速度"] || [execCmd containsString:@"卡不卡"] || [execCmd containsString:@"死机"] || [execCmd containsString:@"崩溃"] || [execCmd containsString:@"闪退"] || [execCmd containsString:@"注销"] || [execCmd containsString:@"重启"] || [execCmd containsString:@"哪个插件"] || [execCmd containsString:@"什么插件"] || [execCmd containsString:@"耗电"] || [execCmd containsString:@"流量"] || [execCmd containsString:@"拦截"] || [execCmd containsString:@"检测记录"]));
                     if (!isPureStatusQuery) {
                         self.isMutedByLocalBargeIn = YES;
                         self.bargeInMuteTimestamp = nowExec;
@@ -14151,7 +14207,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
         NSArray *parts = serverContent[@"modelTurn"][@"parts"];
         if ([parts isKindOfClass:[NSArray class]]) {
-            if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 2.2)) {
+            if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 4.5)) {
                 return;
             }
             for (NSDictionary *part in parts) {
@@ -14397,6 +14453,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 - (void)enqueueAndPlayIncomingPCM24kData:(NSData *)pcm16Data {
     if (!self.liveAudioEngine || !self.pcmPlayerNode || !self.playerOutputFormat) return;
+    if (self.isMutedByLocalBargeIn && ([[NSDate date] timeIntervalSince1970] - self.bargeInMuteTimestamp < 4.5)) return;
     NSUInteger inSampleCount = pcm16Data.length / sizeof(int16_t);
     if (inSampleCount < 24) return; // 过滤小于 1ms 的无效微碎包，防止队列碎片化与爆音
 
@@ -15132,11 +15189,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 
     BOOL handled = NO;
+    BOOL usedNativeRescue = NO;
     NSString *matchedCmd = fullCmd;
 
     // 若边打断边说指令时苹果本地 zh-CN 识别出的字数比云端更完整（如本地听全了“返回桌面”而云端只听到“8 面”），优先用本地完整中文匹配
     if (nativeSeg.length > fullCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
         handled = YES;
+        usedNativeRescue = YES;
         matchedCmd = nativeSeg;
         agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred fuller barge-in command rescued via Apple zh-CN: '%@' (cloud was '%@')", nativeSeg, fullCmd);
     } else if ([self tryExecuteDirectLocalCommand:fullCmd]) {
@@ -15144,6 +15203,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         matchedCmd = fullCmd;
     } else if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
         handled = YES;
+        usedNativeRescue = YES;
         matchedCmd = nativeSeg;
         agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred command rescued via Apple zh-CN recognizer: '%@' (cloud was '%@')", nativeSeg, fullCmd);
     }
@@ -15155,7 +15215,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
         }
         [self.currentVoiceQueryBuffer setString:@""];
-        BOOL isPureStatusQuery = ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"清理"] || [matchedCmd containsString:@"请你"] || [matchedCmd containsString:@"垃圾"] || [matchedCmd containsString:@"缓存"] || [matchedCmd containsString:@"系统数据"] || [matchedCmd containsString:@"释放"] || [matchedCmd containsString:@"耗电"] || [matchedCmd containsString:@"流量"] || [matchedCmd containsString:@"拦截"] || [matchedCmd containsString:@"检测记录"] || [matchedCmd containsString:@"降温"] || [matchedCmd containsString:@"发烫"] || [matchedCmd containsString:@"发热"] || [matchedCmd containsString:@"好烫"]);
+        BOOL isPureStatusQuery = (!usedNativeRescue &&
+                                  ![matchedCmd containsString:@"清理"] && ![matchedCmd containsString:@"请你"] &&
+                                  ![matchedCmd containsString:@"垃圾"] && ![matchedCmd containsString:@"缓存"] &&
+                                  ![matchedCmd containsString:@"后台"] && ![matchedCmd containsString:@"系统数据"] &&
+                                  ![matchedCmd containsString:@"释放"] && ![matchedCmd containsString:@"降温"] &&
+                                  ([matchedCmd containsString:@"电池"] || [matchedCmd containsString:@"电量"] || [matchedCmd containsString:@"健康度"] || [matchedCmd containsString:@"内存"] || [matchedCmd containsString:@"运存"] || [matchedCmd containsString:@"运行速度"] || [matchedCmd containsString:@"卡不卡"] || [matchedCmd containsString:@"死机"] || [matchedCmd containsString:@"崩溃"] || [matchedCmd containsString:@"闪退"] || [matchedCmd containsString:@"注销"] || [matchedCmd containsString:@"重启"] || [matchedCmd containsString:@"哪个插件"] || [matchedCmd containsString:@"什么插件"] || [matchedCmd containsString:@"耗电"] || [matchedCmd containsString:@"流量"] || [matchedCmd containsString:@"拦截"] || [matchedCmd containsString:@"检测记录"]));
         if (!isPureStatusQuery) {
             self.isMutedByLocalBargeIn = YES;
             self.bargeInMuteTimestamp = now;
@@ -15184,7 +15249,10 @@ static NSTimeInterval gLastOpenedPlatformTime = 0;
 static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSString *speechText) {
     if (!mgr || !speechText || speechText.length == 0) return;
     if (mgr.isWebSocketConnected && mgr.liveWebSocketTask && mgr.activeModeTab != AGConfigTabPureText) {
-        // 实时硬件与运存数据已预埋进握手 systemInstruction，严禁在语音流中途强插 clientContent 导致服务端状态机卡死！
+        // 当云端听成外语乱码被本机救火静音 (isMutedByLocalBargeIn == YES) 时，由本机语音合成器直接播报真实报告
+        if (mgr.isMutedByLocalBargeIn) {
+            [mgr enqueueSpeechSentence:speechText];
+        }
         return;
     } else if (mgr.activeModeTab != AGConfigTabPureText) {
         [mgr enqueueSpeechSentence:speechText];
@@ -20493,8 +20561,8 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 }
 
 - (void)enqueueSpeechSentence:(NSString *)sentence {
-    // 关键防御：全双工实时通话中所有语音全权由云端 PCM 播放器输出，严禁本地系统合成器并发播报
-    if (self.isWebSocketConnected && self.liveWebSocketTask != nil) {
+    // 全双工实时通话中：仅当云端因外语乱码或本地指令被静音阻断 (isMutedByLocalBargeIn == YES) 时才允许本机播报，绝不与云端语音重叠
+    if (self.isWebSocketConnected && self.liveWebSocketTask != nil && !self.isMutedByLocalBargeIn) {
         return;
     }
     NSString *clean = [sentence stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
