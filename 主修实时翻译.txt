@@ -453,19 +453,17 @@ static void killZombieCameraHelpers(void) {
 
 typedef Boolean (*MRMediaRemoteSendCommandFunc)(uint32_t command, void *userInfo);
 static void pauseBackgroundMediaPlayback(void) {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        static MRMediaRemoteSendCommandFunc sendCmd = NULL;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
-            if (handle) {
-                sendCmd = (MRMediaRemoteSendCommandFunc)dlsym(handle, "MRMediaRemoteSendCommand");
-            }
-        });
-        if (sendCmd) {
-            sendCmd(1, NULL);
+    static MRMediaRemoteSendCommandFunc sendCmd = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+        if (handle) {
+            sendCmd = (MRMediaRemoteSendCommandFunc)dlsym(handle, "MRMediaRemoteSendCommand");
         }
     });
+    if (sendCmd) {
+        sendCmd(1, NULL);
+    }
 }
 
 // ==================== 跨进程共享配置 + notifyd 内核级共享内存穿透沙盒通道 ====================
@@ -517,21 +515,6 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
     }
 
     NSUInteger appCount = [targetApps isKindOfClass:[NSArray class]] ? MIN((NSUInteger)32, targetApps.count) : 0;
-    BOOL preserveExistingKernelApps = NO;
-    if (appCount == 0 && scopeMode == 1) {
-        uint64_t oldRaw = 0;
-        if (notify_get_state(sTokState, &oldRaw) == NOTIFY_STATUS_OK) {
-            uint64_t oldState = oldRaw ^ agKernelObfuscateMask(0x101);
-            if ((oldState & 0xFFFF000000000000ULL) == 0xA5A5000000000000ULL) {
-                NSUInteger oldCount = (oldState >> 16) & 0xFF;
-                if (oldCount > 0) {
-                    appCount = oldCount;
-                    preserveExistingKernelApps = YES;
-                }
-            }
-        }
-    }
-
     uint64_t stateBits = 0xA5A5000000000000ULL;
     if (isActive) stateBits |= (1ULL << 0);
     stateBits |= (((uint64_t)(scopeMode & 0x3)) << 1);
@@ -557,15 +540,12 @@ static void agPublishSpoofStateToKernel(BOOL isActive, NSInteger scopeMode, NSIn
     notify_set_state(sTokLon,    lonBits    ^ agKernelObfuscateMask(0x103));
     notify_set_state(sTokMotion, motionBits ^ agKernelObfuscateMask(0x104));
 
-    if (!preserveExistingKernelApps) {
-        for (int i = 0; i < 16; i++) {
-            uint32_t h0 = (i * 2 < appCount) ? agHashBundleID(targetApps[i * 2]) : 0;
-            uint32_t h1 = (i * 2 + 1 < appCount) ? agHashBundleID(targetApps[i * 2 + 1]) : 0;
-            uint64_t pairBits = (((uint64_t)h0) << 32) | ((uint64_t)h1);
-            notify_set_state(sTokApps[i], pairBits ^ agKernelObfuscateMask(0x200 + i));
-        }
+    for (int i = 0; i < 16; i++) {
+        uint32_t h0 = (i * 2 < appCount) ? agHashBundleID(targetApps[i * 2]) : 0;
+        uint32_t h1 = (i * 2 + 1 < appCount) ? agHashBundleID(targetApps[i * 2 + 1]) : 0;
+        uint64_t pairBits = (((uint64_t)h0) << 32) | ((uint64_t)h1);
+        notify_set_state(sTokApps[i], pairBits ^ agKernelObfuscateMask(0x200 + i));
     }
-    sForceInvalidateKernelCache = YES;
 }
 
 // 将用户填写的伪装 Wi-Fi (SSID 与 BSSID) 加密写入 notifyd 内核寄存器，100% 穿透钉钉/企微/飞书沙盒限制
@@ -835,9 +815,7 @@ static void reloadGeminiPrefsCache(void) {
         @"/var/mobile/Library/Preferences/com.custom.geminisirioverlay.plist"
     ];
 #endif
-    os_unfair_lock_lock(&gPrefsLock);
-    NSMutableDictionary *merged = gCachedPrefs ? [gCachedPrefs mutableCopy] : [NSMutableDictionary dictionary];
-    os_unfair_lock_unlock(&gPrefsLock);
+    NSMutableDictionary *merged = [NSMutableDictionary dictionary];
     NSDate *newestDate = nil;
     NSDictionary *newestDict = nil;
 
@@ -2790,46 +2768,28 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
             double fLon = [agSafeNum(fav[@"lon"]) doubleValue];
             if (fabs(fLat) > 0.001 || fabs(fLon) > 0.001) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    // 1. 先预设到达方式并调用 pinLocationWithCoordinate 开启虚拟定位总开关 (AG_LocSpoof_Active = YES)
-                    reloadGeminiPrefsCache();
-                    if (fav[@"moveMode"] != nil) {
-                        NSMutableDictionary *preMp = loadGeminiPrefs();
-                        preMp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
-                        saveGeminiPrefs(preMp);
-                    }
-                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
-
-                    // 2. 在虚拟定位总开关已开启的基础上，100% 还原该收藏点保存时的防检测开关、专属 Wi-Fi 与生效软件名单（绝不再被清零！）
-                    reloadGeminiPrefsCache();
                     NSMutableDictionary *mp = loadGeminiPrefs();
-                    mp[@"AG_LocSpoof_Active"] = @YES;
                     if (fav[@"scopeMode"] != nil) mp[@"AG_LocSpoof_ScopeMode"] = fav[@"scopeMode"];
                     if ([fav[@"targetApps"] isKindOfClass:[NSArray class]]) mp[@"AG_LocSpoof_TargetApps"] = fav[@"targetApps"];
                     if (fav[@"moveMode"] != nil) mp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
-                    NSString *fSSID = agSafeStr(fav[@"ssid"]);
-                    NSString *fBSSID = agSafeStr(fav[@"bssid"]);
-                    BOOL shieldOn = (fav[@"shieldOn"] == nil) ? YES : ([fav[@"shieldOn"] boolValue] || (fSSID.length > 0 && fBSSID.length > 0));
+                    BOOL shieldOn = (fav[@"shieldOn"] == nil) ? YES : [fav[@"shieldOn"] boolValue];
                     mp[@"AG_AntiDet_ShieldEnabled"] = @(shieldOn);
                     mp[@"AG_AntiDet_HideSimFlag"] = @(shieldOn);
                     mp[@"AG_AntiDet_MotionSync"] = @(shieldOn);
                     mp[@"AG_AntiDet_HideHookPtr"] = @(shieldOn);
                     mp[@"AG_LocSpoof_JitterEnabled"] = @(shieldOn);
+                    NSString *fSSID = agSafeStr(fav[@"ssid"]);
+                    NSString *fBSSID = agSafeStr(fav[@"bssid"]);
                     if (fSSID.length > 0 && fBSSID.length > 0) {
                         mp[@"AG_AntiDet_FakeSSID"] = fSSID;
                         mp[@"AG_AntiDet_FakeBSSID"] = fBSSID;
-                        mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @2 : @0;
+                        mp[@"AG_AntiDet_WiFiMode"] = @2;
                     } else {
                         mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @1 : @0;
                     }
                     saveGeminiPrefs(mp);
-                    sForceInvalidateKernelCache = YES;
-                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                         (__bridge CFStringRef)kAGLocMasterSyncNotification,
-                                                         NULL, NULL, YES);
-                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                         (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
-                                                         NULL, NULL, YES);
-                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(%@)", favName, (shieldOn ? @"🛡️防检测已同步开启" : @"⚡纯定位模式")]);
+                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
+                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(含专属设置)", favName]);
                 });
                 return;
             }
@@ -4207,12 +4167,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图选点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        sForceInvalidateKernelCache = YES;
-        reloadGeminiPrefsCache();
         NSMutableDictionary *p = loadGeminiPrefs();
-        BOOL kActiveNow = NO, kShieldNow = NO;
-        BOOL hasK = agReadSpoofStateFromKernel(&kActiveNow, NULL, &kShieldNow, NULL, NULL, NULL, NULL, NULL, NULL);
-        BOOL curShield = hasK ? kShieldNow : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
         NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (idx < favs.count) {
             CLLocationCoordinate2D curCenter = self.mapView.centerCoordinate;
@@ -4223,7 +4178,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             updated[@"scopeMode"] = p[@"AG_LocSpoof_ScopeMode"] ?: @0;
             updated[@"targetApps"] = p[@"AG_LocSpoof_TargetApps"] ?: @[];
             updated[@"moveMode"] = p[@"AG_LocSpoof_MoveMode"] ?: @0;
-            updated[@"shieldOn"] = @(curShield);
+            updated[@"shieldOn"] = p[@"AG_AntiDet_ShieldEnabled"] ?: @NO;
             updated[@"ssid"] = p[@"AG_AntiDet_FakeSSID"] ?: @"";
             updated[@"bssid"] = p[@"AG_AntiDet_FakeBSSID"] ?: @"";
             favs[idx] = updated;
@@ -4310,18 +4265,13 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             finalLat = initLat; finalLon = initLon;
         }
 
-        sForceInvalidateKernelCache = YES;
-        reloadGeminiPrefsCache();
         NSMutableDictionary *mp = loadGeminiPrefs();
-        BOOL kActiveNow = NO, kShieldNow = NO;
-        BOOL hasK = agReadSpoofStateFromKernel(&kActiveNow, NULL, &kShieldNow, NULL, NULL, NULL, NULL, NULL, NULL);
-        BOOL curShield = hasK ? kShieldNow : [mp[@"AG_AntiDet_ShieldEnabled"] boolValue];
         NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (newName.length == 0) {
             newName = (mapAddr.length > 0 && mapAddr.length <= 10) ? mapAddr : [NSString stringWithFormat:@"常用地点%lu", (unsigned long)(favs.count + 1)];
         }
 
-        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? curShield : [existing[@"shieldOn"] boolValue]) : (curShield || newSSID.length > 0);
+        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? YES : [existing[@"shieldOn"] boolValue]) : ([mp[@"AG_AntiDet_ShieldEnabled"] boolValue] || newSSID.length > 0);
         NSDictionary *newEntry = @{
             @"name": newName,
             @"address": (isEdit && [agSafeStr(existing[@"address"]) length] > 0) ? existing[@"address"] : mapAddr,
@@ -8759,13 +8709,10 @@ static BOOL agIsHookLoaderOrSystemImage(NSString *pathOrName) {
         return YES;
     }
     char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
-    NSString *sEk = [NSString stringWithUTF8String:ag_enc_cstr_ellekit(bEk)] ?: @"ellekit";
-    NSString *sMs = [NSString stringWithUTF8String:ag_enc_cstr_mobilesubstrate(bMs)] ?: @"mobilesubstrate";
-    NSString *sRh = [NSString stringWithUTF8String:ag_enc_cstr_libroothide(bRh)] ?: @"libroothide";
     NSArray<NSString *> *loaders = @[
-        sEk, @"libsubstitute", @"substrateinserter", sMs,
+        [NSString stringWithUTF8String:ag_enc_cstr_ellekit(bEk)], @"libsubstitute", @"substrateinserter", [NSString stringWithUTF8String:ag_enc_cstr_mobilesubstrate(bMs)],
         @"libhooker", @"libblackjack", @"cydiasubstrate", @"choicy.dylib",
-        sRh, @"opainject", @"oldabi", @"cephei"
+        [NSString stringWithUTF8String:ag_enc_cstr_libroothide(bRh)], @"opainject", @"oldabi", @"cephei"
     ];
     for (NSString *ld in loaders) {
         if ([lower containsString:ld]) return YES;
@@ -8911,7 +8858,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 if (!files) continue;
                 for (NSString *fname in files) {
                     if ([seenFiles containsObject:fname]) continue;
-                    if (![fname containsString:@".ips"] && ![fname hasSuffix:@".crash"]) continue;
+                    if (![fname hasSuffix:@".ips"] && ![fname hasSuffix:@".crash"]) continue;
 
                     NSString *lowerF = [fname lowercaseString];
                     if ([lowerF containsString:@"excresource"] || [lowerF hasPrefix:@"general"] || [lowerF hasPrefix:@"analytics"] || [lowerF hasPrefix:@"stacks"]) {
@@ -9272,41 +9219,19 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 } mutableCopy]];
             }
 
-// 读取 ag_respring_ledger.json 统计近 7 天桌面注销重启总次数与最近一次注销时间
-            NSUInteger respringTotalCount = 0;
-            NSString *latestRespringTimeStr = @"无";
-            NSData *ledgerData = [NSData dataWithContentsOfFile:agRespringLedgerFilePath()];
-            if (ledgerData) {
-                NSArray *savedBoots = [NSJSONSerialization JSONObjectWithData:ledgerData options:0 error:nil];
-                if ([savedBoots isKindOfClass:[NSArray class]]) {
-                    NSTimeInterval latestTs = 0;
-                    for (id item in savedBoots) {
-                        NSNumber *tsNum = agSafeNum(item);
-                        if (tsNum && [tsNum doubleValue] >= sevenDaysAgo) {
-                            respringTotalCount++;
-                            if ([tsNum doubleValue] > latestTs) latestTs = [tsNum doubleValue];
-                        }
-                    }
-                    if (latestTs > 0) {
-                        latestRespringTimeStr = [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:latestTs]];
-                    }
-                }
-            }
-
             NSMutableString *card = [NSMutableString string];
-            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 桌面注销 / 内存爆满 OOM 报告】\n"];
-            [card appendFormat:@"• 🔄 整机开机状态：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
-            [card appendFormat:@"• 🔁 桌面注销记录：近7天累计注销重启桌面 %lu 次（最近一次：%@）\n", (unsigned long)respringTotalCount, latestRespringTimeStr];
-            [card appendFormat:@"• 💥 异常崩溃统计：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
+            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 内存爆满 OOM 报告】\n"];
+            [card appendFormat:@"• 🔄 异常死机重启：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
+            [card appendFormat:@"• 💥 桌面自动注销：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
              (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount];
 
             NSString *pillOut = nil;
             NSString *speechOut = nil;
 
             if (parsedRecords.count == 0) {
-                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，所有注销均为正常桌面重启，系统运行非常稳定。"];
-                pillOut = [NSString stringWithFormat:@"✅ 近7天正常注销%lu次(0崩溃)｜最近:%@", (unsigned long)respringTotalCount, latestRespringTimeStr];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@。近 7 天桌面累计注销重启 %lu 次，最近一次注销时间是 %@；其中整机死机重启 0 次，插件崩溃与内存爆满异常注销 0 次，没有发现任何插件冲突。", bootSummary, (unsigned long)respringTotalCount, latestRespringTimeStr];
+                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，系统运行非常稳定。"];
+                pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃0注销｜%@", bootSummary];
+                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面崩溃与内存爆满注销 0 次，没有发现任何插件冲突。", bootSummary];
             } else {
                 for (NSUInteger i = 0; i < parsedRecords.count; i++) {
                     NSDictionary *rec = parsedRecords[i];
@@ -10179,12 +10104,7 @@ static void agRecordSpringBoardBootEventAndWarmupCache(void) {
                     [bootList addObject:@(now)];
                     NSData *outData = [NSJSONSerialization dataWithJSONObject:bootList options:0 error:nil];
                     if (outData) {
-                        NSString *ledgerPath = agRespringLedgerFilePath();
-                        NSString *ledgerDir = [ledgerPath stringByDeletingLastPathComponent];
-                        if (![[NSFileManager defaultManager] fileExistsAtPath:ledgerDir]) {
-                            [[NSFileManager defaultManager] createDirectoryAtPath:ledgerDir withIntermediateDirectories:YES attributes:nil error:nil];
-                        }
-                        [outData writeToFile:ledgerPath atomically:YES];
+                        [outData writeToFile:agRespringLedgerFilePath() atomically:YES];
                     }
                     agAnalyzeRecentCrashesAndResprings(nil, nil, nil);
                     agAnalyze24HourTweakPowerDrain(nil, nil, nil);
