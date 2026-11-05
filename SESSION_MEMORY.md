@@ -1884,3 +1884,21 @@
    - 在 `hooked_dladdr` 门禁中加入 `(gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase)`：即使未开启防检测，只要被查询地址属于本插件自身基址，也始终将其虚拟伪装为 CoreLocation 符号，杜绝自身基址泄露风险。
 3. **修正 3（苹果本机 zh-CN 神经识别直接驱动本地语音指令执行）**：
    - 在 `startNativeAppleNeuralVADIfNeeded` 中：当云端字幕未下发 (`transcription=0` 或网络延迟) 时，由苹果本机神经引擎已识别出的中文文本直接喂入 `currentVoiceQueryBuffer`，并在 0.38 秒防抖后自动触发 `checkDeferredVoiceLocalCommand`，确保即使离线或云端静音也能毫秒级精准执行本地动作指令。
+
+### 2. CI 构建与安装包全项校验 (Run #112 / Build #113)
+- Git Commit: `39fec50` (Run ID: 41997685411) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (591,784 字节, SHA256: `94acefa294161668f6f144656802f4f07311c503bd2432339f5357c33640e59e`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (380,524 字节, SHA256: `766e1bc04f6e9ddea3263caf7c4a1f048c01f5a49106d3bacbf31338cec8b2a1`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验收
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 683,192 字节 (SHA256: `5aaf6d67f407ac9bad4676e136d567bc27b62560c3e7da5a89cebb662c118654`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 433,786 字节 (SHA256: `b773af4356eacded11648d1eab4942f756f44edd33802e24a5512b153481104b`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.xz`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
