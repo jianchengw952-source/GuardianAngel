@@ -2139,3 +2139,59 @@
   - 更新服务端 `/opt/angel_cloud/app.py` 与 `angel_cloud.py` 中的 `smart_shield_deb` 打包命令为 `dpkg-deb -Zxz -b`；
   - 彻底杜绝 Ubuntu 24.04 默认输出 `control.tar.zst` / `data.tar.zst`，确保加固后的 DEB 包 100% 保持标准的 `control.tar.xz` + `data.tar.xz`，完美兼容 Sileo；
   - 四大源文件镜像 SHA256 统一为：`8a96618cdcb6f8573b079c286e2f15a5b11206c6878a33708e0fa595d84a5de2` (1,450,926 字节)。
+
+
+---
+
+## 2026-11-06: 媒体暂停异步化 (E-1)、固定跨进程掩码与白名单防洗空 (A & C)、真崩溃日志识别 (F)、播放崩溃根治防安全模式 (E-2)、关闭防检测防误开与同音容错 (D)、iOS 16 Cryptexes 原生放行 (B) (Run #132)
+
+### 1. 核心修复与升级要点 (6 大修复块 100% 精准实装)
+1. **修改块 1（对应 E-1：后台媒体暂停指令异步化）**：
+   - 将 `pauseBackgroundMediaPlayback` 中的 `MRMediaRemoteSendCommand` 调用放入 `dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ ... })`，消除看视频/刷抖音时呼出语音助手导致主线程卡顿的问题。
+2. **修改块 2（对应 A & C：固定跨进程定位寄存器掩码 + 生效软件白名单防洗空）**：
+   - 2.1：固定跨进程 MBA 掩码计算，`agKernelObfuscateMask` 移除动态零偏置掩码叠加，统一返回 `AG_MBA_XOR64(z, (z >> 31))`，杜绝进程启动时机差异造成的掩码撕裂；在 `agPublishSpoofStateToKernel` 中增加白名单状态检测，当 `appCount == 0 && scopeMode == 1` 时读取已有内核寄存器并保护已生效白名单不被清空。
+   - 2.2：在 `reloadGeminiPrefsCache` 中加 `gPrefsLock` 锁并从 `[gCachedPrefs mutableCopy]` 初始化，防止配置合并时洗空白名单。
+3. **修改块 3（对应 F：异常崩溃取证增加 .ips.ca.synced 后缀识别）**：
+   - 在 `agAnalyzeRecentCrashesAndResprings` 中增加对 `.ips.ca.synced` 真实系统崩溃日志的识别，杜绝将用户手动注销或软重启误判为插件崩溃。
+4. **修改块 4（对应 E-2：根治看视频/音频播放时呼出异常崩溃进安全模式）**：
+   - 4.1：在 `handleIncomingWebSocketJSON:` 中对 `interrupted`、`inputTranscription` 与 `input_audio_buffer.speech_started` 的 3 处播放器裸调用强制前置检查 `engine.isRunning` 并包裹 `@try / @catch` 派发至 `audioPlayQueue`。
+   - 4.2：在 `triggerNativeSiriGradeInstantBargeIn:`、`enqueueAndPlayIncomingPCM24kData:`、`primeFullDuplexAudioEngineWithSilentPulse:` 和 `setupAndStartFullDuplexPCMAudioEngine` 中全链路前置检查 `engine.isRunning`，确保在抖音等 App 抢占音频会话时绝不盲目调用 `play` 抛出 `NSInternalInconsistencyException`。
+   - 4.3：在 `handleAudioSessionRouteChange:` 中过滤自身切换分类 (Category 3)、Override (4) 或配置变化 (8) 的假通知，仅在真实耳机/蓝牙设备插拔 (1/2) 时恢复路由，并在 `agAudioSerialQueue()` 中包裹 `@try / @catch`。
+5. **修改块 5（对应 D：语音「关闭防检测」防误开 + 补齐「擦肩耗电/查看流量」同音词）**：
+   - 5.1：在 `tryExecuteDirectLocalCommand:` 中增加同音与口语容错词库，并严格判定 `turnOffShield && !turnOnShield`，彻底消除普通话不标准或环境杂音被误识别为“开启”的逻辑漏洞。
+   - 5.2：在 7C（耗电记录）与 7D（流量监控）分支中加入“擦肩”、“差价”、“查看”等同音词容错。
+6. **修改块 6（对应 B：agIsSuspiciousJailbreakPath 显式放行 iOS 16 系统原生 Cryptexes 路径）**：
+   - 显式放行 `/private/preboot/Cryptexes/` 与 `/System/Cryptexes/` 原生系统组件路径，收紧 `/private/preboot/` 越狱判定（必须包含 `/jb-` 或 `procursus`），彻底解决开启防检测后 App 内置网页白屏打不开的顽疾。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,455,783` 字节
+  - SHA256：`c6231aca87a135fe1c2f34f744c59a343a325c887b4d7d74e93ab28eb8a999e7` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run #132 / Commit b953a0f)
+- Git Commit: `b953a0f` (Run ID: 42111867098) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (608,552 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (385,940 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 595,704 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 379,584 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+  - 静态检查：Mach-O 明文保护段加密率 100%，明文种子 `AngelGuardian_Pro_Cloud_Brain` 100% 擦除 (0 命中)。
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流完全解密就绪 (PASS)。
