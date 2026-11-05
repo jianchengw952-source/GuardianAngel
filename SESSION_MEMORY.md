@@ -1766,3 +1766,23 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 消除0.20s读回旧状态/SpringBoard 0ms刷入内核/设置页即时生效/语音识别zh-CN高优先级/前台瞬间同步 (Run #108)
+
+### 1. 核心改进要点 (5大定稿替换块)
+1. **替换块 1（写入内核寄存器时立即废除 0.20s 旧缓存）**：
+   - 前置声明 `sForceInvalidateKernelCache`，并在 `agPublishSpoofStateToKernel` 写入内核后立即将其置为 `YES`，彻底消除手动关闭开关后 0.20 秒内读回旧状态的问题。
+   - 移除 `agReadSpoofStateFromKernel` 上方重复声明。
+2. **替换块 2（SpringBoard 收到开关变更通知时 0 毫秒立即刷入内核并清空漂移缓存）**：
+   - 在 `syncMasterStateFromPrefsAndRestartTimer` 末尾解析 `shieldOn` 与 `wifiMode`，若 `!shieldOn` 立即清空 `sOUDriftLatM` / `sOUDriftLonM` / `sOUDriftAltM` 并即刻调用 `agPublishSpoofStateToKernel`。
+   - 在 `agGetCurrentSpoofedTelemetry` 中检测 `kShield` 切换立即失效 1.80s 坐标遥测缓存，并执行 `memset(sLocPtrRing, 0, sizeof(sLocPtrRing))`。
+3. **替换块 3（《设置》页手动点击防检测开关 0 延迟实时生效）**：
+   - 在 `AGLocationSpoofSettingsViewController` 中增加 `viewWillAppear:`，置位 `sForceInvalidateKernelCache = YES`、刷新偏好设置并刷新表格。
+   - 重构 `stealthShieldSwitchChanged:` 与 `customWiFiSwitchChanged:`，设置时立即刷新缓存与置位 `sForceInvalidateKernelCache = YES`，并发送 `kAGLocTickUIUpdateNotification` 广播。
+4. **替换块 4（语音开关防检测与定位 100% 精准生效）**：
+   - 在 `handleIncomingWebSocketJSON` 与 `checkDeferredVoiceLocalCommand` 中让苹果本机离线 `zh-CN` 神经引擎优先匹配，根除云端把“关闭防检测”听成等长“宽带房检测/昆比房检车”导致误触发的问题。
+   - 在 `tryExecuteDirectLocalCommand:` 中扩充虚拟定位关闭词（“关闭定位”、“关掉虚拟定位”、“定位关了”等）与防检测同音词（“房前车”、“防前车”、“房检查”、“防检查”），严禁在听不清“关闭”时盲目进 else 误开启。
+5. **替换块 5（受控第三方 App 从后台切回前台瞬间 0 延迟同步开关并卸载防检测 Hook）**：
+   - 在文件最底部 `%ctor` 中增加 `UIApplicationDidBecomeActiveNotification` 监听，App 切回前台瞬间立即触发 `agClientAppMasterSyncCallback`，0 延迟卸载 Hook 并同步内核状态。
