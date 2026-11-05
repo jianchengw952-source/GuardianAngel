@@ -1840,3 +1840,15 @@
 - **【端云联调实测】**：
   - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
   - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
+
+---
+
+## 2026-11-05: 恢复客户端第三方App插件自隐身门禁 + 收藏夹防检测与专属Wi-Fi状态100%跟随还原 (Run #111)
+
+### 1. 核心改进要点 (2处精准替换块，0扩散)
+1. **替换块 1（恢复 agIsEnvironmentStealthActive 客户端插件自隐身门禁）**：
+   - 在 Dopamine 和 Relaxin (RootHide) 下，只要第三方受控客户端 App 被注入，即使虚拟定位关闭，也通过 `sIsClientApp` (基于 bundleID 与可执行文件路径智能过滤 SpringBoard、Preferences、appex 插件、系统核心组件与 VPN 代理应用) 始终隐藏 `AngelGuardian.dylib`、`ellekit`、`libroothide`、`.jbroot` 与 `/var/jb` 自身痕迹，彻底消除关闭虚拟定位时的第三方客户端环境被检测风险。
+2. **替换块 2（修复收藏夹保存与切换时「防检测开关」100% 跟随还原，共 3 小处）**：
+   - **2-1（切换收藏点）**：在 `resolvePlaceAndPin:completion:` 中，先预设到达方式并调用 `pinLocationWithCoordinate` 开启虚拟定位总开关 (`AG_LocSpoof_Active = YES`)；随后 100% 还原该收藏点保存时的防检测开关 (`fav[@"shieldOn"]`)、专属 Wi-Fi (`fav[@"ssid"]` / `fav[@"bssid"]`) 与生效软件名单 (`fav[@"targetApps"]`)，绝不再被清零；最后触发 `sForceInvalidateKernelCache = YES` 并向内核即时广播 `kAGLocMasterSyncNotification` 与 `kAGLocTickUIUpdateNotification`，提示用户 `(🛡️防检测已同步开启)` 或 `(⚡纯定位模式)`。
+   - **2-2（覆盖更新收藏点）**：在 `showActionsForFavoriteAtIndex:item:` 的「🔄 用当前地图选点与当前设置覆盖更新」中，前置调用 `sForceInvalidateKernelCache = YES`、`reloadGeminiPrefsCache()` 并通过 `agReadSpoofStateFromKernel` 读取内核真实防检测状态 `curShield`，保证覆盖时真实写入最新的防检测状态。
+   - **2-3（新增/编辑收藏点）**：在 `showAddOrEditFavoriteDialogAtIndex:existingItem:` 的「💾 保存常用地点」中，同样从内核寄存器实时读取 `curShield`，并让 `shieldVal` 正确继承真实防检测状态（编辑时若未定义则继承 `curShield`，新增时继承 `curShield || newSSID.length > 0`）。

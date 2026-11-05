@@ -1768,9 +1768,33 @@ static BOOL agIsAntiDetectionShieldActive(void) {
     return NO;
 }
 
-// 越狱环境与防检测统一门禁：Dopamine 与 Relaxin (RootHide) 下均严格受控于「防检测开关」，关闭防检测时 100% 不干预任何环境与路径
+// 纯越狱环境与注入自隐身门禁（Dopamine 与 Relaxin 通用）：在第三方客户端 App 内始终隐藏插件自身与 .jbroot / /var/jb / ellekit，消除关闭虚拟定位时的被检测风险
 static BOOL agIsEnvironmentStealthActive(void) {
-    return agIsAntiDetectionShieldActive();
+    static BOOL sIsClientApp = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+        NSString *lowerBID = [bid lowercaseString];
+        NSString *execPath = [[[NSBundle mainBundle] executablePath] lowercaseString] ?: @"";
+        if (bid.length > 0 &&
+            ![execPath containsString:@".appex/"] &&
+            ![bid isEqualToString:@"com.apple.springboard"] &&
+            ![bid isEqualToString:@"com.apple.Preferences"] &&
+            ![bid hasPrefix:@"com.apple."] &&
+            ![lowerBID containsString:@"tunnel"] &&
+            ![lowerBID containsString:@"shadowrocket"] &&
+            ![lowerBID containsString:@"quantumult"] &&
+            ![lowerBID containsString:@"surge"] &&
+            ![lowerBID containsString:@"clash"] &&
+            ![lowerBID containsString:@"stash"] &&
+            ![lowerBID containsString:@"loon"] &&
+            ![lowerBID containsString:@"singbox"] &&
+            ![lowerBID containsString:@"v2ray"] &&
+            ![lowerBID containsString:@"vpn"]) {
+            sIsClientApp = YES;
+        }
+    });
+    return sIsClientApp;
 }
 
 // 返回值：0 = 不干预(透传真实网络)，1 = 伪装为 5G 蜂窝流量(隐藏真实家庭 Wi-Fi 防止 BSSID 穿帮)，2 = 返回用户指定的公司真实 Wi-Fi
@@ -2823,29 +2847,46 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
             double fLon = [agSafeNum(fav[@"lon"]) doubleValue];
             if (fabs(fLat) > 0.001 || fabs(fLon) > 0.001) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    // 1. 先预设到达方式并调用 pinLocationWithCoordinate 开启虚拟定位总开关 (AG_LocSpoof_Active = YES)
+                    reloadGeminiPrefsCache();
+                    if (fav[@"moveMode"] != nil) {
+                        NSMutableDictionary *preMp = loadGeminiPrefs();
+                        preMp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
+                        saveGeminiPrefs(preMp);
+                    }
+                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
+
+                    // 2. 在虚拟定位总开关已开启的基础上，100% 还原该收藏点保存时的防检测开关、专属 Wi-Fi 与生效软件名单（绝不再被清零！）
                     reloadGeminiPrefsCache();
                     NSMutableDictionary *mp = loadGeminiPrefs();
+                    mp[@"AG_LocSpoof_Active"] = @YES;
                     if (fav[@"scopeMode"] != nil) mp[@"AG_LocSpoof_ScopeMode"] = fav[@"scopeMode"];
                     if ([fav[@"targetApps"] isKindOfClass:[NSArray class]]) mp[@"AG_LocSpoof_TargetApps"] = fav[@"targetApps"];
                     if (fav[@"moveMode"] != nil) mp[@"AG_LocSpoof_MoveMode"] = fav[@"moveMode"];
-                    BOOL shieldOn = (fav[@"shieldOn"] == nil) ? [mp[@"AG_AntiDet_ShieldEnabled"] boolValue] : [fav[@"shieldOn"] boolValue];
+                    NSString *fSSID = agSafeStr(fav[@"ssid"]);
+                    NSString *fBSSID = agSafeStr(fav[@"bssid"]);
+                    BOOL shieldOn = (fav[@"shieldOn"] == nil) ? YES : ([fav[@"shieldOn"] boolValue] || (fSSID.length > 0 && fBSSID.length > 0));
                     mp[@"AG_AntiDet_ShieldEnabled"] = @(shieldOn);
                     mp[@"AG_AntiDet_HideSimFlag"] = @(shieldOn);
                     mp[@"AG_AntiDet_MotionSync"] = @(shieldOn);
                     mp[@"AG_AntiDet_HideHookPtr"] = @(shieldOn);
                     mp[@"AG_LocSpoof_JitterEnabled"] = @(shieldOn);
-                    NSString *fSSID = agSafeStr(fav[@"ssid"]);
-                    NSString *fBSSID = agSafeStr(fav[@"bssid"]);
                     if (fSSID.length > 0 && fBSSID.length > 0) {
                         mp[@"AG_AntiDet_FakeSSID"] = fSSID;
                         mp[@"AG_AntiDet_FakeBSSID"] = fBSSID;
-                        mp[@"AG_AntiDet_WiFiMode"] = @2;
+                        mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @2 : @0;
                     } else {
                         mp[@"AG_AntiDet_WiFiMode"] = shieldOn ? @1 : @0;
                     }
                     saveGeminiPrefs(mp);
-                    [self pinLocationWithCoordinate:CLLocationCoordinate2DMake(fLat, fLon) coordSystem:@"GCJ02" placeName:favName];
-                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(含专属设置)", favName]);
+                    sForceInvalidateKernelCache = YES;
+                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                         (__bridge CFStringRef)kAGLocMasterSyncNotification,
+                                                         NULL, NULL, YES);
+                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                         (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
+                                                         NULL, NULL, YES);
+                    if (completion) completion(YES, [NSString stringWithFormat:@"已切换至收藏点「%@」(%@)", favName, (shieldOn ? @"🛡️防检测已同步开启" : @"⚡纯定位模式")]);
                 });
                 return;
             }
@@ -4287,7 +4328,12 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"🔄 用当前地图选点与当前设置覆盖更新" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        sForceInvalidateKernelCache = YES;
+        reloadGeminiPrefsCache();
         NSMutableDictionary *p = loadGeminiPrefs();
+        BOOL kActiveNow = NO, kShieldNow = NO;
+        BOOL hasK = agReadSpoofStateFromKernel(&kActiveNow, NULL, &kShieldNow, NULL, NULL, NULL, NULL, NULL, NULL);
+        BOOL curShield = hasK ? kShieldNow : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
         NSMutableArray *favs = [p[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [p[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (idx < favs.count) {
             CLLocationCoordinate2D curCenter = self.mapView.centerCoordinate;
@@ -4298,7 +4344,7 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             updated[@"scopeMode"] = p[@"AG_LocSpoof_ScopeMode"] ?: @0;
             updated[@"targetApps"] = p[@"AG_LocSpoof_TargetApps"] ?: @[];
             updated[@"moveMode"] = p[@"AG_LocSpoof_MoveMode"] ?: @0;
-            updated[@"shieldOn"] = p[@"AG_AntiDet_ShieldEnabled"] ?: @NO;
+            updated[@"shieldOn"] = @(curShield);
             updated[@"ssid"] = p[@"AG_AntiDet_FakeSSID"] ?: @"";
             updated[@"bssid"] = p[@"AG_AntiDet_FakeBSSID"] ?: @"";
             favs[idx] = updated;
@@ -4385,13 +4431,18 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
             finalLat = initLat; finalLon = initLon;
         }
 
+        sForceInvalidateKernelCache = YES;
+        reloadGeminiPrefsCache();
         NSMutableDictionary *mp = loadGeminiPrefs();
+        BOOL kActiveNow = NO, kShieldNow = NO;
+        BOOL hasK = agReadSpoofStateFromKernel(&kActiveNow, NULL, &kShieldNow, NULL, NULL, NULL, NULL, NULL, NULL);
+        BOOL curShield = hasK ? kShieldNow : [mp[@"AG_AntiDet_ShieldEnabled"] boolValue];
         NSMutableArray *favs = [mp[@"AG_LocSpoof_Favorites"] isKindOfClass:[NSArray class]] ? [mp[@"AG_LocSpoof_Favorites"] mutableCopy] : [NSMutableArray array];
         if (newName.length == 0) {
             newName = (mapAddr.length > 0 && mapAddr.length <= 10) ? mapAddr : [NSString stringWithFormat:@"常用地点%lu", (unsigned long)(favs.count + 1)];
         }
 
-        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? YES : [existing[@"shieldOn"] boolValue]) : ([mp[@"AG_AntiDet_ShieldEnabled"] boolValue] || newSSID.length > 0);
+        BOOL shieldVal = isEdit ? ((existing[@"shieldOn"] == nil) ? curShield : [existing[@"shieldOn"] boolValue]) : (curShield || newSSID.length > 0);
         NSDictionary *newEntry = @{
             @"name": newName,
             @"address": (isEdit && [agSafeStr(existing[@"address"]) length] > 0) ? existing[@"address"] : mapAddr,
