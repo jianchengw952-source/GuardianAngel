@@ -1748,3 +1748,21 @@
 5. **替换块 5（放行 iOS 16 Cryptexes 系统组件 + 《设置》专属零副作用同步回调）**：
    - 5-A：`agIsSuspiciousJailbreakPath` 显式放行 `/private/preboot/Cryptexes/` 与 `/System/Cryptexes/`，并限制 `/private/preboot/` 仅匹配 `/jb-` 与 `procursus`。
    - 5-B：在 `%ctor` 中为 `com.apple.Preferences` 挂载专属 `agPreferencesProcessSyncCallback` 轻量监听，只刷新缓存不触碰其他业务。
+
+### 2. CI 构建与安装包全项校验 (Run #107)
+- Git Commit: `a06cb64` (Run ID: 41971044972) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (589,084 字节, SHA256: `80cfb0ad2397e03be217c5557e78f0732652dd6a567dbd531acc79fcc55239a1`)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (379,548 字节, SHA256: `3a707008a0338b7331b6d57023b261af59c98329040e09ad4c0e10a3e3d173cc`)
+
+### 3. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`。
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`。
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 680,628 字节 (SHA256: `b384f0860e99ea7fca7755850f7951a4485a4fe89d6b549d7e009362f9d72c6d`)
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 432,878 字节 (SHA256: `17da1f7bf923a38303b248fdd100d59f8ad518a190b3064bb1f0b079becd281b`)
+  - APT 软件源索引（`Release`、`Packages`、`Packages.gz`、`Packages.bz2`）全量重建完成。
+- **【端云联调实测】**：
+  - Device A 正常授权通过：`Code: 200, Status: 1, Perms: 15`，正确下发 `core_key` (acf590ac1d95b967...) 与云脑载荷 (PASS)。
+  - Device A 封禁状态拦截：`is_banned = 1` 时服务端返回 `Code: 403, Msg: "当前设备已被管理员远程停用"`，客户端触发物理清库、内核封禁广播与设置页面死锁阻断 (PASS)。
