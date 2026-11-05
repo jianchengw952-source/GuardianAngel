@@ -3360,7 +3360,10 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
+    sForceInvalidateKernelCache = YES;
     reloadGeminiPrefsCache();
+    [self updateConfirmButtonAppearance];
+    [self updateLiveMapBlueDotAndRoute];
     [self.tableView reloadData];
 }
 
@@ -3411,15 +3414,6 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
                                     (__bridge CFStringRef)kAGLocTickUIUpdateNotification,
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    sForceInvalidateKernelCache = YES;
-    reloadGeminiPrefsCache();
-    [self updateConfirmButtonAppearance];
-    [self updateLiveMapBlueDotAndRoute];
-    [self.tableView reloadData];
 }
 
 - (void)dealloc {
