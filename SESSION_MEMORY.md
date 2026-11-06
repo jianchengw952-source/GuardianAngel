@@ -2543,3 +2543,57 @@
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
 - **【符号脱敏校验】**：
   - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，敏感 API 与私有符号 100% 动态栈解密与脱敏保护。
+
+---
+
+## 2026-11-07: 4 处系统取证与交互防误触精修（注销账本接入、截屏背压消除、真注销收紧与 WS 麦克风假死根治）上线 (Run ID: 42300247122 / Commit ab608ae)
+
+### 1. 核心精修要点
+1. **微调块 1（注销账本与注入插件扫描，双越狱兼容）**：
+   - 放宽 `.ips` 崩溃报告首行 Header 截断限制至 2400 字节，防止因头部过长误作纯 JSON 解析失败；
+   - 在崩溃停留在系统框架的场景下，新增对崩溃进程 `usedImages` 中已注入的第三方插件兜底扫描，杜绝线索遗漏；
+   - 接入 `agRespringLedgerFilePath()` 注销账本，利用 `sysctl(KERN_BOOTTIME)` 过滤开机首个 90s 内的初次启动，精准统计 7 天内每次 SpringBoard 注销；并在 0 崩溃时分析展示最近一次注销时间及当时最新变动插件。
+2. **微调块 2（避免说“看一下XX记录”误触发全屏截图上传，消除 16 次 WS_BACKPRESSURE_DROP）**：
+   - 在 `handleIncomingWebSocketJSON:` 中，将“记录”、“报告”、“耗电”、“流量”、“发热”、“发烫”、“降温”、“崩会”等加入 `isHardwareQuery`；
+   - 收窄 `isVisualScreenQuery`，剔除泛化口语词“看下”、“看一下”、“看看”，仅保留实体视觉词（“屏幕”、“页面”、“界面”、“认识他/她”、“这是谁/什么”等），彻底根治多余截屏导致的 WebSocket 背压丢帧。
+3. **微调块 3（防止口语提及“注销”误触发真注销 + 保护 .ips 崩溃日志）**：
+   - 3-A：在 7B 崩溃查询口令中补充“崩会”同音词；
+   - 3-B：将 10A-2 触发真实系统注销的口令严格收紧为精准匹配 `@"注销"`、`@"立即注销"` 或包含 `@"注销桌面"`、`@"重启桌面"`、`@"刷新桌面"`，杜绝日常口语长句误注销；
+   - 3-C：在 `handleCleanSystemDataOnly` 中对 `/CrashReporter` 清理保护名单加入 `JetsamEvent` 与 `.ips`，确保系统瘦身绝不破坏近期崩溃取证证据。
+4. **微调块 4（修复 WebSocket 模式下救火播报报告误启动 AVAudioRecorder 致麦克风 -140dB 假死）**：
+   - 在 `enqueueSpeechSentence:` 中增加模式判断，仅在非 WebSocket 状态下才启动备用 `AVAudioRecorder`，严禁抢占全双工 `liveAudioEngine` 的音频输入；
+   - 在 `speechSynthesizer:didFinishSpeechUtterance:` 结束回调中，检测到 WebSocket 活跃时直接更新全双工通话提示并返回，不重启旧录音机，彻底解决念完排查报告后麦克风电平卡在 `-140.0dB` 的假死 Bug。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,471,445` 字节
+  - SHA256：`4cc26c45eb576cf303fd92ee53b6b1f25870b374e20886c9a5611562257d327c` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42300247122 / Commit ab608ae)
+- Git Commit: `ab608ae` (Run ID: 42300247122) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (617,108 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (390,420 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 601,744 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 383,116 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`（0% `.zst`）；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+- **【符号脱敏校验】**：
+  - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，所有敏感符号与 API 保持完全脱敏。
