@@ -2244,3 +2244,53 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)。
+
+---
+
+## 2026-11-06: 繁体自动转简体、首空格防抢跑、神经识别器回退水位线、说话防腰斩与中文救火同步上屏精准微调上线 (Run ID: 42208736680 / Commit a35980a)
+
+### 1. 核心精修要点
+1. **云端识别繁体自动转简体 (CFStringTransform)**：
+   - 在 `handleIncomingWebSocketJSON:` 中，收到云端下发文字 `inputTranscription` 时，通过 `CFStringTransform((__bridge CFMutableStringRef)simpDelta, NULL, CFSTR("Hant-Hans"), false)` 自动无损转为简体中文，彻底解决云端吐繁体字（如“打開微信,找到新有陽光”）导致本地简体正则无法命中的问题。
+2. **禁止开头纯空格 `' '` 抢跑定时器**：
+   - 增加 `if (trimSpoken.length > 0)` 保护门，严禁云端仅下发单个首空格或纯空白字符时启动 0.32s 延迟定时器抢跑腰斩后续长句。
+3. **同步本地识别器回退字数水位线**：
+   - 在 `startNativeAppleNeuralVADIfNeeded` 内，当苹果本地识别器因候选词修正回退字数长度时（`curLen < strongSelf.lastNeuralRecognizedCharCount`），同步降低水位线 `strongSelf.lastNeuralRecognizedCharCount = curLen`，确保下一个新音节 100% 触发打断。
+4. **打断分贝阈值微调 2.0dB**：
+   - 在 `processMicrophoneInputPCMBuffer:` 中，将破硬件压制打断门限微调 2.0dB 至 `db > -48.0f && peakDb > -31.0f`，并放宽保护周期至 `> 0.24s`，实现自然轻声开口即断，且距底噪(-56dB)与回声(-90dB)保留充分安全裕度。
+5. **说话未停顿防长句腰斩保护**：
+   - 在 `checkDeferredVoiceLocalCommand` 中，若句子尚未带句号等标点结尾，且过去 0.24s 内用户麦克风（`lastActiveMicDB > -45.5f`）或本地神经引擎（`lastNeuralSpeechActiveTime < 0.22s`）仍在吐字出声，自动顺延 0.24s 等整句话说完再执行。
+6. **本地中文救火修正界面乱码文字**：
+   - 当使用苹果本机 zh-CN 神经识别救火成功时，自动将聊天气泡中云端识别出来的乱码音节（如 `🗣️ 您：sandwich y拉吉`）同步修正替换为完整中文指令（如 `🗣️ 您：深度清理垃圾`），并在状态栏同步更新。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,458,446` 字节
+  - SHA256：`080e3fe7154ef7ac6a72d691aa2f5379f342cf8f545f8105105174c7315293fc` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42208736680 / Commit a35980a)
+- Git Commit: `a35980a` (Run ID: 42208736680) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (610,176 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (386,776 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 595,292 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 380,040 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
