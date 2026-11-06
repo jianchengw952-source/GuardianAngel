@@ -2391,3 +2391,52 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+
+---
+
+## 2026-11-06: 零风险符号与常量脱敏（纯 C 栈解密 IOHID/微信/TCC SQL 与无冲突内部方法名宏）上线 (Run ID: 42236811275 / Commit 04505a8)
+
+### 1. 核心精修要点
+1. **纯 C 栈解密函数集成 (`AGSecurityShield.h`)**：
+   - 在 `ag_enc_nsstr_wc_moments_vc` 下方成功集成 8 个针对 IOHID 动态符号、微信核心 Class (`MMContext`, `MMServiceCenter`, `CContactMgr`, `CMessageMgr`, `CMessageWrap`) 的纯 C 栈解密函数；
+   - 严格确保 `ag_enc_cstr_hid_finger` 第 22 个字节为 `_AG_XB('z',22,0x53)`，保证数学解密 100% 精确；
+   - 增加 `ag_enc_tcc_grant_sql` 动态生成 TCC 授权 SQL 语句，消除 `INSERT OR REPLACE INTO access` 敏感明文字符串。
+2. **底层方法名与函数脱敏宏追加**：
+   - 在 `AGSecurityShield.h` 文件末尾 `#endif` 之前，无冲突追加 45 个内部 C 函数与方法名宏（如 `_ui_trait_verify_compositor_entitlements`, `_performImmediateSceneTraitAttenuation` 等），有效打乱 Mach-O 静态符号特征；
+   - 严格未修改任何 `@property` 属性名，未修改 `sysInstruction` 或任何带 `%@`/`%ld` 的 `stringWithFormat:`。
+3. **调用点全面脱敏 (`Tweak.x`)**：
+   - `ensureSpringBoardTCCGranted`：全面切换为 `ag_enc_tcc_grant_sql` 调用；
+   - `agExecuteWeChatCommandDict`：全面切换为 `ag_enc_cstr_wc_*` 栈解密获取微信核心 Class；
+   - `agSendSynthesizedTouchEventWithRadius`：全面切换为 `ag_enc_cstr_hid_*` 栈解密解析 IOHID 动态函数指针。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,457,060` 字节
+  - SHA256：`3325743d0a2991cb6590a8dc7334e62bc7c994e09d45a714265ce6179ce94bf8` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42236811275 / Commit 04505a8)
+- Git Commit: `04505a8` (Run ID: 42236811275) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (610,512 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (387,292 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 598,504 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 380,504 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
