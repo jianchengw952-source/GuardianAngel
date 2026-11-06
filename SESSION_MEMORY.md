@@ -2345,3 +2345,49 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+
+---
+
+## 2026-11-06: 定位关闭、好点记录、发回桌面 3 个同音容错词精准追加上线 (Run ID: 42224607644 / Commit 3cd10c5)
+
+### 1. 核心精修要点
+1. **定位关闭同音/口语追加**：
+   - 在 `tryExecuteDirectLocalCommand:` 中，`// --- 虚拟定位与反检测中心 ---` 条件分支追加 `|| [cleanCmd containsString:@"定位关闭"]`，命中后立即调用 `stopAndResetToRealLocation` 恢复物理 GPS。
+2. **插件耗电报告同音追加**：
+   - 在 `tryExecuteDirectLocalCommand:` 中，`// 7C. 🔋 查询近 24 小时越狱插件耗电记录与发热排行` 分支追加 `|| [cmd containsString:@"好点记录"]`，命中后立即触发 `tweak_power_report`。
+3. **返回桌面同音追加**：
+   - 在 `tryExecuteDirectLocalCommand:` 中，`// 10A-2. 🔒 判断回桌面与锁屏` 分支追加 `|| [cmd containsString:@"发回桌面"]`，命中后立即派发回桌面动作。
+4. **范围约束**：
+   - 严禁任何超范围改动，仅追加 3 个纯字符串同音词，未触碰任何其他逻辑代码与头文件。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,457,518` 字节
+  - SHA256：`d74f70fb4adf595e9c771807d2d936e3b70de77da3597c6bfe76f02712fa6f94` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42224607644 / Commit 3cd10c5)
+- Git Commit: `3cd10c5` (Run ID: 42224607644) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (610,592 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (386,476 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 595,328 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 379,672 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
