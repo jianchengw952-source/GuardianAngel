@@ -14159,6 +14159,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         if ([inputTrans isKindOfClass:[NSDictionary class]] && [inputTrans[@"text"] isKindOfClass:[NSString class]]) {
             NSString *userDelta = inputTrans[@"text"];
             if (userDelta.length > 0) {
+                // 自动将云端输出的繁体中文转换为简体中文（解决云端输出“打開微信,找到新有陽光”无法命中简体指令正则的问题）
+                NSMutableString *simpDelta = [userDelta mutableCopy];
+                CFStringTransform((__bridge CFMutableStringRef)simpDelta, NULL, CFSTR("Hant-Hans"), false);
+                userDelta = [simpDelta copy];
+
                 // 【方案 5 回声抑制门】：扬声器正在发声时，过滤极短西班牙语/拉美/印地语音节空耳杂音（如 "¿Qué", "de 4 a 2", "सर"）
                 if (self.pcmPlayerNode && self.pcmPlayerNode.isPlaying) {
                     NSString *cleanUD = [userDelta stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -14233,12 +14238,15 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     }
                 }
 
+                // 关键修复：仅当去掉空白符后有实际文字时才启动延迟定时器，严禁云端开头下发纯空格 delta=' ' 提前触发定时器腰斩长句！
                 NSString *trimSpoken = [curSpoken stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                BOOL hasEndPunct = ([trimSpoken hasSuffix:@"。"] || [trimSpoken hasSuffix:@"？"] || [trimSpoken hasSuffix:@"！"] ||
-                                    [trimSpoken hasSuffix:@"."] || [trimSpoken hasSuffix:@"?"] || [trimSpoken hasSuffix:@"!"]);
-                NSTimeInterval cmdDelay = hasEndPunct ? 0.14 : 0.32;
-                [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-                [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:cmdDelay];
+                if (trimSpoken.length > 0) {
+                    BOOL hasEndPunct = ([trimSpoken hasSuffix:@"。"] || [trimSpoken hasSuffix:@"？"] || [trimSpoken hasSuffix:@"！"] ||
+                                        [trimSpoken hasSuffix:@"."] || [trimSpoken hasSuffix:@"?"] || [trimSpoken hasSuffix:@"!"]);
+                    NSTimeInterval cmdDelay = hasEndPunct ? 0.14 : 0.32;
+                    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+                    [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:cmdDelay];
+                }
             }
         }
 
@@ -14548,6 +14556,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.20)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
+                } else if (curLen < strongSelf.lastNeuralRecognizedCharCount) {
+                    // 当苹果识别器自动回退修正候选词长度时，同步降低水位线，确保下一个新音节 100% 触发打断
+                    strongSelf.lastNeuralRecognizedCharCount = curLen;
                 }
             }
         }];
@@ -14938,11 +14949,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             }
         }
 
-        // 先执行破硬件压制打断检测：AI 播音时 iOS 硬件回声消除会将喇叭回声压至 -100dB 以下，同时将人声压低至 -43dB 左右
-        // 因此 db > -46.0f && peakDb > -29.0f 满 2 帧（约 42ms）即可 100% 确认为真人开口并瞬间切断喇叭释放压制！
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.28);
+        // 先执行破硬件压制打断检测：AI 播音时 iOS 硬件回声消除会将喇叭回声压至 -85dB ~ -107dB，同时将自然人声压低至 -45dB ~ -48dB
+        // 微调 2.0dB 至 db > -48.0f && peakDb > -31.0f 满 2 帧（约 42ms），自然轻声开口即断，且距底噪(-56dB)与回声(-90dB)留有充足安全裕度！
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.24);
         if (isAIPlaying && pastEchoGrace) {
-            if (db > -46.0f && peakDb > -29.0f) {
+            if (db > -48.0f && peakDb > -31.0f) {
                 strongSelf.wsBargeInVoiceTicks++;
                 if (strongSelf.wsBargeInVoiceTicks >= 2) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
@@ -15342,7 +15353,20 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 - (void)checkDeferredVoiceLocalCommand {
     if (self.currentVoiceQueryBuffer.length == 0) return;
+    NSTimeInterval nowCheck = [[NSDate date] timeIntervalSince1970];
     NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
+    NSString *trimCmd = [fullCmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    BOOL hasEndPunct = ([trimCmd hasSuffix:@"。"] || [trimCmd hasSuffix:@"？"] || [trimCmd hasSuffix:@"！"] ||
+                        [trimCmd hasSuffix:@"."] || [trimCmd hasSuffix:@"?"] || [trimCmd hasSuffix:@"!"]);
+
+    // 防长句腰斩保护：若句子尚未带句号结尾，且过去 0.24s 内用户麦克风或本地神经引擎仍在持续出声吐字，自动顺延 0.24s 等整句话说完再执行！
+    if (!hasEndPunct && ((nowCheck - self.lastNeuralSpeechActiveTime < 0.22) ||
+                         (nowCheck - self.lastActiveMicDBTime < 0.24 && self.lastActiveMicDB > -45.5f))) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+        [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.24];
+        return;
+    }
+
     NSString *nativeSeg = nil;
     if (self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
         nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
@@ -15353,12 +15377,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     NSString *matchedCmd = fullCmd;
 
     // 若边打断边说指令时苹果本地 zh-CN 识别出的字数比云端更完整（如本地听全了“返回桌面”而云端只听到“8 面”），优先用本地完整中文匹配
-    if (nativeSeg.length > fullCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
+    if (nativeSeg.length > trimCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
         handled = YES;
         usedNativeRescue = YES;
         matchedCmd = nativeSeg;
         agLiveDiagLog(@"NATIVE_ZH_RESCUE", @"Deferred fuller barge-in command rescued via Apple zh-CN: '%@' (cloud was '%@')", nativeSeg, fullCmd);
-    } else if ([self tryExecuteDirectLocalCommand:fullCmd]) {
+    } else if (trimCmd.length > 0 && [self tryExecuteDirectLocalCommand:fullCmd]) {
         handled = YES;
         matchedCmd = fullCmd;
     } else if (nativeSeg.length >= 2 && [self tryExecuteDirectLocalCommand:nativeSeg]) {
@@ -15371,6 +15395,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     if (handled) {
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         self.lastLocalActionExecTime = now;
+        // 当使用苹果本机中文救火成功时，同步修正界面上云端显示的乱码（如将“🗣️ 您：sandwich y拉吉”修正为“🗣️ 您：深度清理垃圾”）
+        if (usedNativeRescue && matchedCmd.length > 0) {
+            NSMutableString *curTrans = [self currentTabTranscript];
+            NSRange lastUserRange = [curTrans rangeOfString:@"🗣️ 您：" options:NSBackwardsSearch];
+            if (lastUserRange.location != NSNotFound) {
+                NSUInteger replaceStart = lastUserRange.location + lastUserRange.length;
+                [curTrans replaceCharactersInRange:NSMakeRange(replaceStart, curTrans.length - replaceStart) withString:matchedCmd];
+                [self updateResponseTextViewSmoothly:curTrans];
+            }
+            self.subStatusLabel.text = [NSString stringWithFormat:@"🎙️ 您说：%@", matchedCmd];
+        }
         if (self.lastNativeNeuralChineseText.length > 0) {
             self.lastConsumedNeuralCharOffset = self.lastNativeNeuralChineseText.length;
         }
