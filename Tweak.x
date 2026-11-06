@@ -15357,6 +15357,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 - (void)checkDeferredVoiceLocalCommand {
     if (self.currentVoiceQueryBuffer.length == 0) return;
+    static NSUInteger sDeferredHoldCount = 0;
+
     NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
     NSString *trimCmd = [fullCmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSString *nativeSeg = nil;
@@ -15364,11 +15366,43 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
     }
 
+    // 1. 说话换气与未完待续尾词保护（最多顺延 3 次，防嘈杂环境死锁，同时彻底杜绝长句中途被截断）
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSString *checkStr = (nativeSeg.length > trimCmd.length) ? nativeSeg : trimCmd;
+    NSMutableCharacterSet *pSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
+    [pSet formUnionWithCharacterSet:[NSCharacterSet characterSetWithCharactersInString:@"。！？，、,.!?；;：:"]];
+    NSString *cleanTail = [[checkStr stringByTrimmingCharactersInSet:pSet] lowercaseString];
+
+    BOOL userStillSpeaking = ((now - self.lastNeuralSpeechActiveTime < 0.45) ||
+                              ((now - self.lastActiveMicDBTime < 0.35) && (self.lastActiveMicDB > -29.0f)));
+    BOOL hasUnfinishedTail = NO;
+    if (cleanTail.length > 0) {
+        NSArray<NSString *> *unfinishedSuffixes = @[
+            @"然后", @"然后再", @"接着", @"接着再", @"再", @"再帮我", @"然后帮我", @"然后你", @"然后你再",
+            @"帮我", @"给我", @"让我", @"再去", @"再到", @"再打开", @"打开", @"启动",
+            @"在微信", @"到微信", @"去微信", @"微信里", @"微信里面", @"里面", @"里面找", @"里找",
+            @"找到", @"找一下", @"搜索", @"搜一下", @"搜", @"点击", @"点一下", @"点",
+            @"跟", @"跟他", @"跟她", @"对他说", @"跟他说", @"跟她说", @"跟他说一句", @"发", @"说"
+        ];
+        for (NSString *sfx in unfinishedSuffixes) {
+            if ([cleanTail hasSuffix:sfx]) {
+                hasUnfinishedTail = YES;
+                break;
+            }
+        }
+    }
+    if ((userStillSpeaking || hasUnfinishedTail) && sDeferredHoldCount < 3) {
+        sDeferredHoldCount++;
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+        [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.38];
+        return;
+    }
+    sDeferredHoldCount = 0;
+
     BOOL handled = NO;
     BOOL usedNativeRescue = NO;
     NSString *matchedCmd = fullCmd;
 
-    // 若边打断边说指令时苹果本地 zh-CN 识别出的字数比云端更完整（如本地听全了“返回桌面”而云端只听到“8 面”），优先用本地完整中文匹配
     if (nativeSeg.length > trimCmd.length && [self tryExecuteDirectLocalCommand:nativeSeg]) {
         handled = YES;
         usedNativeRescue = YES;
@@ -15385,9 +15419,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 
     if (handled) {
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         self.lastLocalActionExecTime = now;
-        // 当使用苹果本机中文救火成功时，同步修正界面上云端显示的乱码（如将“🗣️ 您：sandwich y拉吉”修正为“🗣️ 您：深度清理垃圾”）
         if (usedNativeRescue && matchedCmd.length > 0) {
             NSMutableString *curTrans = [self currentTabTranscript];
             NSRange lastUserRange = [curTrans rangeOfString:@"🗣️ 您：" options:NSBackwardsSearch];
@@ -15505,6 +15537,66 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     return responseText;
 }
 
+static NSUInteger gComboSerialEpoch = 0;
+static BOOL gIsRunningAtomicComboSubTask = NO;
+
+- (NSTimeInterval)estimatedWaitDurationForAtomicStep:(NSString *)stepCmd {
+    if (!stepCmd || stepCmd.length == 0) return 1.5;
+    // 1. 电商搜索 + 视觉点击最贵/最便宜/第几个（需 2.2s 点击 + 页面打开缓冲）
+    if (([stepCmd containsString:@"淘宝"] || [stepCmd containsString:@"京东"] || [stepCmd containsString:@"拼多多"] || [stepCmd containsString:@"闲鱼"]) &&
+        ([stepCmd containsString:@"最贵"] || [stepCmd containsString:@"最便宜"] || [stepCmd containsString:@"第一"] || [stepCmd containsString:@"第二"] || [stepCmd containsString:@"第三"] || [stepCmd containsString:@"点击"] || [stepCmd containsString:@"点一下"])) {
+        return 4.3;
+    }
+    // 2. 微信找人并发送消息 / 打开聊天窗口（需等待微信唤醒与后台服务投递完成）
+    if ([stepCmd containsString:@"微信"] && ([stepCmd containsString:@"找到"] || [stepCmd containsString:@"发"] || [stepCmd containsString:@"说"] || [stepCmd containsString:@"聊天"])) {
+        return 2.8;
+    }
+    // 3. 打开软件或平台内搜索
+    if ([stepCmd containsString:@"搜索"] || [stepCmd containsString:@"搜"] || [stepCmd containsString:@"打开"] || [stepCmd containsString:@"启动"]) {
+        return 2.3;
+    }
+    // 4. 返回桌面、修改定位、开关防检测等瞬时动作
+    return 1.3;
+}
+
+- (void)runSequentialComboQueue:(NSArray<NSString *> *)tasks index:(NSUInteger)idx epoch:(NSUInteger)epoch waitChecks:(NSUInteger)waitChecks {
+    if (epoch != gComboSerialEpoch || self.isDismissed || idx >= tasks.count) return;
+
+    // 硬件互锁保护：若上一步的 OCR 视觉识别或触控合成尚未释放，原地等待 0.55s（最多等 4 次），绝不跨界面乱点
+    if ((gIsScreenVisionAgentBusy || gIsTouchSynthesizing) && waitChecks < 4) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self runSequentialComboQueue:tasks index:idx epoch:epoch waitChecks:(waitChecks + 1)];
+        });
+        return;
+    }
+
+    NSString *curStep = tasks[idx];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    gLastExecutedActionSignature = nil;
+    self.lastLocalActionExecTime = now;
+    // 续期静音锁，防止多步连招执行到第 5 秒时云端 AI 突然插嘴
+    self.isMutedByLocalBargeIn = YES;
+    self.bargeInMuteTimestamp = now;
+
+    agLiveDiagLog(@"COMBO_QUEUE_STEP", @"Executing step %lu/%lu: '%@' (epoch=%lu)",
+                  (unsigned long)(idx + 1), (unsigned long)tasks.count, curStep, (unsigned long)epoch);
+
+    gIsRunningAtomicComboSubTask = YES;
+    BOOL ok = [self tryExecuteDirectLocalCommand:curStep];
+    gIsRunningAtomicComboSubTask = NO;
+
+    if (!ok && idx > 0) {
+        [self performAIVisionScreenAgentWithGoal:curStep step:1 maxSteps:2];
+    }
+
+    if (idx + 1 < tasks.count) {
+        NSTimeInterval waitSec = [self estimatedWaitDurationForAtomicStep:curStep];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(waitSec * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self runSequentialComboQueue:tasks index:(idx + 1) epoch:epoch waitChecks:0];
+        });
+    }
+}
+
 - (BOOL)tryExecuteDirectLocalCommand:(NSString *)cmdText {
     if (!cmdText || cmdText.length == 0) return NO;
 
@@ -15513,26 +15605,29 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     static NSRegularExpression *searchRegex = nil, *directSearchRe = nil, *naviRegex = nil, *musicRegex = nil;
     static NSRegularExpression *openRegex = nil, *callRegex = nil, *smsRegex = nil;
     static NSRegularExpression *compactComboRe = nil, *multiChainRe = nil, *invertedTapRe = nil;
+    static NSRegularExpression *crossTaskSplitRe = nil, *homePrefixSplitRe = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 1. 一气呵成紧凑三连招正则（支持“打开淘宝搜索手机点击贵的那个” / “打开京东搜索手机，然后找到最贵的那个点进去”）
-        compactComboRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动)?(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买|的)(?:一下)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我|再去)?(?:点击|点一下|点开|点选|找到|找一下|挑一个|选一个|选择|哪个是|点|选|挑)(.+?)(?:点进去|点开|打开|进去|给我看|给我|吧|呢)?$" options:0 error:nil];
-        // 2. 通用多步“然后/接着/再”连招切分正则（支持有无逗号/空格的各种连招！）
+        // 1. 一气呵成紧凑三连招正则
+        compactComboRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动|找到)?(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|里面|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买|的)(?:一下)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我|再去)?(?:点击|点一下|点开|点选|找到|找一下|挑一个|选一个|选择|哪个是|点|选|挑)(.+?)(?:点进去|点开|打开|进去|给我看|给我|吧|呢)?$" options:0 error:nil];
+        // 2. 跨软件/跨系统任务边界切分正则（将超长连招拆分为独立任务单，绝不拆散单软件内部动作）
+        crossTaskSplitRe = [NSRegularExpression regularExpressionWithPattern:@"(?:，|,|。|\\s)*(?:然后再|接着再|然后你再|然后你|然后再去|接着再去|然后|接着|再帮我|再去)(?:帮我|给我|让我|你)?(?=(?:去|在|到|用)?(?:打开|启动|开启|进入|找到|找一下)?(?:微信|淘宝|京东|拼多多|闲鱼|抖音|快手|b站|哔哩哔哩|小红书|美团|饿了么|高德|百度|设置|系统设置|钉钉|企业微信|飞书|支付宝|网易云|qq|相机|相册|safari|浏览器)|(?:在|到|去)(?:微信|淘宝|京东|拼多多|闲鱼|抖音|美团)|返回桌面|回到桌面|回桌面|返回主屏幕|回主屏幕|把定位|定位到|把虚拟定位|打开防检测|开启防检测|关闭防检测|打开房检测|开启房检测|打开房间车|打开房间测|深度清理|清理垃圾|清理所有后台|清理后台|清理系统数据|清理手机|截屏|截图|锁屏)" options:0 error:nil];
+        homePrefixSplitRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:返回桌面|回到桌面|回桌面|返回主屏幕|回主屏幕)(?:，|,|。|\\s)*(?:然后再|然后|接着|再)?(?:帮我|给我)?(.+)$" options:0 error:nil];
         multiChainRe = [NSRegularExpression regularExpressionWithPattern:@"^(.+?)(?:，|,|。|\\s)*(?:然后|接着|再帮我|再去|然后再|接着再)(?:帮我|给我)?(.+)$" options:0 error:nil];
-        // 3. 倒装点击句式正则（如：“打开我屏幕上面现在有一个按钮是电池。让我点击”）
         invertedTapRe = [NSRegularExpression regularExpressionWithPattern:@"(?:按钮|图标|选项|文字|数字|地方)(?:是|叫|为)[“\"'「]?([^”\"'」，。！？,.!?]+?)[”\"'」]?(?:，|,|。|\\s)*(?:让我|帮我|给我|你)?(?:点击|点一下|点开|点选|点|打开)" options:0 error:nil];
 
-        wxPat1 = [NSRegularExpression regularExpressionWithPattern:@"(?:打开微信|在微信|用微信|微信)(?:里|中|上)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|给|向|跟|发给|告诉|对|找)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:跟他说|跟她说|对他说|对她说|发消息|发信息|发一句话|发个消息|发条微信|发微信|发|说|留言)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
+        // 兼容“在微信里面 / 到微信里面 / 跟他说一句你好 / 跟你好”
+        wxPat1 = [NSRegularExpression regularExpressionWithPattern:@"(?:打开微信|在微信|到微信|去微信|用微信|微信)(?:里面|里边|里|中|上)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|给|向|跟|发给|告诉|对|找)?(.+?)(?:，|,|\\s)*(?:然后|接着|再)?(?:跟他说一句|跟她说一句|对他说一句|对她说一句|跟他说|跟她说|对他说|对她说|发消息|发信息|发一句话|发一句|发个消息|发条微信|发微信|发送|发|说|留言|跟)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         wxPat2 = [NSRegularExpression regularExpressionWithPattern:@"(?:给|向|跟|对)(.+?)(?:发微信|发条微信|发个微信|发微信消息|微信留言|微信说)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         wxPat3 = [NSRegularExpression regularExpressionWithPattern:@"(?:发微信|发条微信|微信发消息)(?:给|发给|向)(.+?)(?:说|内容是|：|:)?(.+)$" options:0 error:nil];
         numRe = [NSRegularExpression regularExpressionWithPattern:@"(\\d{1,3})" options:0 error:nil];
         timerRe = [NSRegularExpression regularExpressionWithPattern:@"(?:定个|设个|设置|开启|来个)?(\\d{1,3})(?:分钟|分|秒)(?:的)?(?:倒计时|计时器)" options:0 error:nil];
         alarmRe = [NSRegularExpression regularExpressionWithPattern:@"(?:定个|设个|设置|定一个)?(?:明天|明早|早上|上午|下午|晚上)?(\\d{1,2})(?:点|时|:|：)(?:(\\d{1,2})分?)?(?:的)?闹钟" options:0 error:nil];
-        searchRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买|看)(?:一下)?(.+)$" options:0 error:nil];
+        searchRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:在|去|用|打开|启动|找到)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)(?:里|里面|上|app)?(?:，|,|\\s)*(?:然后|接着|再)?(?:帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜|找|买|看)(?:一下)?(.+)$" options:0 error:nil];
         directSearchRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:再|帮我|给我)?(?:搜一下|搜索一下|查找一下|找一下|搜索|搜)(?:一下)?([^，。！？,.!?\\s]+)$" options:0 error:nil];
         naviRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|用|使用)?(?:高德地图|百度地图|苹果地图|高德|百度|地图)?(?:帮我)?(?:导航|驾车|骑行|步行)?(?:到|去|前往|去往)(.+?)(?:怎么走|怎么去|吧|呢)?$" options:0 error:nil];
         musicRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:在网易云|在qq音乐|听|播放)(?:搜|播|听)?([^，。！？,.!?\\s]+)" options:0 error:nil];
-        openRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|你|直接|先|现在|麻烦|快|我)(?:打开|启动|开启|进入|进一下|进到|跳到|切到|切换到|调出|运行|唤起|我想看|开一下)\\s*([^，。！？,.!?”\"']+?)(?:吧|呢|啊|呀|哦)?$" options:0 error:nil];
+        openRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|你|直接|先|现在|麻烦|快|我)(?:打开|启动|开启|进入|进一下|进到|跳到|切到|切换到|调出|运行|唤起|我想看|开一下|找到)\\s*([^，。！？,.!?”\"']+?)(?:吧|呢|啊|呀|哦)?$" options:0 error:nil];
         callRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:给|拨打)([^，。！？,.!?\\s]+?)(?:打电话|呼叫|的电话)" options:0 error:nil];
         smsRegex = [NSRegularExpression regularExpressionWithPattern:@"给(.+?)发(?:短信|信息)(?:说|内容是)?(.+)$" options:0 error:nil];
     });
@@ -15541,13 +15636,23 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     [trimSet formUnionWithCharacterSet:[NSCharacterSet characterSetWithCharactersInString:@"。！？，、,.!?；;：:“”\"'"]];
     NSString *cmd = [[cmdText stringByTrimmingCharactersInSet:trimSet] lowercaseString];
     if (cmd.length == 0) return NO;
-    // 消除 gemini-3.1-flash-live-preview 在每个汉字与标点之间插入的空格（如 '帮 我 打 开 微 信' -> '帮我打开微信'）
+
     static NSRegularExpression *sCJKSpaceRegex = nil;
     static dispatch_once_t sCJKSpaceOnce;
     dispatch_once(&sCJKSpaceOnce, ^{
         sCJKSpaceRegex = [NSRegularExpression regularExpressionWithPattern:@"(?<=[\\u4e00-\\u9fa5，。！？、：；,.!?])\\s+|\\s+(?=[\\u4e00-\\u9fa5，。！？、：；,.!?])" options:0 error:nil];
     });
     cmd = [sCJKSpaceRegex stringByReplacingMatchesInString:cmd options:0 range:NSMakeRange(0, cmd.length) withTemplate:@""];
+
+    // 常见云端同音字纠错（如“大开头宝”->“打开淘宝”、“鲜鱼/咸鱼”->“闲鱼”、“还可是人民政府”->“海口市人民政府”）
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"大开头宝" withString:@"打开淘宝"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"开头宝" withString:@"打开淘宝"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"头宝" withString:@"淘宝"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"鲜鱼" withString:@"闲鱼"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"咸鱼" withString:@"闲鱼"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"定定" withString:@"钉钉"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"丁丁" withString:@"钉钉"];
+    cmd = [cmd stringByReplacingOccurrencesOfString:@"还可是人民政府" withString:@"海口市人民政府"];
 
     static NSArray<NSString *> *sQueryNegativeKeywords = nil;
     static dispatch_once_t sQueryOnce;
@@ -15566,6 +15671,43 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         }
     }
 
+    // ==================== 【第 0 最高优先级】跨软件超长连招拆单与串行队列调度 ====================
+    if (!gIsRunningAtomicComboSubTask) {
+        // 先用特殊分隔符标记跨软件/跨任务边界，保留单软件内部连词（如“打开淘宝然后搜索手机”）不拆散
+        NSString *markedCmd = [crossTaskSplitRe stringByReplacingMatchesInString:cmd options:0 range:NSMakeRange(0, cmd.length) withTemplate:@"|||"];
+        NSArray<NSString *> *rawParts = [markedCmd componentsSeparatedByString:@"|||"];
+        NSMutableArray<NSString *> *atomicTasks = [NSMutableArray array];
+
+        for (NSString *rawPart in rawParts) {
+            NSString *seg = [rawPart stringByTrimmingCharactersInSet:trimSet];
+            if (seg.length < 2) continue;
+
+            // 若某个子句是紧凑的“返回桌面找到淘宝...”无连词粘连句，拆成“返回桌面” + “找到淘宝...”两步
+            NSTextCheckingResult *hm = [homePrefixSplitRe firstMatchInString:seg options:0 range:NSMakeRange(0, seg.length)];
+            if (hm && hm.numberOfRanges > 1) {
+                NSString *afterHome = [[seg substringWithRange:[hm rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
+                if (afterHome.length >= 2) {
+                    [atomicTasks addObject:@"返回桌面"];
+                    [atomicTasks addObject:afterHome];
+                    continue;
+                }
+            }
+            [atomicTasks addObject:seg];
+        }
+
+        // 限制最多 4 步安全上限，若拆分出 >= 2 个独立跨软件任务，立即启动唯一令牌串行队列挨个执行！
+        if (atomicTasks.count >= 2) {
+            if (atomicTasks.count > 4) {
+                atomicTasks = [[atomicTasks subarrayWithRange:NSMakeRange(0, 4)] mutableCopy];
+            }
+            NSUInteger newEpoch = ++gComboSerialEpoch;
+            agLiveDiagLog(@"COMBO_SPLIT_INIT", @"Split ultra-long combo into %lu sequential tasks (epoch=%lu): %@",
+                          (unsigned long)atomicTasks.count, (unsigned long)newEpoch, [atomicTasks componentsJoinedByString:@" => "]);
+            [self runSequentialComboQueue:atomicTasks index:0 epoch:newEpoch waitChecks:0];
+            return YES;
+        }
+    }
+
     NSString *cleanCmd = [cmd stringByReplacingOccurrencesOfString:@"把我" withString:@""];
     cleanCmd = [cleanCmd stringByReplacingOccurrencesOfString:@"帮我" withString:@""];
     cleanCmd = [cleanCmd stringByReplacingOccurrencesOfString:@"请你" withString:@""];
@@ -15574,8 +15716,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     cleanCmd = [cleanCmd stringByReplacingOccurrencesOfString:@"把" withString:@""];
     cleanCmd = [cleanCmd stringByTrimmingCharactersInSet:trimSet];
 
-    // 剥离单步句子开头的“然后再 / 然后 / 接着”（解决“[03:45:21] 然后再帮我搜索手机”开头带连词的问题）
-    NSArray<NSString *> *leadingConnectors = @[@"然后再", @"接着再", @"然后", @"接着", @"再"];
+    NSArray<NSString *> *leadingConnectors = @[@"然后再", @"接着再", @"然后你再", @"然后你", @"然后", @"接着", @"再"];
     for (NSString *lc in leadingConnectors) {
         if ([cleanCmd hasPrefix:lc] && cleanCmd.length > lc.length) {
             cleanCmd = [[cleanCmd substringFromIndex:lc.length] stringByTrimmingCharactersInSet:trimSet];
@@ -15583,20 +15724,21 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         }
     }
 
-    // ==================== 【第 0 最高优先级】一气呵成紧凑连招与多步“然后”连招拆解 ====================
-    // 0.1 匹配“打开淘宝搜索手机帮我点击最贵的” / “打开淘宝，然后搜索手机，然后再点第三个”
+    // 0.1 匹配单软件内紧凑三连招（“打开淘宝搜索手机找到最贵的”）
     NSTextCheckingResult *comboMatch = [compactComboRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (comboMatch && comboMatch.numberOfRanges >= 4) {
         NSString *pltName = [[cleanCmd substringWithRange:[comboMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         NSString *searchKw = [[cleanCmd substringWithRange:[comboMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
         NSString *tapTarget = [[cleanCmd substringWithRange:[comboMatch rangeAtIndex:3]] stringByTrimmingCharactersInSet:trimSet];
         if (pltName.length > 0 && searchKw.length > 0 && tapTarget.length > 0) {
+            if (!gIsRunningAtomicComboSubTask) gComboSerialEpoch++;
+            NSUInteger boundEpoch = gComboSerialEpoch;
             agLiveDiagLog(@"COMBO_EXEC", @"Step1: Search [%@] for [%@] -> Step2 (2.2s later): Tap [%@]", pltName, searchKw, tapTarget);
             gLastOpenedSearchPlatform = pltName;
             gLastOpenedPlatformTime = [[NSDate date] timeIntervalSince1970];
             [self executeActionDictionary:@{@"type": @"search", @"keyword": searchKw, @"platform": pltName}];
-            // 2.2 秒发起首次极速本地 OCR 点击（热启动秒点）；若遇 App 冷启动尚未刷出商品，自动隔 1.0 秒免费复扫第 2 次
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (boundEpoch != gComboSerialEpoch || self.isDismissed) return;
                 gLastExecutedActionSignature = nil;
                 [self dismissOverlayIfMainCardActive];
                 [self performVisualTapWithRetry:tapTarget attempt:1 maxAttempts:2];
@@ -15605,9 +15747,9 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         }
     }
 
-    // 0.2 匹配任意含“然后 / 接着 / 再去”的多步复合连招（绝不再被后面的单步点击截胡！）
+    // 0.2 匹配同软件内“打开XX + 然后搜索/点击YY”双步连招
     BOOL isLocAndShieldCombo = (([cleanCmd containsString:@"定位"] || [cleanCmd containsString:@"位置"] || [cleanCmd containsString:@"丁维"]) &&
-                                ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] || [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] || [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"网检车"]));
+                                ([cleanCmd containsString:@"防检测"] || [cleanCmd containsString:@"反检测"] || [cleanCmd containsString:@"房检测"] || [cleanCmd containsString:@"房检车"] || [cleanCmd containsString:@"房间车"] || [cleanCmd containsString:@"房间侧"] || [cleanCmd containsString:@"房间测"] || [cleanCmd containsString:@"网检车"]));
     BOOL isWeChatCompoundCmd = ([cleanCmd containsString:@"微信"] &&
                                 ([cleanCmd containsString:@"找到"] || [cleanCmd containsString:@"找一下"] || [cleanCmd containsString:@"聊天"] || [cleanCmd containsString:@"对话"] || [cleanCmd containsString:@"发"] || [cleanCmd containsString:@"说"] || [cleanCmd containsString:@"留言"] || [cleanCmd containsString:@"未读"] || [cleanCmd containsString:@"扫"] || [cleanCmd containsString:@"付"] || [cleanCmd containsString:@"收"] || [cleanCmd containsString:@"圈"]));
     NSTextCheckingResult *chainMatch = (isLocAndShieldCombo || isWeChatCompoundCmd) ? nil : [multiChainRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
@@ -15615,8 +15757,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
         NSString *step1Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         NSString *step2Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
         if (step1Str.length >= 2 && step2Str.length >= 2) {
-            // 若第1步是“打开淘宝”、第2步开头是“搜索手机...”，直接合并成一步跳转淘宝搜索页，省去中间冷启动等待！
-            NSRegularExpression *openOnlyRe = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|启动|去)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)$" options:0 error:nil];
+            NSRegularExpression *openOnlyRe = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|启动|去|找到)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)$" options:0 error:nil];
             NSTextCheckingResult *m1 = [openOnlyRe firstMatchInString:step1Str options:0 range:NSMakeRange(0, step1Str.length)];
             if (m1 && ([step2Str hasPrefix:@"搜索"] || [step2Str hasPrefix:@"搜"])) {
                 NSString *plt = [step1Str substringWithRange:[m1 rangeAtIndex:1]];
@@ -15624,17 +15765,10 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
                 return [self tryExecuteDirectLocalCommand:mergedCmd];
             }
 
-            BOOL step1Handled = [self tryExecuteDirectLocalCommand:step1Str];
-            if (step1Handled) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    gLastExecutedActionSignature = nil;
-                    if (![self tryExecuteDirectLocalCommand:step2Str]) {
-                        [self performAIVisionScreenAgentWithGoal:step2Str step:1 maxSteps:2];
-                    }
-                });
+            if (!gIsRunningAtomicComboSubTask) {
+                NSUInteger newEpoch = ++gComboSerialEpoch;
+                [self runSequentialComboQueue:@[step1Str, step2Str] index:0 epoch:newEpoch waitChecks:0];
                 return YES;
-            } else {
-                return [self tryExecuteDirectLocalCommand:step2Str];
             }
         }
     }
