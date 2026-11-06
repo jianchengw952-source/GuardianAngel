@@ -15646,7 +15646,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     // --- 虚拟定位与反检测中心 ---
     if ([cleanCmd containsString:@"恢复真实定位"] || [cleanCmd containsString:@"关闭虚拟定位"] ||
         [cleanCmd containsString:@"还原定位"] || [cleanCmd containsString:@"取消虚拟定位"] ||
-        [cleanCmd containsString:@"恢复定位"]) {
+        [cleanCmd containsString:@"恢复定位"] || [cleanCmd containsString:@"定位关闭"]) {
         [[AGLocationSpoofManager sharedSpoofer] stopAndResetToRealLocation];
         [self showActionBanner:@"🛰️ 已恢复真实硬件 GPS 定位"];
         return YES;
@@ -16014,7 +16014,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
 
     // 7C. 🔋 查询近 24 小时越狱插件耗电记录与发热排行（含“擦肩/差价/查看”同音与口语容错）
     if ((([cmd containsString:@"插件"] || [cmd containsString:@"擦肩"] || [cmd containsString:@"差价"] || [cmd containsString:@"查看"]) && ([cmd containsString:@"耗电"] || [cmd containsString:@"费电"] || [cmd containsString:@"掉电"] || [cmd containsString:@"电量"])) ||
-        [cmd containsString:@"耗电记录"] || [cmd containsString:@"耗电排行"] || [cmd containsString:@"哪个插件最耗电"] || [cmd containsString:@"谁最耗电"]) {
+        [cmd containsString:@"耗电记录"] || [cmd containsString:@"好点记录"] || [cmd containsString:@"耗电排行"] || [cmd containsString:@"哪个插件最耗电"] || [cmd containsString:@"谁最耗电"]) {
         [self executeActionDictionary:@{@"type": @"tweak_power_report"}];
         return YES;
     }
@@ -16145,7 +16145,7 @@ static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSStr
     }
 
     // 10A-2. 🔒 判断回桌面与锁屏（含“返回左面/回左面/回主页/回主界面”同音词容错）
-    if ([cmd containsString:@"回桌面"] || [cmd containsString:@"返回桌面"] || [cmd containsString:@"回到桌面"] ||
+    if ([cmd containsString:@"回桌面"] || [cmd containsString:@"返回桌面"] || [cmd containsString:@"发回桌面"] || [cmd containsString:@"回到桌面"] ||
         [cmd containsString:@"回左面"] || [cmd containsString:@"返回左面"] || [cmd containsString:@"回到左面"] ||
         [cmd containsString:@"回主屏幕"] || [cmd containsString:@"回到主屏幕"] || [cmd containsString:@"返回主屏幕"] ||
         [cmd containsString:@"回主页"] || [cmd containsString:@"返回主页"] || [cmd containsString:@"回到主页"] ||
