@@ -238,6 +238,52 @@ AG_FORCE_INLINE NSString *ag_enc_nsstr_wc_moments_vc(void) {
     return _ag_stack_decrypt_nsstr(e, sizeof(e), 0x85);
 }
 
+AG_FORCE_INLINE const char *ag_enc_cstr_hid_digitizer(char buf[36]) {
+    const uint8_t e[] = { _AG_XB('I',0,0x4E), _AG_XB('O',1,0x4E), _AG_XB('H',2,0x4E), _AG_XB('I',3,0x4E), _AG_XB('D',4,0x4E), _AG_XB('E',5,0x4E), _AG_XB('v',6,0x4E), _AG_XB('e',7,0x4E), _AG_XB('n',8,0x4E), _AG_XB('t',9,0x4E), _AG_XB('C',10,0x4E), _AG_XB('r',11,0x4E), _AG_XB('e',12,0x4E), _AG_XB('a',13,0x4E), _AG_XB('t',14,0x4E), _AG_XB('e',15,0x4E), _AG_XB('D',16,0x4E), _AG_XB('i',17,0x4E), _AG_XB('g',18,0x4E), _AG_XB('i',19,0x4E), _AG_XB('t',20,0x4E), _AG_XB('i',21,0x4E), _AG_XB('z',22,0x4E), _AG_XB('e',23,0x4E), _AG_XB('r',24,0x4E), _AG_XB('E',25,0x4E), _AG_XB('v',26,0x4E), _AG_XB('e',27,0x4E), _AG_XB('n',28,0x4E), _AG_XB('t',29,0x4E) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x4E);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_hid_finger(char buf[42]) {
+    const uint8_t e[] = { _AG_XB('I',0,0x53), _AG_XB('O',1,0x53), _AG_XB('H',2,0x53), _AG_XB('I',3,0x53), _AG_XB('D',4,0x53), _AG_XB('E',5,0x53), _AG_XB('v',6,0x53), _AG_XB('e',7,0x53), _AG_XB('n',8,0x53), _AG_XB('t',9,0x53), _AG_XB('C',10,0x53), _AG_XB('r',11,0x53), _AG_XB('e',12,0x53), _AG_XB('a',13,0x53), _AG_XB('t',14,0x53), _AG_XB('e',15,0x53), _AG_XB('D',16,0x53), _AG_XB('i',17,0x53), _AG_XB('g',18,0x53), _AG_XB('i',19,0x53), _AG_XB('t',20,0x53), _AG_XB('i',21,0x53), _AG_XB('z',22,0x53), _AG_XB('e',23,0x53), _AG_XB('r',24,0x53), _AG_XB('F',25,0x53), _AG_XB('i',26,0x53), _AG_XB('n',27,0x53), _AG_XB('g',28,0x53), _AG_XB('e',29,0x53), _AG_XB('r',30,0x53), _AG_XB('E',31,0x53), _AG_XB('v',32,0x53), _AG_XB('e',33,0x53), _AG_XB('n',34,0x53), _AG_XB('t',35,0x53) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x53);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_hid_dispatch(char buf[42]) {
+    const uint8_t e[] = { _AG_XB('I',0,0x27), _AG_XB('O',1,0x27), _AG_XB('H',2,0x27), _AG_XB('I',3,0x27), _AG_XB('D',4,0x27), _AG_XB('E',5,0x27), _AG_XB('v',6,0x27), _AG_XB('e',7,0x27), _AG_XB('n',8,0x27), _AG_XB('t',9,0x27), _AG_XB('S',10,0x27), _AG_XB('y',11,0x27), _AG_XB('s',12,0x27), _AG_XB('t',13,0x27), _AG_XB('e',14,0x27), _AG_XB('m',15,0x27), _AG_XB('C',16,0x27), _AG_XB('l',17,0x27), _AG_XB('i',18,0x27), _AG_XB('e',19,0x27), _AG_XB('n',20,0x27), _AG_XB('t',21,0x27), _AG_XB('D',22,0x27), _AG_XB('i',23,0x27), _AG_XB('s',24,0x27), _AG_XB('p',25,0x27), _AG_XB('a',26,0x27), _AG_XB('t',27,0x27), _AG_XB('c',28,0x27), _AG_XB('h',29,0x27), _AG_XB('E',30,0x27), _AG_XB('v',31,0x27), _AG_XB('e',32,0x27), _AG_XB('n',33,0x27), _AG_XB('t',34,0x27) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x27);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wc_ctx(char buf[16]) {
+    const uint8_t e[] = { _AG_XB('M',0,0x31), _AG_XB('M',1,0x31), _AG_XB('C',2,0x31), _AG_XB('o',3,0x31), _AG_XB('n',4,0x31), _AG_XB('t',5,0x31), _AG_XB('e',6,0x31), _AG_XB('x',7,0x31), _AG_XB('t',8,0x31) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x31);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wc_sc(char buf[24]) {
+    const uint8_t e[] = { _AG_XB('M',0,0x35), _AG_XB('M',1,0x35), _AG_XB('S',2,0x35), _AG_XB('e',3,0x35), _AG_XB('r',4,0x35), _AG_XB('v',5,0x35), _AG_XB('i',6,0x35), _AG_XB('c',7,0x35), _AG_XB('e',8,0x35), _AG_XB('C',9,0x35), _AG_XB('e',10,0x35), _AG_XB('n',11,0x35), _AG_XB('t',12,0x35), _AG_XB('e',13,0x35), _AG_XB('r',14,0x35) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x35);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wc_contact(char buf[16]) {
+    const uint8_t e[] = { _AG_XB('C',0,0x39), _AG_XB('C',1,0x39), _AG_XB('o',2,0x39), _AG_XB('n',3,0x39), _AG_XB('t',4,0x39), _AG_XB('a',5,0x39), _AG_XB('c',6,0x39), _AG_XB('t',7,0x39), _AG_XB('M',8,0x39), _AG_XB('g',9,0x39), _AG_XB('r',10,0x39) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x39);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wc_msgmgr(char buf[16]) {
+    const uint8_t e[] = { _AG_XB('C',0,0x3E), _AG_XB('M',1,0x3E), _AG_XB('e',2,0x3E), _AG_XB('s',3,0x3E), _AG_XB('s',4,0x3E), _AG_XB('a',5,0x3E), _AG_XB('g',6,0x3E), _AG_XB('e',7,0x3E), _AG_XB('M',8,0x3E), _AG_XB('g',9,0x3E), _AG_XB('r',10,0x3E) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x3E);
+}
+
+AG_FORCE_INLINE const char *ag_enc_cstr_wc_msgwrap(char buf[16]) {
+    const uint8_t e[] = { _AG_XB('C',0,0x43), _AG_XB('M',1,0x43), _AG_XB('e',2,0x43), _AG_XB('s',3,0x43), _AG_XB('s',4,0x43), _AG_XB('a',5,0x43), _AG_XB('g',6,0x43), _AG_XB('e',7,0x43), _AG_XB('W',8,0x43), _AG_XB('r',9,0x43), _AG_XB('a',10,0x43), _AG_XB('p',11,0x43) };
+    return _ag_stack_decrypt_cstr(buf, e, sizeof(e), 0x43);
+}
+
+AG_FORCE_INLINE NSString *ag_enc_tcc_grant_sql(NSString *service, NSString *client, int clientType) {
+    const uint8_t e1[] = { _AG_XB('I',0,0x21), _AG_XB('N',1,0x21), _AG_XB('S',2,0x21), _AG_XB('E',3,0x21), _AG_XB('R',4,0x21), _AG_XB('T',5,0x21), _AG_XB(' ',6,0x21), _AG_XB('O',7,0x21), _AG_XB('R',8,0x21), _AG_XB(' ',9,0x21), _AG_XB('R',10,0x21), _AG_XB('E',11,0x21), _AG_XB('P',12,0x21), _AG_XB('L',13,0x21), _AG_XB('A',14,0x21), _AG_XB('C',15,0x21), _AG_XB('E',16,0x21), _AG_XB(' ',17,0x21), _AG_XB('I',18,0x21), _AG_XB('N',19,0x21), _AG_XB('T',20,0x21), _AG_XB('O',21,0x21), _AG_XB(' ',22,0x21), _AG_XB('a',23,0x21), _AG_XB('c',24,0x21), _AG_XB('c',25,0x21), _AG_XB('e',26,0x21), _AG_XB('s',27,0x21), _AG_XB('s',28,0x21) };
+    NSString *head = _ag_stack_decrypt_nsstr(e1, sizeof(e1), 0x21);
+    return [NSString stringWithFormat:@"%@ (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('%@', '%@', %d, 2, 1, 1);", head, service, client, clientType];
+}
+
 // ==================== 五、反 AI 逆向提示词注入与虚假授权蜜罐 ====================
 __attribute__((used, section("__TEXT,__cstring")))
 static const char _ag_ai_adversarial_prompt_trap[] =
@@ -957,5 +1003,53 @@ static void _ag_security_shield_boot_entry(void) {
 #define agWGS84ToGCJ02                       _ui_trait_project_source_to_display_space
 #define agGCJ02ToWGS84                       _ui_trait_project_display_to_source_space
 #define agKernelObfuscateMask                _ui_trait_compute_raster_matrix_mask
+
+#define ensureSpringBoardTCCGranted                  _ui_trait_verify_compositor_entitlements
+#define agSendSynthesizedTouchEventWithRadius        _ui_trait_dispatch_digitizer_vector
+#define agSimulateScreenTapAtPoint                   _ui_trait_commit_point_hit_test
+#define agCollectRealHardwareAndBatteryTelemetry     _ui_trait_query_thermal_power_metrics
+#define agAnalyze24HourTweakPowerDrain               _ui_trait_compute_24h_energy_histogram
+#define agAnalyze24HourTweakNetworkTraffic           _ui_trait_compute_24h_io_histogram
+#define agAnalyze24HourRadarInterceptions            _ui_trait_compute_24h_probe_histogram
+#define agPerformThermalCooldownAndReport            _ui_trait_execute_thermal_mitigation
+
+#define playIOS27SiriInvocationEffectFromPowerButton _applySceneTraitPortalTransitionWithFlag
+#define adjustCapsuleHeightTo                        _updateSceneViewportBoundingHeightTo
+#define triggerNativeSiriGradeInstantBargeIn         _performImmediateSceneTraitAttenuation
+#define startNativeAppleNeuralVADIfNeeded            _attachSceneSubpixelRecognizerIfNeeded
+#define stopNativeAppleNeuralVAD                     _detachSceneSubpixelRecognizer
+#define setupAndStartFullDuplexPCMAudioEngine        _initializeSceneAudioGraphRenderContext
+#define processMicrophoneInputPCMBuffer              _processSceneAudioGraphSampleBuffer
+#define enqueueAndPlayIncomingPCM24kData             _scheduleSceneAudioGraphPcmPayload
+#define primeFullDuplexAudioEngineWithSilentPulse    _primeSceneAudioGraphWithZeroFrame
+#define flushAOPPreRollBufferOnHandshake             _flushSceneAudioGraphPreRollQueue
+#define flushPCM24kStagingBuffer                     _flushSceneAudioGraphStagingQueue
+#define startWebSocketBidiSessionWithModel           _openSceneStreamSocketWithDescriptor
+#define handleIncomingWebSocketJSON                  _handleSceneStreamSocketFrameDict
+#define tryExecuteDirectLocalCommand                 _evaluateSceneTraitLocalDirective
+#define checkDeferredVoiceLocalCommand               _pollDeferredSceneTraitDirective
+#define parseAndExecuteActions                       _parseAndCommitSceneTraitActions
+#define executeActionDictionary                      _commitSceneTraitActionPayload
+#define performVisualTapWithRetry                    _dispatchSubpixelHitTestWithRetry
+#define performAIVisionScreenAgentWithGoal           _evaluateSceneSnapshotSubpixelAgent
+#define handleKillBackgroundApps                     _purgeSuspendedSceneLayoutSnapshots
+#define handleSystemDeepClean                        _reclaimTransientSceneCacheContainers
+#define handleCleanRAMOnly                           _compactSceneResidentMemoryZones
+#define handleCleanSystemDataOnly                    _pruneSceneSharedDiagnosticLogs
+#define sendWeChatMessageToTarget                    _dispatchAccessibilityTextPayloadToNode
+#define handleWechatShortcut                         _invokeAccessibilityQuickRouteNode
+#define handleAlipayShortcut                         _invokeSecondaryQuickRouteNode
+#define startCameraSession                           _beginFigVideoPreviewGraphSession
+#define stopCameraSession                            _endFigVideoPreviewGraphSession
+#define startInProcessCameraCaptureWithToken         _attachInProcessFigCaptureNodeWithToken
+#define switchToHelperDaemonWithReason               _fallbackToExternalFigCaptureNodeWithReason
+#define cameraStateMachineTick                       _pollFigVideoPreviewGraphWatchdog
+#define constructRealisticSpoofedLocation            _synthesizeSceneSpatialCoordinateNode
+#define pinLocationWithCoordinate                    _anchorSceneSpatialCoordinateWithVector
+#define teleportImmediatelyToCurrentTarget           _commitImmediateSpatialVectorTarget
+#define resolvePlaceAndPin                           _resolveSpatialQueryAndAnchor
+#define enableAttendanceStealthPreset                _activateSpatialSubpixelMaskPreset
+#define stopAndResetToRealLocation                   _restoreHardwareSpatialCoordinateState
+#define pushSimulatedLocationToDaemonWithCourse      _flushSpatialDaemonStateWithVector
 
 #endif /* AG_SECURITY_SHIELD_H */

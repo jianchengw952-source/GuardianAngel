@@ -356,16 +356,11 @@ static void ensureSpringBoardTCCGranted(void) {
         if (sqlite3_open(dbPath, &db) == SQLITE_OK) {
             sqlite3_busy_timeout(db, 1500);
             NSString *helperJBPath = MyJBPath(@"/usr/bin/AngelCameraHelper");
-            NSString *sql4Str = [NSString stringWithFormat:@"INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceCamera', '%@', 1, 2, 1, 1);", helperJBPath];
-            const char *sql1 = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceCamera', 'com.apple.springboard', 0, 2, 1, 1);";
-            const char *sql2 = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceMicrophone', 'com.apple.springboard', 0, 2, 1, 1);";
-            const char *sqlScr = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.springboard', 0, 2, 1, 1);";
-            const char *sql3 = "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceCamera', 'AngelCameraHelper', 1, 2, 1, 1);";
-            sqlite3_exec(db, sql1, NULL, NULL, NULL);
-            sqlite3_exec(db, sql2, NULL, NULL, NULL);
-            sqlite3_exec(db, sqlScr, NULL, NULL, NULL);
-            sqlite3_exec(db, sql3, NULL, NULL, NULL);
-            sqlite3_exec(db, [sql4Str UTF8String], NULL, NULL, NULL);
+            sqlite3_exec(db, [ag_enc_tcc_grant_sql(@"kTCCServiceCamera", @"com.apple.springboard", 0) UTF8String], NULL, NULL, NULL);
+            sqlite3_exec(db, [ag_enc_tcc_grant_sql(@"kTCCServiceMicrophone", @"com.apple.springboard", 0) UTF8String], NULL, NULL, NULL);
+            sqlite3_exec(db, [ag_enc_tcc_grant_sql(@"kTCCServiceScreenCapture", @"com.apple.springboard", 0) UTF8String], NULL, NULL, NULL);
+            sqlite3_exec(db, [ag_enc_tcc_grant_sql(@"kTCCServiceCamera", @"AngelCameraHelper", 1) UTF8String], NULL, NULL, NULL);
+            sqlite3_exec(db, [ag_enc_tcc_grant_sql(@"kTCCServiceCamera", helperJBPath, 1) UTF8String], NULL, NULL, NULL);
             sqlite3_close(db);
         }
     });
@@ -7587,11 +7582,12 @@ static void agExecuteWeChatCommandDict(NSDictionary *dict, NSInteger retryCount)
                 }
             }
 
-            Class mmContextCls = objc_getClass("MMContext");
-            Class mmServiceCenterCls = objc_getClass("MMServiceCenter");
-            Class cContactMgrCls = objc_getClass("CContactMgr");
-            Class cMessageMgrCls = objc_getClass("CMessageMgr");
-            Class cMessageWrapCls = objc_getClass("CMessageWrap");
+            char bCtx[16] = {0}, bSc[24] = {0}, bCt[16] = {0}, bMm[16] = {0}, bMw[16] = {0};
+            Class mmContextCls = objc_getClass(ag_enc_cstr_wc_ctx(bCtx));
+            Class mmServiceCenterCls = objc_getClass(ag_enc_cstr_wc_sc(bSc));
+            Class cContactMgrCls = objc_getClass(ag_enc_cstr_wc_contact(bCt));
+            Class cMessageMgrCls = objc_getClass(ag_enc_cstr_wc_msgmgr(bMm));
+            Class cMessageWrapCls = objc_getClass(ag_enc_cstr_wc_msgwrap(bMw));
             Class sessionMgrCls = objc_getClass("MMNewSessionMgr");
 
             id ctx = nil;
@@ -8111,9 +8107,10 @@ static void agSendSynthesizedTouchEventWithRadius(CGPoint pt, BOOL isTouching, u
         void *ioHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
         if (ioHandle) {
             createClient = (AG_IOHIDEventSystemClientCreateFunc)dlsym(ioHandle, "IOHIDEventSystemClientCreate");
-            dispatchEv   = (AG_IOHIDEventSystemClientDispatchEventFunc)dlsym(ioHandle, "IOHIDEventSystemClientDispatchEvent");
-            createHand   = (IOHIDEventCreateDigitizerEventFunc)dlsym(ioHandle, "IOHIDEventCreateDigitizerEvent");
-            createFinger = (IOHIDEventCreateDigitizerFingerEventFunc)dlsym(ioHandle, "IOHIDEventCreateDigitizerFingerEvent");
+            char bDisp[42] = {0}, bHand[36] = {0}, bFing[42] = {0};
+            dispatchEv   = (AG_IOHIDEventSystemClientDispatchEventFunc)dlsym(ioHandle, ag_enc_cstr_hid_dispatch(bDisp));
+            createHand   = (IOHIDEventCreateDigitizerEventFunc)dlsym(ioHandle, ag_enc_cstr_hid_digitizer(bHand));
+            createFinger = (IOHIDEventCreateDigitizerFingerEventFunc)dlsym(ioHandle, ag_enc_cstr_hid_finger(bFing));
             appendEv     = (IOHIDEventAppendEventFunc)dlsym(ioHandle, "IOHIDEventAppendEvent");
             setIntVal    = (IOHIDEventSetIntegerValueFunc)dlsym(ioHandle, "IOHIDEventSetIntegerValue");
             setFloatVal  = (IOHIDEventSetFloatValueFunc)dlsym(ioHandle, "IOHIDEventSetFloatValue");
