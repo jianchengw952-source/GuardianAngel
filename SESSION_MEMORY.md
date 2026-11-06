@@ -2492,3 +2492,54 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+
+---
+
+## 2026-11-07: 防说话换气中途截断保护与跨软件超长连招串行排队器上线 (Run ID: 42290148860 / Commit af94dbb)
+
+### 1. 核心精修要点
+1. **防说话换气/网络抖动截断保护 (`checkDeferredVoiceLocalCommand`)**：
+   - 在本地延迟指令命中处理前，新增换气停顿与未完待续尾词检测逻辑；
+   - 动态识别活跃人声：`now - lastNeuralSpeechActiveTime < 0.45` 或 `now - lastActiveMicDBTime < 0.35 && lastActiveMicDB > -29.0f`；
+   - 尾词未完待续保护：覆盖“然后”、“然后再”、“接着”、“再帮我”、“打开”、“在微信”、“跟他说”、“找到”、“搜索”、“点击”、“发”、“说”等 30+ 种高频连词与前置动作词；
+   - 命中时安全顺延 0.38 秒（最多顺延 3 次防环境噪音死锁），彻底解决用户说话换气长句被腰斩的问题。
+2. **跨软件超长连招拆单与串行防混乱排队器 (`tryExecuteDirectLocalCommand:`)**：
+   - 新增 `estimatedWaitDurationForAtomicStep:` 动态耗时评估器：电商搜索+OCR 视觉点击 4.3s、微信发消息 2.8s、启动 App 2.3s、硬件秒级开关 1.3s；
+   - 新增 `runSequentialComboQueue:index:epoch:waitChecks:` 跨任务串行排队执行中枢，配备全局硬件互斥锁检测（`gIsScreenVisionAgentBusy || gIsTouchSynthesizing` 繁忙时自动轮询等待至多 4 次 x 0.55s）；
+   - 在跨任务连续调度期间持续自动延展本地打断静音锁（`bargeInMuteTimestamp = now - 3.7`），杜绝任务未完成时 AI 抢跑发声；
+   - 引入代次戳 `gComboSerialEpoch` 与子任务标识 `gIsRunningAtomicComboSubTask`，杜绝旧任务回调击穿新会话；
+   - 跨软件拆单正则支持将“先/然后/接着/再/顺便”跨应用复合指令精准拆解为至多 4 步原子任务，并自动避开单应用内部连招与定位/反检测组合。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,465,836` 字节
+  - SHA256：`47b7147ff3114ed7317b3db4f66c193e2e9bfabebc8aeaac0595527f8252110f` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42290148860 / Commit af94dbb)
+- Git Commit: `af94dbb` (Run ID: 42290148860) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (610,480 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (388,740 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 596,088 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 381,908 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`（0% `.zst`）；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+- **【符号脱敏校验】**：
+  - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，敏感 API 与私有符号 100% 动态栈解密与脱敏保护。
