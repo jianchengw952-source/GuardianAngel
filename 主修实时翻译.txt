@@ -9150,7 +9150,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 NSString *procName         = [[ev[@"fname"] componentsSeparatedByString:@"-"] firstObject] ?: @"App";
 
                 NSRange firstNewline = [rawContent rangeOfString:@"\n"];
-                NSString *bodyStr = (firstNewline.location != NSNotFound && firstNewline.location < 600)
+                NSString *bodyStr = (firstNewline.location != NSNotFound && firstNewline.location < 2400)
                     ? [rawContent substringFromIndex:firstNewline.location + 1]
                     : rawContent;
                 NSDictionary *ipsJSON = [NSJSONSerialization JSONObjectWithData:[bodyStr dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
@@ -9301,6 +9301,23 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                                 if (primeSuspect) break;
                             }
                         }
+
+                        // 兜底：若崩溃停在系统底层框架，扫描该崩溃进程已加载的 usedImages 中是否存在注入的第三方越狱插件 (兼容 Dopamine 与 Relaxin)
+                        if (!confirmedCulprit && !primeSuspect) {
+                            for (NSDictionary *img in usedImages) {
+                                if (![img isKindOfClass:[NSDictionary class]]) continue;
+                                NSString *imgPath = agSafeStr(img[@"path"]);
+                                NSString *imgName = agSafeStr(img[@"name"]);
+                                if (imgName.length == 0) imgName = [imgPath lastPathComponent];
+                                if (agIsThirdPartyTweakImage(imgPath, imgName)) {
+                                    NSString *humanPlug = agResolveHumanPluginNameForDylib(imgName);
+                                    matchedDylibFile = imgName;
+                                    basePluginKey = humanPlug;
+                                    primeSuspect = [NSString stringWithFormat:@"%@ [线索: 已注入该崩溃进程]", humanPlug];
+                                    break;
+                                }
+                            }
+                        }
                     }
                 } else {
                     NSRegularExpression *dylibRe = [NSRegularExpression regularExpressionWithPattern:@"([A-Za-z0-9_\\-\\+]+\\.dylib)" options:0 error:nil];
@@ -9356,19 +9373,69 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 } mutableCopy]];
             }
 
+            // 读取 SpringBoard 注销账本 (自动兼容 Dopamine /var/mobile/... 与 Relaxin .jbroot/...)
+            NSUInteger ledgerRespringCount = 0;
+            NSDate *latestLedgerRespringDate = nil;
+            struct timeval boottime;
+            size_t btLen = sizeof(boottime);
+            int mib[2] = {CTL_KERN, KERN_BOOTTIME};
+            NSTimeInterval kernelBootTs = (sysctl(mib, 2, &boottime, &btLen, NULL, 0) == 0) ? (NSTimeInterval)boottime.tv_sec : 0;
+
+            NSData *ledgerData = [NSData dataWithContentsOfFile:agRespringLedgerFilePath()];
+            if (ledgerData) {
+                NSArray *savedBoots = [NSJSONSerialization JSONObjectWithData:ledgerData options:0 error:nil];
+                if ([savedBoots isKindOfClass:[NSArray class]]) {
+                    for (id item in savedBoots) {
+                        NSNumber *tsNum = agSafeNum(item);
+                        if (!tsNum) continue;
+                        NSTimeInterval ts = [tsNum doubleValue];
+                        if (ts >= sevenDaysAgo) {
+                            // 排除整机刚开机前 90 秒内的首次桌面启动，其余均为桌面注销 (Respring)
+                            if (kernelBootTs <= 0 || fabs(ts - kernelBootTs) > 90.0) {
+                                ledgerRespringCount++;
+                                NSDate *d = [NSDate dateWithTimeIntervalSince1970:ts];
+                                if (!latestLedgerRespringDate || [d compare:latestLedgerRespringDate] == NSOrderedDescending) {
+                                    latestLedgerRespringDate = d;
+                                }
+                            }
+                        }
+                    }
+                    if (ledgerRespringCount == 0 && savedBoots.count > 1) {
+                        ledgerRespringCount = savedBoots.count - 1;
+                        NSNumber *lastTs = agSafeNum(savedBoots.lastObject);
+                        if (lastTs) latestLedgerRespringDate = [NSDate dateWithTimeIntervalSince1970:[lastTs doubleValue]];
+                    }
+                }
+            }
+
+            NSUInteger totalRespringCount = MAX(ledgerRespringCount, sbCrashCount + sbJetsamOOMCount);
+
             NSMutableString *card = [NSMutableString string];
-            [card appendString:@"🕵️‍♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 内存爆满 OOM 报告】\n"];
-            [card appendFormat:@"• 🔄 异常死机重启：%@（近7天死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
-            [card appendFormat:@"• 💥 桌面自动注销：插件崩溃注销 %lu 次｜内存爆满(OOM)注销 %lu 次｜软件闪退 %lu 次\n",
-             (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount];
+            [card appendString:@"🕵️♂️ 【近 7 天手机异常重启 / 自动崩溃注销 / 内存爆满 OOM 报告】\n"];
+            [card appendFormat:@"• 🔄 整机开机状态：%@（近7天内核死机重启 %lu 次）\n", bootSummary, (unsigned long)panicCount];
+            [card appendFormat:@"• 💥 桌面注销统计：累计注销 %lu 次（其中插件崩溃注销 %lu 次｜内存爆满OOM %lu 次｜软件闪退 %lu 次）\n",
+             (unsigned long)totalRespringCount, (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount];
 
             NSString *pillOut = nil;
             NSString *speechOut = nil;
 
             if (parsedRecords.count == 0) {
-                [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或内存爆满注销，系统运行非常稳定。"];
-                pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃0注销｜%@", bootSummary];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面崩溃与内存爆满注销 0 次，没有发现任何插件冲突。", bootSummary];
+                if (totalRespringCount > 0 && latestLedgerRespringDate) {
+                    NSString *lastRespringTimeStr = [df stringFromDate:latestLedgerRespringDate];
+                    NSString *recentBase = nil;
+                    NSString *recentTweak = agFindRecentlyModifiedTweakBeforeDate(latestLedgerRespringDate, &recentBase);
+                    [card appendFormat:@"• 🕒 最近一次桌面注销：%@（属于手动注销、安装更新插件或系统重置，未发生代码崩溃）\n", lastRespringTimeStr];
+                    if (recentTweak.length > 0) {
+                        [card appendFormat:@"• 🧩 当时最近变动插件：%@\n", recentTweak];
+                    }
+                    pillOut = [NSString stringWithFormat:@"🔄 近7天注销%lu次(0崩溃)｜最近:%@", (unsigned long)totalRespringCount, lastRespringTimeStr];
+                    speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天桌面共注销过 %lu 次，最近一次注销发生在 %@，属于正常指令注销或插件更新生效，近 7 天内没有任何插件崩溃或死机重启记录。",
+                                 bootSummary, (unsigned long)totalRespringCount, lastRespringTimeStr];
+                } else {
+                    [card appendString:@"• ✅ 诊断结论：近 7 天内没有任何插件把手机搞崩、死机或异常注销，系统运行非常稳定。"];
+                    pillOut = [NSString stringWithFormat:@"✅ 近7天0崩溃0注销｜%@", bootSummary];
+                    speechOut = [NSString stringWithFormat:@"为您查了近 7 天的系统记录：本机于 %@，近 7 天整机死机重启 0 次，桌面崩溃与内存爆满注销 0 次，没有发现任何插件冲突。", bootSummary];
+                }
             } else {
                 for (NSUInteger i = 0; i < parsedRecords.count; i++) {
                     NSDictionary *rec = parsedRecords[i];
@@ -9379,7 +9446,7 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                     [card appendFormat:@"   %@：%@ (近7天%lu次)\n", rec[@"verdictLabel"], rec[@"plugin"], (unsigned long)MAX((NSUInteger)1, faultTimes)];
                     [card appendFormat:@"   📖 通俗原因：%@\n", rec[@"reason"]];
                     if ([rec[@"advice"] length] > 0) {
-                        [card appendFormat:@"   🛠️ 解决建议：%@", rec[@"advice"]];
+                        [card appendFormat:@"   🛠️ 解决建议：%@\n", rec[@"advice"]];
                     }
                 }
 
@@ -9388,10 +9455,10 @@ static void agAnalyzeRecentCrashesAndResprings(NSString **outPillText, NSString 
                 NSUInteger latestTimes = (latestBase.length > 0) ? [pluginFaultCounter[latestBase] unsignedIntegerValue] : 1;
                 NSString *cleanVerdict = [latest[@"verdictLabel"] containsString:@"准确真凶"] ? @"准确真凶" : @"排查结果";
 
-                pillOut = [NSString stringWithFormat:@"🕵️‍♂️注销%lu次｜%@｜%@:%@",
-                           (unsigned long)(sbCrashCount + sbJetsamOOMCount + panicCount), latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"])];
-                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的记录：本机于 %@，近 7 天整机死机重启 %lu 次，桌面崩溃注销 %lu 次，内存爆满注销 %lu 次。最近一次发生在 %@，%@是：%@，累计 %lu 次。通俗来说，是%@。",
-                             bootSummary, (unsigned long)panicCount, (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"]), (unsigned long)MAX((NSUInteger)1, latestTimes), latest[@"voiceReason"]];
+                pillOut = [NSString stringWithFormat:@"🕵️♂️注销%lu次｜%@｜%@:%@",
+                           (unsigned long)MAX(totalRespringCount, sbCrashCount + sbJetsamOOMCount + panicCount), latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"])];
+                speechOut = [NSString stringWithFormat:@"为您查了近 7 天的记录：本机于 %@，近 7 天桌面累计注销 %lu 次，其中崩溃注销 %lu 次，内存爆满注销 %lu 次，软件闪退 %lu 次。最近一次异常发生在 %@，%@是：%@，累计 %lu 次。通俗来说，是%@。",
+                             bootSummary, (unsigned long)totalRespringCount, (unsigned long)sbCrashCount, (unsigned long)sbJetsamOOMCount, (unsigned long)tweakAppCrashCount, latest[@"time"], cleanVerdict, (latestBase.length > 0 ? latestBase : latest[@"plugin"]), (unsigned long)MAX((NSUInteger)1, latestTimes), latest[@"voiceReason"]];
             }
 
             os_unfair_lock_lock(&gCrashCacheLock);
@@ -14203,14 +14270,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 agTouchLockScreenActivity();
                 NSString *curSpoken = self.currentVoiceQueryBuffer;
                 BOOL isTapIntent = ([curSpoken containsString:@"点击"] || [curSpoken containsString:@"点一下"] || [curSpoken containsString:@"点开"] || [curSpoken containsString:@"点选"] || [curSpoken containsString:@"点"] || [curSpoken containsString:@"按"] || [curSpoken containsString:@"两个字"] || [curSpoken containsString:@"三个字"] || [curSpoken containsString:@"四个字"] || [curSpoken containsString:@"最贵"] || [curSpoken containsString:@"最便宜"] || [curSpoken containsString:@"第"]);
-                BOOL isHardwareQuery = ([curSpoken containsString:@"电池"] || [curSpoken containsString:@"电量"] || [curSpoken containsString:@"健康度"] || [curSpoken containsString:@"内存"] || [curSpoken containsString:@"运存"] || [curSpoken containsString:@"运行速度"] || [curSpoken containsString:@"存储"] || [curSpoken containsString:@"空间"] || [curSpoken containsString:@"音量"] || [curSpoken containsString:@"亮度"] || [curSpoken containsString:@"死机"] || [curSpoken containsString:@"崩溃"] || [curSpoken containsString:@"闪退"] || [curSpoken containsString:@"注销"] || [curSpoken containsString:@"重启"] || [curSpoken containsString:@"哪个插件"] || [curSpoken containsString:@"什么插件"] || [curSpoken containsString:@"清理"] || [curSpoken containsString:@"垃圾"] || [curSpoken containsString:@"缓存"] || [curSpoken containsString:@"淘宝"] || [curSpoken containsString:@"拼多多"] || [curSpoken containsString:@"京东"]);
+                BOOL isHardwareQuery = ([curSpoken containsString:@"电池"] || [curSpoken containsString:@"电量"] || [curSpoken containsString:@"健康度"] || [curSpoken containsString:@"内存"] || [curSpoken containsString:@"运存"] || [curSpoken containsString:@"运行速度"] || [curSpoken containsString:@"存储"] || [curSpoken containsString:@"空间"] || [curSpoken containsString:@"音量"] || [curSpoken containsString:@"亮度"] || [curSpoken containsString:@"死机"] || [curSpoken containsString:@"崩溃"] || [curSpoken containsString:@"崩会"] || [curSpoken containsString:@"闪退"] || [curSpoken containsString:@"注销"] || [curSpoken containsString:@"重启"] || [curSpoken containsString:@"哪个插件"] || [curSpoken containsString:@"什么插件"] || [curSpoken containsString:@"耗电"] || [curSpoken containsString:@"流量"] || [curSpoken containsString:@"记录"] || [curSpoken containsString:@"报告"] || [curSpoken containsString:@"发热"] || [curSpoken containsString:@"发烫"] || [curSpoken containsString:@"降温"] || [curSpoken containsString:@"清理"] || [curSpoken containsString:@"垃圾"] || [curSpoken containsString:@"缓存"] || [curSpoken containsString:@"淘宝"] || [curSpoken containsString:@"拼多多"] || [curSpoken containsString:@"京东"]);
                 BOOL isVisualScreenQuery = ([curSpoken containsString:@"屏幕"] || [curSpoken containsString:@"页面"] ||
-                                            [curSpoken containsString:@"界面"] || [curSpoken containsString:@"看下"] ||
-                                            [curSpoken containsString:@"看一下"] || [curSpoken containsString:@"看看"] ||
-                                            [curSpoken containsString:@"认识他"] || [curSpoken containsString:@"认识她"] ||
-                                            [curSpoken containsString:@"这是谁"] || [curSpoken containsString:@"这是什么"] ||
-                                            [curSpoken containsString:@"照片里"] || [curSpoken containsString:@"图里"] ||
-                                            [curSpoken containsString:@"视频里"] || [curSpoken containsString:@"这个人"]);
+                                            [curSpoken containsString:@"界面"] || [curSpoken containsString:@"认识他"] ||
+                                            [curSpoken containsString:@"认识她"] || [curSpoken containsString:@"这是谁"] ||
+                                            [curSpoken containsString:@"这是什么"] || [curSpoken containsString:@"照片里"] ||
+                                            [curSpoken containsString:@"图里"] || [curSpoken containsString:@"视频里"] ||
+                                            [curSpoken containsString:@"这个人"]);
                 if (!isTapIntent && !isHardwareQuery && curSpoken.length >= 3 && isVisualScreenQuery) {
                     NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
                     if (nowTs - self.lastWSVideoFrameSentTime >= 2.2) {
@@ -16142,7 +16208,7 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
     }
 
     // 7B. 🕵️‍♂️ 查询手机近期自动注销次数、异常重启记录、死机现象、崩溃时间与肇事插件名字
-    if ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"闪退"] ||
+    if ([cmd containsString:@"死机"] || [cmd containsString:@"崩溃"] || [cmd containsString:@"崩会"] || [cmd containsString:@"闪退"] ||
         [cmd containsString:@"哪个插件"] || [cmd containsString:@"什么插件"] || [cmd containsString:@"插件冲突"] ||
         [cmd containsString:@"重启记录"] || [cmd containsString:@"重启次数"] || [cmd containsString:@"为什么重启"] ||
         [cmd containsString:@"怎么重启"] || [cmd containsString:@"自动重启"] || [cmd containsString:@"注销记录"] ||
@@ -16298,7 +16364,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
         [self executeActionDictionary:@{@"type": @"system_control", @"action": @"lock"}];
         return YES;
     }
-    if ([cmd containsString:@"注销"] || [cmd containsString:@"重启桌面"] || [cmd containsString:@"刷新桌面"]) {
+    if ([cleanCmd isEqualToString:@"注销"] || [cleanCmd isEqualToString:@"立即注销"] ||
+        [cmd containsString:@"注销桌面"] || [cmd containsString:@"重启桌面"] || [cmd containsString:@"刷新桌面"]) {
         [self executeActionDictionary:@{@"type": @"system_control", @"action": @"respring"}];
         return YES;
     }
@@ -18368,9 +18435,9 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
         cleanDirIntoCounter(@"/private/var/tmp", nil, &debAndTmpItems);
         cleanDirIntoCounter(@"/tmp", @[@"ag_cam_status", @"geminisirioverlay", @"ag_live_diagnostic"], &debAndTmpItems);
 
-        // 5. 清理系统常年堆积的底层诊断日志与归档崩溃报告（保留近 7 天 SpringBoard/panic 供崩溃取证使用）
-        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"], &sysLogItems);
-        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter/Retired", @[@"SpringBoard", @"backboardd", @"panic"], &sysLogItems);
+        // 5. 清理系统常年堆积的底层诊断日志与归档崩溃报告（完整保留 .ips 崩溃报告与 JetsamEvent 供崩溃取证使用）
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter", @"JetsamEvent", @".ips"], &sysLogItems);
+        cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CrashReporter/Retired", @[@"SpringBoard", @"backboardd", @"panic", @"JetsamEvent", @".ips"], &sysLogItems);
         cleanDirIntoCounter(@"/private/var/root/Library/Logs/CrashReporter", @[@"SpringBoard", @"backboardd", @"panic", @"ResetCounter"], &sysLogItems);
         cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/AppleSupport", nil, &sysLogItems);
         cleanDirIntoCounter(@"/private/var/mobile/Library/Logs/CoreDuet", nil, &sysLogItems);
@@ -20917,8 +20984,11 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
     utt.volume = 0.80; // 适度降低外放音量，防止底部扬声器回声冲破 -17.5dB 自打断
     [self.synthesizer speakUtterance:utt];
 
-    if (!self.audioRecorder || !self.audioRecorder.isRecording) {
-        [self attemptStartAudioRecorder];
+    // 仅在非 WebSocket 模式下才启动备用 AVAudioRecorder，严禁在 WebSocket 模式下抢夺 liveAudioEngine 麦克风
+    if (!self.liveWebSocketTask && !self.isWebSocketConnected) {
+        if (!self.audioRecorder || !self.audioRecorder.isRecording) {
+            [self attemptStartAudioRecorder];
+        }
     }
 }
 
@@ -20927,11 +20997,15 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
         if (self.activeUtteranceCount > 0) {
             self.activeUtteranceCount--;
         }
-        // 核心修复：必须同时满足 self.currentTask == nil 且 self.pendingSpeechChunk.length == 0（网络流已彻底结束且无剩余待读句子），才允许重新开始倾听！彻底消灭念 4 个字就卡住的 Bug！
         if (self.activeUtteranceCount == 0 && ![synthesizer isSpeaking] && self.currentTask == nil && self.pendingSpeechChunk.length == 0) {
             [self setWaveBarsLevel:0.0];
+            if (self.liveWebSocketTask || self.isWebSocketConnected) {
+                self.subStatusLabel.text = (self.activeModeTab == AGConfigTabVideoAI)
+                    ? @"📞📹 实时视频通话中 (直接说话，支持随时插话打断)..."
+                    : @"📞 实时语音通话中 (直接说话，支持随时插话打断)...";
+                return;
+            }
             if (self.audioRecorder && self.audioRecorder.isRecording) {
-                // 清空 AI 朗读期间录进来的外放声音，干净开始下一轮倾听
                 [self.audioRecorder stop];
                 [[NSFileManager defaultManager] removeItemAtPath:self.audioFilePath error:nil];
                 [self.audioRecorder prepareToRecord];
@@ -20944,7 +21018,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
                     : @"🎙️ 正在全双工倾听 (声波与极光随您的声音实时律动)...";
             } else {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (self.overlayWindow && !self.overlayWindow.hidden && self.modelPickerContainer.hidden && self.activeModeTab != AGConfigTabPureText) {
+                    if (self.overlayWindow && !self.overlayWindow.hidden && self.modelPickerContainer.hidden && self.activeModeTab != AGConfigTabPureText && !self.liveWebSocketTask && !self.isWebSocketConnected) {
                         [self startContinuousVoiceListening];
                     }
                 });
