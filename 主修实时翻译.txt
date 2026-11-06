@@ -452,7 +452,7 @@ static void pauseBackgroundMediaPlayback(void) {
         static MRMediaRemoteSendCommandFunc sendCmd = NULL;
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+            void *handle = dlopen(MyRootfsCPath("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"), RTLD_LAZY);
             if (handle) {
                 sendCmd = (MRMediaRemoteSendCommandFunc)dlsym(handle, "MRMediaRemoteSendCommand");
             }
@@ -13574,12 +13574,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 
     if (self.isGoogleBidiProtocol) {
+        NSMutableDictionary *genCfg = [@{
+            @"responseModalities": @[@"AUDIO"],
+            @"speechConfig": @{ @"voiceConfig": @{ @"prebuiltVoiceConfig": @{ @"voiceName": @"Aoede" } } }
+        } mutableCopy];
+        if ([rawModel containsString:@"2.5"] && !self.disableToolsInSetup) {
+            genCfg[@"thinkingConfig"] = @{ @"thinkingBudget": @0 };
+        }
         NSMutableDictionary *setupDict = [@{
             @"model": fullModelPath,
-            @"generationConfig": @{
-                @"responseModalities": @[@"AUDIO"],
-                @"speechConfig": @{ @"voiceConfig": @{ @"prebuiltVoiceConfig": @{ @"voiceName": @"Aoede" } } }
-            },
+            @"generationConfig": genCfg,
             @"systemInstruction": @{ @"parts": @[ @{ @"text": sysInstruction } ] }
         } mutableCopy];
 
@@ -14181,13 +14185,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     });
                 }
                 NSMutableString *curTrans = [self currentTabTranscript];
+                self.isMutedByLocalBargeIn = NO;
                 if (!self.isLastTranscriptLineUser) {
                     if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
                     [curTrans appendString:@"🗣️ 您："];
                     self.isLastTranscriptLineUser = YES;
                     self.currentTurnSearchCount = 0;
                     self.isWaitingForToolResponse = NO;
-                    self.isMutedByLocalBargeIn = NO;
                 }
                 [curTrans appendString:userDelta];
                 [self.currentVoiceQueryBuffer appendString:userDelta];
@@ -14480,9 +14484,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     if (self.pcm24kStagingBuffer) [self.pcm24kStagingBuffer setLength:0];
     self.neuralUserSpeakingActive = YES;
     self.lastNeuralSpeechActiveTime = now;
-    // 开启短期旧包静默锁：拦截打断瞬间已经在网络半路上的上一轮残留语音包，防止喇叭重新响起压制麦克风
+    // 开启 0.35s 短期旧包静默锁（4.5 - 4.15 = 0.35s）：仅拦截打断瞬间在途的旧语音残包，绝不锁死后续 AI 正常回话
     self.isMutedByLocalBargeIn = YES;
-    self.bargeInMuteTimestamp = now;
+    self.bargeInMuteTimestamp = now - 4.15;
 
     agLiveDiagLog(@"BARGE_IN_LOCAL", @"Apple Neural VAD barge-in (%@), turnID=%lu", sourceTag, (unsigned long)self.currentTurnPlaybackID);
 
@@ -14503,7 +14507,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 }
 
-// 3. 启动苹果 iOS 本地芯片级语音活动检测（主修实时翻译.txt 原版 + 仅过滤标点与 -53.0dB 纯静音底噪微调）
+// 3. 启动苹果 iOS 本地芯片级语音活动检测
 - (void)startNativeAppleNeuralVADIfNeeded {
     [self stopNativeAppleNeuralVAD];
     @try {
@@ -14529,7 +14533,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             if (!strongSelf || strongSelf.isDismissed) return;
             if (result && result.bestTranscription.formattedString.length > 0) {
                 NSString *fullNeuralStr = result.bestTranscription.formattedString;
-                // 微调 1：剔除标点符号与空格，既防止系统自动补句号误触发打断，又彻底消除跨句删改句号导致的游标偏移吞首字
                 NSMutableCharacterSet *ignoreSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
                 [ignoreSet formUnionWithCharacterSet:[NSCharacterSet punctuationCharacterSet]];
                 NSString *cleanStr = [[fullNeuralStr componentsSeparatedByCharactersInSet:ignoreSet] componentsJoinedByString:@""];
@@ -14546,14 +14549,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     strongSelf.neuralUserSpeakingActive = YES;
                     strongSelf.lastNeuralSpeechActiveTime = now;
 
-                    // 微调 2：仅拦截 <= -54.0f dB 的纯静音底噪，保留轻声说话 0ms 瞬时打断！
-                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.85) && (strongSelf.lastActiveMicDB > -54.0f));
+                    // 要求最近 0.35s 内有 > -33.0dB 的真实人声且距 AI 开口已过 0.55s，彻底杜绝上一句延迟尾音或喇叭回声误打断
+                    BOOL isNotDeadSilence = ((now - strongSelf.lastActiveMicDBTime <= 0.35) && (strongSelf.lastActiveMicDB > -33.0f));
                     BOOL isAIPlaying = (strongSelf.pendingPlayBuffersCount > 0 || now < strongSelf.aiPlaybackEndTime);
-                    if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.20)) {
+                    if (isAIPlaying && isNotDeadSilence && (now - strongSelf.aiTurnAudioStartTime > 0.55)) {
                         [strongSelf triggerNativeSiriGradeInstantBargeIn:@"APPLE_NEURAL_SYLLABLE"];
                     }
                 } else if (curLen < strongSelf.lastNeuralRecognizedCharCount) {
-                    // 当苹果识别器自动回退修正候选词长度时，同步降低水位线，确保下一个新音节 100% 触发打断
                     strongSelf.lastNeuralRecognizedCharCount = curLen;
                 }
             }
@@ -14668,10 +14670,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 self.aiTurnAudioStartTime = now;
                 AVAudioSession *sess = [AVAudioSession sharedInstance];
                 NSString *outPortType = sess.currentRoute.outputs.firstObject.portType ?: @"unknown";
-                if ([outPortType isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
-                    [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
-                    outPortType = sess.currentRoute.outputs.firstObject.portType ?: @"SpeakerOverridden";
-                }
                 agLiveDiagLog(@"SPEAKER_FIRST_PLAY_DIAG", @"Turn first audio packet #%lu: samples=%lu | engineRunning=%d | playerPlaying=%d | outPort=%@ | vol=%.2f",
                               (unsigned long)pktIdx, (unsigned long)inSampleCount, self.liveAudioEngine.isRunning, self.pcmPlayerNode.isPlaying, outPortType, sess.outputVolume);
             }
@@ -14780,6 +14778,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 self.liveAudioEngine = nil;
                 self.pcmPlayerNode = nil;
             }
+
+            // 在切换 AVAudioSession 之前提前记录启动时间戳，屏蔽音乐中断期间触发的路由风暴
+            self.engineStartTimestamp = [[NSDate date] timeIntervalSince1970];
 
             AVAudioSession *session = [AVAudioSession sharedInstance];
             NSString *chatMode = self.isVideoChatActive ? AVAudioSessionModeVideoChat : AVAudioSessionModeVoiceChat;
@@ -14908,10 +14909,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     float peakDb = 20.0f * log10f(MAX(peakVal, 1e-7f));
     NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
 
-    // 100% 连续喂入苹果本地神经引擎，严禁静音断流导致 SFSpeechRecognizer 时间轴挂起漏检首音节
-    if (self.nativeNeuralVADRequest) {
+    // 局部强引用持有 vadReq，防止主线程销毁重建识别器瞬间与 CoreAudio 实时线程发生野指针竞争
+    SFSpeechAudioBufferRecognitionRequest *vadReq = self.nativeNeuralVADRequest;
+    if (vadReq) {
         @try {
-            [self.nativeNeuralVADRequest appendAudioPCMBuffer:buffer];
+            [vadReq appendAudioPCMBuffer:buffer];
         } @catch (NSException *e) {}
     }
 
@@ -14931,7 +14933,7 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                           (long)firstFrameMs, (unsigned int)inFrames, inSampleRate, db);
         }
 
-        if (db > -54.0f) {
+        if (db > -35.0f) {
             strongSelf.lastActiveMicDB = db;
             strongSelf.lastActiveMicDBTime = nowTs;
         }
@@ -14945,10 +14947,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             }
         }
 
-        // 先执行破硬件压制打断检测：兼顾轻声打断灵敏度与环境底噪(-45dB)防误触，收敛在 db > -46.8f && peakDb > -30.0f 满 2 帧
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.25);
+        // 破硬件压制打断检测：精准过滤喇叭外放回声(-33dB~-38dB)，保留真人说话(-14dB~-31dB)瞬时打断
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.35);
         if (isAIPlaying && pastEchoGrace) {
-            if (db > -46.8f && peakDb > -30.0f) {
+            if (db > -32.0f && peakDb > -19.5f) {
                 strongSelf.wsBargeInVoiceTicks++;
                 if (strongSelf.wsBargeInVoiceTicks >= 2) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
@@ -15024,6 +15026,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionInterruption:(NSNotification *)note {
     NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     agLiveDiagLog(@"AUDIO_INTERRUPT", @"AVAudioSession interruption type=%lu", (unsigned long)type);
+    // 当音乐软件开播或来电开始抢占声道 (InterruptionTypeBegan) 时安全避让，绝不在 0.4s 后强行重启互抢声道导致崩溃
+    if (type == AVAudioSessionInterruptionTypeBegan) {
+        return;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!self.isDismissed && self.overlayWindow && !self.overlayWindow.hidden && self.activeModeTab != AGConfigTabPureText) {
             if (!self.liveAudioEngine || !self.liveAudioEngine.isRunning) {
@@ -15036,9 +15042,11 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)handleAudioSessionRouteChange:(NSNotification *)note {
     if (self.isDismissed || !self.overlayWindow || self.overlayWindow.hidden) return;
     NSUInteger reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
-    // 仅忽略引擎刚点火前 0.45s 内的自身切换类别通知，保留后续全时段听筒切回扬声器与蓝牙恢复能力
-    if ((reason == AVAudioSessionRouteChangeReasonCategoryChange || reason == AVAudioSessionRouteChangeReasonOverride) &&
-        ([[NSDate date] timeIntervalSince1970] - self.engineStartTimestamp < 0.45)) {
+    // 过滤引擎点火启动期 0.80s 内的自身类别/路由配置变更风暴 (reason = 3, 4, 8)，保留插拔耳机与蓝牙切换 (reason = 1, 2)
+    if ((reason == AVAudioSessionRouteChangeReasonCategoryChange ||
+         reason == AVAudioSessionRouteChangeReasonOverride ||
+         reason == AVAudioSessionRouteChangeReasonRouteConfigurationChange) &&
+        ([[NSDate date] timeIntervalSince1970] - self.engineStartTimestamp < 0.80)) {
         return;
     }
     AVAudioSession *sess = [AVAudioSession sharedInstance];
@@ -15051,16 +15059,17 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         dispatch_async(agAudioSerialQueue(), ^{
             if (self.isDismissed || !self.liveAudioEngine) return;
             @try {
-                if ([outPort isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
-                    [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
-                }
+                // 仅当引擎真正因路由变更停止运行时才恢复，严禁在引擎运行中调用 overrideOutputAudioPort 或重复 stop/play
                 if (!self.liveAudioEngine.isRunning) {
+                    if ([outPort isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
+                        [sess overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
+                    }
                     NSError *err = nil;
                     [self.liveAudioEngine startAndReturnError:&err];
                     agLiveDiagLog(@"AUDIO_ROUTE_HEAL", @"Restarted engine after route change (running=%d, err=%@)", self.liveAudioEngine.isRunning, err.localizedDescription ?: @"none");
-                }
-                if (self.liveAudioEngine.isRunning) {
-                    [self primeFullDuplexAudioEngineWithSilentPulse:@"ROUTE_CHANGE"];
+                    if (self.liveAudioEngine.isRunning) {
+                        [self primeFullDuplexAudioEngineWithSilentPulse:@"ROUTE_CHANGE"];
+                    }
                 }
             } @catch (NSException *e) {
                 agLiveDiagLog(@"AUDIO_ROUTE_EXC", @"Safe caught route change exception: %@", e.reason);
