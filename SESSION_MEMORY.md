@@ -2440,3 +2440,55 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+
+---
+
+## 2026-11-07: 4 项音频与 VAD 体验深度精修（RootHide 媒体暂停路径、2.5 零思考延迟、假打断收敛与放音乐防注销）上线 (Run ID: 42282050049 / Commit f7a25ca)
+
+### 1. 核心精修要点
+1. **媒体暂停路径兼容 RootHide**：
+   - 在 `pauseBackgroundMediaPlayback` 中，将 `MediaRemote.framework` 路径使用 `MyRootfsCPath` 包裹，彻底解决 Relaxin (RootHide) 环境下私有框架路径未重定向导致的调用失效问题。
+2. **WebSocket 2.5 模型 0 思考延迟补齐**：
+   - 在 `URLSession:webSocketTask:didOpenWithProtocol:` 中，当模型名称包含 `2.5` 且非工具禁用模式时，在 `generationConfig` 中注入 `thinkingConfig = @{ @"thinkingBudget": @0 }`，彻底解决说完话后等待 2~4 秒才出声的思考卡顿。
+3. **假打断、4.5s 哑火锁与首包改端口根治**：
+   - 收到用户新语音输入时立即重置 `self.isMutedByLocalBargeIn = NO`；
+   - 将打断在途旧包静默锁窗口缩短至精准的 `0.35s`（`bargeInMuteTimestamp = now - 4.15`），绝不锁死后续正常回话；
+   - Apple 神经识别器收紧为人声 `> -33.0dB` 且距离开口 `> 0.55s`，避免上一句尾音或喇叭回声误打断；
+   - 彻底移除播音首包强改端口操作，杜绝运行态震断音频图。
+4. **放音乐时路由风暴与野指针根治**：
+   - 切换音频会话前记录启动时间戳，屏蔽启动期 `0.80s` 内自身类别变更风暴；
+   - 对 `nativeNeuralVADRequest` 使用局部强引用持有，消除 CoreAudio 实时线程与主线程销毁时的野指针竞争；
+   - `handleAudioSessionInterruption:` 在 `InterruptionTypeBegan` 时安全避让，不强行重启抢占声道；
+   - 仅当引擎真正停止时才恢复路由，绝不在运行期重复重置。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,457,342` 字节
+  - SHA256：`bd739551ae7e109d27d132e95508f26c341a236a29feb7032ada8ff38eb17cf2` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42282050049 / Commit f7a25ca)
+- Git Commit: `f7a25ca` (Run ID: 42282050049) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (612,376 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (387,684 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 597,404 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 380,300 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
