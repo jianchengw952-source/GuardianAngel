@@ -2294,3 +2294,54 @@
   - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
   - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+
+---
+
+## 2026-11-06: 语音防抢跑 0.68s 柔性延时、打断分贝安全收敛(-46.8dB/-30dB)与环境噪音死循环阻断修正上线 (Run ID: 42216326880 / Commit 7f60c21)
+
+### 1. 核心精修要点
+1. **纯空格防抢跑 0.68s 柔性延时（零副作用）**：
+   - 在 `handleIncomingWebSocketJSON:` 中，将开头纯空格（`trimSpoken.length == 0`）由完全阻断定时器精修为 `cmdDelay = 0.68s` 充裕窗口；
+   - 彻底避免云端开头下发空格导致定时器不触发的假死现象，既能等后续汉字到达，也能在云端全程只发空格时 0.68s 后自动触发本地 zh-CN 救火。
+2. **打断阈值收敛至底噪安全红线之上**：
+   - 在 `processMicrophoneInputPCMBuffer:` 中，将破硬件压制打断门限由 -48.0dB/-31.0dB 适度收敛至 `db > -46.8f && peakDb > -30.0f`（`pastEchoGrace > 0.25`）；
+   - 既保留轻声打断灵敏度，又牢牢压在日常环境底噪（-45dB）之下，杜绝嘈杂环境下的误打断。
+3. **移除环境噪音下的延时死循环**：
+   - 在 `checkDeferredVoiceLocalCommand` 开头，彻底移除 `if (!hasEndPunct && lastActiveMicDB > -45.5f)` 无限顺延 0.24s 循环；
+   - 解决因持续微弱环境声导致定时器被不断推迟、指令迟迟无法执行的卡顿问题。
+4. **全量保留高价值能力**：
+   - 100% 保留 `CFStringTransform` 繁体转简体能力；
+   - 100% 保留 Apple 原生识别器候选词回退时水位线同步回退能力；
+   - 100% 保留本地中文救火成功时自动修正界面聊天记录气泡与状态栏乱码文字能力。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,457,393` 字节
+  - SHA256：`489fa1e091a526059821a414cc30d1e880764c7c78eb5346b794973fd1d90943` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42216326880 / Commit 7f60c21)
+- Git Commit: `7f60c21` (Run ID: 42216326880) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (610,012 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (386,344 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 596,580 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 380,064 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
