@@ -14238,15 +14238,14 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     }
                 }
 
-                // 关键修复：仅当去掉空白符后有实际文字时才启动延迟定时器，严禁云端开头下发纯空格 delta=' ' 提前触发定时器腰斩长句！
+                // 零副作用防抢跑：若云端刚开口只推了纯空格(trimSpoken.length == 0)，给予 0.68s 充裕窗口等后续汉字到达；若云端全程只推空格也能在 0.68s 后触发本地 zh-CN 救火！
                 NSString *trimSpoken = [curSpoken stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (trimSpoken.length > 0) {
-                    BOOL hasEndPunct = ([trimSpoken hasSuffix:@"。"] || [trimSpoken hasSuffix:@"？"] || [trimSpoken hasSuffix:@"！"] ||
-                                        [trimSpoken hasSuffix:@"."] || [trimSpoken hasSuffix:@"?"] || [trimSpoken hasSuffix:@"!"]);
-                    NSTimeInterval cmdDelay = hasEndPunct ? 0.14 : 0.32;
-                    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-                    [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:cmdDelay];
-                }
+                BOOL hasEndPunct = (trimSpoken.length > 0) &&
+                                   ([trimSpoken hasSuffix:@"。"] || [trimSpoken hasSuffix:@"？"] || [trimSpoken hasSuffix:@"！"] ||
+                                    [trimSpoken hasSuffix:@"."] || [trimSpoken hasSuffix:@"?"] || [trimSpoken hasSuffix:@"!"]);
+                NSTimeInterval cmdDelay = (trimSpoken.length == 0) ? 0.68 : (hasEndPunct ? 0.14 : 0.35);
+                [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+                [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:cmdDelay];
             }
         }
 
@@ -14949,11 +14948,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             }
         }
 
-        // 先执行破硬件压制打断检测：AI 播音时 iOS 硬件回声消除会将喇叭回声压至 -85dB ~ -107dB，同时将自然人声压低至 -45dB ~ -48dB
-        // 微调 2.0dB 至 db > -48.0f && peakDb > -31.0f 满 2 帧（约 42ms），自然轻声开口即断，且距底噪(-56dB)与回声(-90dB)留有充足安全裕度！
-        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.24);
+        // 先执行破硬件压制打断检测：兼顾轻声打断灵敏度与环境底噪(-45dB)防误触，收敛在 db > -46.8f && peakDb > -30.0f 满 2 帧
+        BOOL pastEchoGrace = (nowTs - strongSelf.aiTurnAudioStartTime > 0.25);
         if (isAIPlaying && pastEchoGrace) {
-            if (db > -48.0f && peakDb > -31.0f) {
+            if (db > -46.8f && peakDb > -30.0f) {
                 strongSelf.wsBargeInVoiceTicks++;
                 if (strongSelf.wsBargeInVoiceTicks >= 2) {
                     [strongSelf triggerNativeSiriGradeInstantBargeIn:[NSString stringWithFormat:@"User barge-in (db=%.1f, peak=%.1f)", db, peakDb]];
@@ -15353,20 +15351,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 - (void)checkDeferredVoiceLocalCommand {
     if (self.currentVoiceQueryBuffer.length == 0) return;
-    NSTimeInterval nowCheck = [[NSDate date] timeIntervalSince1970];
     NSString *fullCmd = [self.currentVoiceQueryBuffer copy];
     NSString *trimCmd = [fullCmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    BOOL hasEndPunct = ([trimCmd hasSuffix:@"。"] || [trimCmd hasSuffix:@"？"] || [trimCmd hasSuffix:@"！"] ||
-                        [trimCmd hasSuffix:@"."] || [trimCmd hasSuffix:@"?"] || [trimCmd hasSuffix:@"!"]);
-
-    // 防长句腰斩保护：若句子尚未带句号结尾，且过去 0.24s 内用户麦克风或本地神经引擎仍在持续出声吐字，自动顺延 0.24s 等整句话说完再执行！
-    if (!hasEndPunct && ((nowCheck - self.lastNeuralSpeechActiveTime < 0.22) ||
-                         (nowCheck - self.lastActiveMicDBTime < 0.24 && self.lastActiveMicDB > -45.5f))) {
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
-        [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.24];
-        return;
-    }
-
     NSString *nativeSeg = nil;
     if (self.lastNativeNeuralChineseText.length > self.lastConsumedNeuralCharOffset) {
         nativeSeg = [self.lastNativeNeuralChineseText substringFromIndex:self.lastConsumedNeuralCharOffset];
