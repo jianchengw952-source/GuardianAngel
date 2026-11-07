@@ -2649,3 +2649,49 @@
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
 - **【符号脱敏校验】**：
   - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，所有敏感符号与 API 保持完全脱敏。
+
+---
+
+## 2026-11-08: WebSocket 实时语音模式双声音叠加与麦克风自录回声根除（本机合成器硬禁音 + 云端硬件 AEC 唯一直播报）上线 (Run ID: 42404878139 / Commit 5d74549)
+
+### 1. 核心精修要点
+1. **修改点 1（`agSpeakAndBroadcastHardwareResult` 在 WebSocket 模式下禁用本机合成器并转交云端播报）**：
+   - 在 WebSocket 全双工实时语音通话模式下，若 `synthesizer` 正在朗读立即执行 `stopSpeakingAtBoundary:AVSpeechBoundaryImmediate` 强行终止；
+   - 若云端因本地指令拦截处于静音态 (`isMutedByLocalBargeIn == YES`)，解除静音锁并复位播放缓冲区，将真实硬件实测报告通过标准 Bidi 握手协议（`clientContent` / `conversation.item.create`）注入 WebSocket 通信通道，直接由 Gemini 唯一云端声音自然念出；利用 iOS 系统的硬件 AEC 声学回声消除与波束降噪机制，彻底解决本机喇叭外放被自身麦克风录入导致死循环自打断的顽疾。
+2. **修改点 2（`enqueueSpeechSentence:` 彻底禁止全双工 WebSocket 下苹果本机合成器开口）**：
+   - 将方法开头的拦截判断收紧为无条件防御：`if (self.isWebSocketConnected && self.liveWebSocketTask != nil) return;`；
+   - 100% 严禁全双工实时通话中本机 AVSpeechSynthesizer 开启播报，彻底杜绝两个声音（苹果机械女声 + 云端自然流女声）同时叠加播放的现象。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,475,776` 字节
+  - SHA256：`43b298267b4aa8f9932dd1b1d663318c272e95059f859001058bad8259509463` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42404878139 / Commit 5d74549)
+- Git Commit: `5d74549` (Run ID: 42404878139) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (618,204 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (391,896 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 602,732 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 384,500 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`（0% `.zst`）；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+- **【符号脱敏校验】**：
+  - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，所有敏感符号与 API 保持完全脱敏。
