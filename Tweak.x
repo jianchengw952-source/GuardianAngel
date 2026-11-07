@@ -15583,9 +15583,34 @@ static NSTimeInterval gLastOpenedPlatformTime = 0;
 static void agSpeakAndBroadcastHardwareResult(GeminiAssistantManager *mgr, NSString *speechText) {
     if (!mgr || !speechText || speechText.length == 0) return;
     if (mgr.isWebSocketConnected && mgr.liveWebSocketTask && mgr.activeModeTab != AGConfigTabPureText) {
-        // 当云端听成外语乱码被本机救火静音 (isMutedByLocalBargeIn == YES) 时，由本机语音合成器直接播报真实报告
+        // 方案 A：在 WebSocket 实时语音模式下，彻底禁用苹果本机 AVSpeechSynthesizer（消除第 1 个机械声音及麦克风自录回声）
+        if ([mgr.synthesizer isSpeaking]) {
+            [mgr.synthesizer stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+        }
+        // 若云端因本地指令拦截或救火处于静音态 (isMutedByLocalBargeIn == YES)，解除静音并将实测报告交由 Gemini 唯一云端声音（带硬件 AEC 回声消除）自然播报
         if (mgr.isMutedByLocalBargeIn) {
-            [mgr enqueueSpeechSentence:speechText];
+            mgr.isMutedByLocalBargeIn = NO;
+            mgr.bargeInMuteTimestamp = 0;
+            mgr.currentTurnPlaybackID++;
+            mgr.pendingPlayBuffersCount = 0;
+            mgr.aiPlaybackEndTime = 0;
+            if (mgr.pcm24kStagingBuffer) [mgr.pcm24kStagingBuffer setLength:0];
+
+            NSString *prompt = [NSString stringWithFormat:@"【本机系统刚刚执行完毕的真实硬件报告】：%@。请直接用简明自然的中文口语把上述实测结果念给用户听，不要添加多余解释，严禁调用搜索工具。", speechText];
+            if (mgr.isGoogleBidiProtocol) {
+                [mgr sendJSONDictionaryOverWebSocket:@{
+                    @"clientContent": @{
+                        @"turns": @[ @{ @"role": @"user", @"parts": @[ @{ @"text": prompt } ] } ],
+                        @"turnComplete": @YES
+                    }
+                }];
+            } else {
+                [mgr sendJSONDictionaryOverWebSocket:@{
+                    @"type": @"conversation.item.create",
+                    @"item": @{ @"type": @"message", @"role": @"user", @"content": @[ @{ @"type": @"input_text", @"text": prompt } ] }
+                }];
+                [mgr sendJSONDictionaryOverWebSocket:@{ @"type": @"response.create" }];
+            }
         }
         return;
     } else if (mgr.activeModeTab != AGConfigTabPureText) {
@@ -21015,8 +21040,8 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 }
 
 - (void)enqueueSpeechSentence:(NSString *)sentence {
-    // 全双工实时通话中：仅当云端因外语乱码或本地指令被静音阻断 (isMutedByLocalBargeIn == YES) 时才允许本机播报，绝不与云端语音重叠
-    if (self.isWebSocketConnected && self.liveWebSocketTask != nil && !self.isMutedByLocalBargeIn) {
+    // 全双工 WebSocket 实时通话中：100% 严禁本机 AVSpeechSynthesizer 开口，彻底根除双声音叠加与外放被麦克风自录回声！
+    if (self.isWebSocketConnected && self.liveWebSocketTask != nil) {
         return;
     }
     NSString *clean = [sentence stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
