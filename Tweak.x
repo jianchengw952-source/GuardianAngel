@@ -862,6 +862,8 @@ static void reloadGeminiPrefsCache(void) {
     double kLat = 0.0, kLon = 0.0;
     sForceInvalidateKernelCache = YES;
     if (agReadSpoofStateFromKernel(&kActive, &kScope, &kShield, &kWiFi, &kLat, &kLon, NULL, NULL, NULL)) {
+        if (kScope < 0 || kScope > 2) kScope = 0;
+        if (kWiFi < 0 || kWiFi > 2) kWiFi = 0;
         merged[@"AG_LocSpoof_Active"] = @(kActive);
         merged[@"AG_LocSpoof_ScopeMode"] = @(kScope);
         merged[@"AG_AntiDet_ShieldEnabled"] = @(kShield);
@@ -870,7 +872,7 @@ static void reloadGeminiPrefsCache(void) {
         merged[@"AG_AntiDet_HideHookPtr"] = @(kShield);
         merged[@"AG_LocSpoof_JitterEnabled"] = @(kShield);
         merged[@"AG_AntiDet_WiFiMode"] = @(kWiFi);
-        if (fabs(kLat) > 0.001 || fabs(kLon) > 0.001) {
+        if (isfinite(kLat) && isfinite(kLon) && fabs(kLat) <= 85.0 && fabs(kLon) <= 180.0 && (fabs(kLat) > 0.001 || fabs(kLon) > 0.001)) {
             merged[@"AG_LocSpoof_Lat"] = @(kLat);
             merged[@"AG_LocSpoof_Lon"] = @(kLon);
         }
@@ -879,6 +881,19 @@ static void reloadGeminiPrefsCache(void) {
             merged[@"AG_AntiDet_FakeSSID"] = kSSID;
             merged[@"AG_AntiDet_FakeBSSID"] = kBSSID;
         }
+    }
+    // 清洗磁盘可能残留的非法/越界坐标，防止传给 MKMapView 引发 Invalid Region 异常闪退
+    double chkLat = [merged[@"AG_LocSpoof_Lat"] doubleValue];
+    double chkLon = [merged[@"AG_LocSpoof_Lon"] doubleValue];
+    if (!isfinite(chkLat) || !isfinite(chkLon) || fabs(chkLat) > 85.0 || fabs(chkLon) > 180.0) {
+        [merged removeObjectForKey:@"AG_LocSpoof_Lat"];
+        [merged removeObjectForKey:@"AG_LocSpoof_Lon"];
+    }
+    double chkTLat = [merged[@"AG_LocSpoof_TargetLat"] doubleValue];
+    double chkTLon = [merged[@"AG_LocSpoof_TargetLon"] doubleValue];
+    if (!isfinite(chkTLat) || !isfinite(chkTLon) || fabs(chkTLat) > 85.0 || fabs(chkTLon) > 180.0) {
+        [merged removeObjectForKey:@"AG_LocSpoof_TargetLat"];
+        [merged removeObjectForKey:@"AG_LocSpoof_TargetLon"];
     }
 
     os_unfair_lock_lock(&gPrefsLock);
@@ -1680,18 +1695,30 @@ static double agTransformLon(double x, double y) {
 }
 
 static CLLocationCoordinate2D agWGS84ToGCJ02(double wgsLat, double wgsLon) {
+    if (!isfinite(wgsLat) || !isfinite(wgsLon) || fabs(wgsLat) > 85.0 || fabs(wgsLon) > 180.0) {
+        return CLLocationCoordinate2DMake(39.908722, 116.397499);
+    }
     if (agIsOutOfChina(wgsLat, wgsLon)) return CLLocationCoordinate2DMake(wgsLat, wgsLon);
-    const double a = ag_sec_coupled_earth_a();
-    const double ee = ag_sec_coupled_earth_ee();
+    double a = ag_sec_coupled_earth_a();
+    double ee = ag_sec_coupled_earth_ee();
+    // 当《设置》独立进程在 viewDidLoad 尚未同步完云端常量时安全兜底，杜绝除以 0 得出 NaN 导致 MKMapView 闪退
+    if (!isfinite(a) || a < 6300000.0 || a > 6400000.0) a = 6378245.0;
+    if (!isfinite(ee) || ee <= 0.0 || ee >= 0.1) ee = 0.00669342162296594323;
     double dLat = agTransformLat(wgsLon - 105.0, wgsLat - 35.0);
     double dLon = agTransformLon(wgsLon - 105.0, wgsLat - 35.0);
     double radLat = wgsLat / 180.0 * M_PI;
     double magic = sin(radLat);
-    magic = 1 - ee * magic * magic;
+    magic = 1.0 - ee * magic * magic;
+    if (magic <= 0.0) return CLLocationCoordinate2DMake(wgsLat, wgsLon);
     double sqrtMagic = sqrt(magic);
-    dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * M_PI);
+    dLat = (dLat * 180.0) / ((a * (1.0 - ee)) / (magic * sqrtMagic) * M_PI);
     dLon = (dLon * 180.0) / (a / sqrtMagic * cos(radLat) * M_PI);
-    return CLLocationCoordinate2DMake(wgsLat + dLat, wgsLon + dLon);
+    double outLat = wgsLat + dLat;
+    double outLon = wgsLon + dLon;
+    if (!isfinite(outLat) || !isfinite(outLon) || fabs(outLat) > 85.0 || fabs(outLon) > 180.0) {
+        return CLLocationCoordinate2DMake(39.908722, 116.397499);
+    }
+    return CLLocationCoordinate2DMake(outLat, outLon);
 }
 
 static CLLocationCoordinate2D agGCJ02ToWGS84Exact(double gcjLat, double gcjLon) {
@@ -3384,9 +3411,13 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
     reloadGeminiPrefsCache();
     [self.tableView reloadData];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!ag_enforce_cloud_auth_or_lock_vc(self)) return;
 }
 
 - (void)stopSpoofing {
@@ -3536,16 +3567,23 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     double savedWGS84Lat = [p[@"AG_LocSpoof_Lat"] doubleValue];
     double savedWGS84Lon = [p[@"AG_LocSpoof_Lon"] doubleValue];
     CLLocationCoordinate2D initGCJ = CLLocationCoordinate2DMake(39.908722, 116.397499);
-    if (fabs(savedWGS84Lat) > 0.01 || fabs(savedWGS84Lon) > 0.01) {
+    if (isfinite(savedWGS84Lat) && isfinite(savedWGS84Lon) &&
+        fabs(savedWGS84Lat) <= 85.0 && fabs(savedWGS84Lon) <= 180.0 &&
+        (fabs(savedWGS84Lat) > 0.01 || fabs(savedWGS84Lon) > 0.01)) {
         initGCJ = agWGS84ToGCJ02(savedWGS84Lat, savedWGS84Lon);
         self.previewPlaceName = p[@"AG_LocSpoof_Name"] ?: @"已选位置";
         self.mapCenterAddressLabel.text = [NSString stringWithFormat:@"🎯 准星指向：%@", self.previewPlaceName];
     } else {
         self.previewPlaceName = @"北京天安门";
     }
+    if (!CLLocationCoordinate2DIsValid(initGCJ) || !isfinite(initGCJ.latitude) || !isfinite(initGCJ.longitude) || fabs(initGCJ.latitude) > 85.0) {
+        initGCJ = CLLocationCoordinate2DMake(39.908722, 116.397499);
+    }
     self.previewCenterCoord = initGCJ;
-    MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initGCJ, 900, 900);
-    [self.mapView setRegion:region animated:NO];
+    @try {
+        MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initGCJ, 900, 900);
+        [self.mapView setRegion:region animated:NO];
+    } @catch (NSException *e) {}
 
     [self updateConfirmButtonAppearance];
     [self updateLiveMapBlueDotAndRoute];
@@ -3582,7 +3620,9 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
         self.routeLineOverlay = nil;
     }
 
-    if (!isActive || (fabs(curWGS84Lat) < 0.01 && fabs(curWGS84Lon) < 0.01)) {
+    if (!isActive || !isfinite(curWGS84Lat) || !isfinite(curWGS84Lon) ||
+        fabs(curWGS84Lat) > 85.0 || fabs(curWGS84Lon) > 180.0 ||
+        (fabs(curWGS84Lat) < 0.01 && fabs(curWGS84Lon) < 0.01)) {
         if (self.currentSpoofAnnotation) {
             [self.mapView removeAnnotation:self.currentSpoofAnnotation];
             self.currentSpoofAnnotation = nil;
@@ -3591,21 +3631,30 @@ static void agSettingsPanelTickDarwinCallback(CFNotificationCenterRef center, vo
     }
 
     CLLocationCoordinate2D curGCJ = agWGS84ToGCJ02(curWGS84Lat, curWGS84Lon);
+    if (!CLLocationCoordinate2DIsValid(curGCJ)) return;
     if (!self.currentSpoofAnnotation) {
         self.currentSpoofAnnotation = [[MKPointAnnotation alloc] init];
+        self.currentSpoofAnnotation.coordinate = curGCJ;
         [self.mapView addAnnotation:self.currentSpoofAnnotation];
+    } else {
+        self.currentSpoofAnnotation.coordinate = curGCJ;
     }
-    self.currentSpoofAnnotation.coordinate = curGCJ;
 
     double targetLat = p[@"AG_LocSpoof_TargetLat"] ? [p[@"AG_LocSpoof_TargetLat"] doubleValue] : curWGS84Lat;
     double targetLon = p[@"AG_LocSpoof_TargetLon"] ? [p[@"AG_LocSpoof_TargetLon"] doubleValue] : curWGS84Lon;
+    if (!isfinite(targetLat) || !isfinite(targetLon) || fabs(targetLat) > 85.0 || fabs(targetLon) > 180.0) {
+        targetLat = curWGS84Lat;
+        targetLon = curWGS84Lon;
+    }
     double remDist = hypot((targetLat - curWGS84Lat) * 111320.0, (targetLon - curWGS84Lon) * 111320.0 * cos(curWGS84Lat * M_PI / 180.0));
 
-    if (kSpeed > 0.1 && remDist > 3.0) {
+    if (isfinite(kSpeed) && kSpeed > 0.1 && isfinite(remDist) && remDist > 3.0) {
         CLLocationCoordinate2D destGCJ = agWGS84ToGCJ02(targetLat, targetLon);
-        CLLocationCoordinate2D coords[2] = {curGCJ, destGCJ};
-        self.routeLineOverlay = [MKPolyline polylineWithCoordinates:coords count:2];
-        [self.mapView addOverlay:self.routeLineOverlay level:MKOverlayLevelAboveLabels];
+        if (CLLocationCoordinate2DIsValid(destGCJ)) {
+            CLLocationCoordinate2D coords[2] = {curGCJ, destGCJ};
+            self.routeLineOverlay = [MKPolyline polylineWithCoordinates:coords count:2];
+            [self.mapView addOverlay:self.routeLineOverlay level:MKOverlayLevelAboveLabels];
+        }
     }
 }
 
