@@ -2597,3 +2597,55 @@
   - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
 - **【符号脱敏校验】**：
   - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，所有敏感符号与 API 保持完全脱敏。
+
+---
+
+## 2026-11-07: 虚拟定位设置面板 3 处防闪退加固（坐标范围清洗、GCJ02 除零防 NaN 兜底、转场鉴权时机与地图区域保护）上线 (Run ID: 42342795199 / Commit b0fe71a)
+
+### 1. 核心精修要点
+1. **第一处：`reloadGeminiPrefsCache` 寄存器同步与坐标合法性清洗**：
+   - 增加对内核通知寄存器读取的 `kScope` 与 `kWiFi` 进行 `[0, 2]` 范围兜底校验；
+   - 对从内核读取的 `kLat`、`kLon` 补充 `isfinite` 且 `|lat| <= 85.0, |lon| <= 180.0` 合法数值边界限制；
+   - 新增对合并配置字典中 `AG_LocSpoof_Lat`、`AG_LocSpoof_Lon`、`AG_LocSpoof_TargetLat`、`AG_LocSpoof_TargetLon` 的清洗逻辑，自动移除 NaN、无穷大或越界坐标，防止写入异常参数传给 `MKMapView` 触发 `Invalid Region` 闪退。
+2. **第二处：`agWGS84ToGCJ02` 跨进程除零保护与云端常数兜底**：
+   - 在坐标转换前严格检测输入数值有效性，非法时安全返回基准点 `(39.908722, 116.397499)`；
+   - 针对《设置》独立进程在 `viewDidLoad` 阶段尚未完成云端动态常数同步的边界场景，当 `loc_earth_a` 或 `loc_earth_ee` 为 0 或超出基准物理范围时，自动回落至标准椭球常数（`a = 6378245.0`，`ee = 0.00669342162296594323`），杜绝分母除以 0 算出 `NaN` 导致地图崩毁；
+   - 输出坐标再次进行 `isfinite` 与全球经纬度合法性校验。
+3. **第三处：`AGLocationSpoofSettingsViewController` 转场鉴权时机与地图区域防崩溃**：
+   - 将云端鉴权拦截从 `viewWillAppear:` 移至 `viewDidAppear:`，防止在 UINavigationController Push 动画进行途中操作导航栈引发 UIKit 试图控制器转场崩溃；
+   - 在 `setupInteractiveMapHeader` 与 `updateLiveMapBlueDotAndRoute` 中，对已保存与实时经纬度进行 `isfinite`、合法性及范围检测，并使用 `@try...catch` 保护 `MKCoordinateRegionMakeWithDistance` 与 `setRegion:animated:`；
+   - 针对速度为 0、目标坐标异常或折线坐标无效时做阻断保护，防止 `MKPolyline` 绘制越界或空线引发崩溃。
+
+### 2. 语法与镜像一致性校验
+- **括号闭合检查（0 误差完美闭合）**：
+  - `Tweak.x`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `主修实时翻译.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `Tweak.xm`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `dopamine测试版本.txt`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+  - `AGSecurityShield.h`：`{'curly': 0, 'paren': 0, 'bracket': 0}` -> **100% PASS**
+- **4 大核心代码文件 SHA256 镜像一致性**：
+  - 文件大小：`1,474,240` 字节
+  - SHA256：`20770f6eb03405733986e1c6d53ea12970b2d78d845e81750bfa0b0101bce846` (4 文件 100% 逐字节一致)
+
+### 3. CI 构建与安装包全项校验 (Run ID: 42342795199 / Commit b0fe71a)
+- Git Commit: `b0fe71a` (Run ID: 42342795199) - 100% 成功
+- 安装包校验（Pure XZ 结构：`debian-binary` + `control.tar.xz` + `data.tar.xz`，0% `.zst`）：
+  - **Dopamine Rootless (arm64)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb` (618,104 字节)
+  - **Relaxin RootHide (arm64e)**: `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb` (391,500 字节)
+
+### 4. 服务端加固、软件源发布与端云联调真实验证
+- **【服务端加固与发布】**：
+  - 双架构 deb 成功同步至服务器 `/opt/angel_cloud/repo/debs/`；
+  - 执行 `smart_shield_deb` 加固：双架构 `is_shielded: 1` 100% 成功，核心密钥：`acf590ac1d95b967dcb796779ba5be5ebd72a62519897b74395a4ffa3368e438`；
+  - 加固后 deb 资产：
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64.deb`: 602,980 字节
+    - `com.custom.timeguardiansiri123_1.0.0_iphoneos-arm64e.deb`: 384,356 字节
+  - `ar -t` 结构检查：严格保持 `debian-binary` + `control.tar.xz` + `data.tar.xz`（0% `.zst`）；
+  - APT 软件源索引（`Release`、`Packages`）全量重建完成；
+- **【端云联调实测】**：
+  - 授权握手通过：`Code: 200, Status: 1`，核心密钥与 6,424 字符加密载荷正确下发 (PASS)；
+  - 金库原地解密测试：明文头部 100% 精确还原为 `'AngelGuardian_Pr'` (PASS)；
+  - 算术强耦合测试：派生真种子恢复 `0x7F4A7C159E3779B9ULL`，零偏置掩码完全为 `0x0` (PASS)；
+  - 云脑资产流解密测试：20 项核心字段、地球椭球参数与 AI 规则流解密完全就绪 (PASS)；
+- **【符号脱敏校验】**：
+  - `strings AngelGuardian.dylib | grep -E ...` 实测 0 项命中，所有敏感符号与 API 保持完全脱敏。
