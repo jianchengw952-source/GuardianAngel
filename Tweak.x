@@ -17001,7 +17001,7 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
     }
 
     // 17. 📱 语音秒开任意应用（自动剥离口语前缀 + 先验真本机是否已安装，绝不误拦截游戏/日常提问！）
-    if (![cleanCmd containsString:@"给"] && ![cleanCmd containsString:@"发"] && ![cleanCmd containsString:@"向"] && ![cleanCmd containsString:@"告诉"] && ![cleanCmd containsString:@"怎么"] && ![cleanCmd containsString:@"如何"] && !hasSpatialButtonHint) {
+    if (![cleanCmd containsString:@"给"] && ![cleanCmd containsString:@"发"] && ![cleanCmd containsString:@"向"] && ![cleanCmd containsString:@"告诉"] && ![cleanCmd containsString:@"怎么"] && ![cleanCmd containsString:@"如何"] && ![cleanCmd containsString:@"翻译"] && ![cleanCmd containsString:@"听译"] && ![cleanCmd containsString:@"同传"] && !hasSpatialButtonHint) {
         NSTextCheckingResult *openMatch = [openRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
         NSString *targetApp = nil;
         BOOL hasExplicitAppSuffix = ([cleanCmd containsString:@"软件"] || [cleanCmd containsString:@"应用"] || [cleanCmd containsString:@"客户端"] || [cleanCmd hasSuffix:@"app"]);
@@ -17081,13 +17081,14 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
         return YES;
     }
     if ([cmd containsString:@"听译"] || [cmd containsString:@"同传"] || [cmd containsString:@"实时字幕"] ||
-        ([cmd containsString:@"翻译"] && ([cmd containsString:@"声音"] || [cmd containsString:@"语音"] || [cmd containsString:@"视频"] || [cmd containsString:@"音频"]))) {
+        ([cmd containsString:@"翻译"] && ([cmd containsString:@"声音"] || [cmd containsString:@"语音"] || [cmd containsString:@"视频"] || [cmd containsString:@"音频"] || [cmd containsString:@"听"]))) {
         [self executeActionDictionary:@{@"type": @"listen_translate"}];
         return YES;
     }
     if ([cmd containsString:@"原位翻译"] || [cmd containsString:@"跟随翻译"] || [cmd containsString:@"屏幕翻译"] ||
-        [cmd containsString:@"网页翻译"] || [cmd containsString:@"实时翻译"] ||
-        ([cmd containsString:@"翻译"] && ([cmd containsString:@"打开"] || [cmd containsString:@"开启"] || [cmd containsString:@"启动"] || [cmd containsString:@"网页"] || [cmd containsString:@"屏幕"] || [cmd containsString:@"页面"] || [cmd containsString:@"当前"]))) {
+        [cmd containsString:@"网页翻译"] || [cmd containsString:@"实时翻译"] || [cmd containsString:@"翻译功能"] ||
+        [cleanCmd isEqualToString:@"翻译"] || [cleanCmd isEqualToString:@"翻译一下"] || [cleanCmd isEqualToString:@"开始翻译"] ||
+        ([cmd containsString:@"翻译"] && ([cmd containsString:@"帮我"] || [cmd containsString:@"给我"] || [cmd containsString:@"打开"] || [cmd containsString:@"开启"] || [cmd containsString:@"启动"] || [cmd containsString:@"开始"] || [cmd containsString:@"一下"] || [cmd containsString:@"网页"] || [cmd containsString:@"屏幕"] || [cmd containsString:@"页面"] || [cmd containsString:@"当前"]))) {
         [self executeActionDictionary:@{@"type": @"in_situ_translate"}];
         return YES;
     }
