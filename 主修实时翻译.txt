@@ -26538,7 +26538,7 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 // ====== 防闪退替换 2 结束 ======
 
 // ==============================================================================
-// 🚀 [START OF PATCH] 零侵入热插拔模块：短信验证码 & 菜鸟/丰巢取件码 5ms 直读与自动填入
+// 🚀 [START OF PATCH] 零侵入热插拔进化包 (01 取件码/验证码 + 02 通知秒回 + 03 看屏高情商代回)
 // 兼容：iOS 15.0 ~ iOS 17.x | Dopamine (Rootless) & Relaxin (RootHide)
 // 机制：Runtime 原方法优先短路调用，100% 不影响原有任何功能
 // ==============================================================================
@@ -26553,19 +26553,54 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
 static NSMutableArray<NSDictionary *> *gAGLiveBannerRing = nil;
 static os_unfair_lock gAGBannerRingLock = OS_UNFAIR_LOCK_INIT;
+static NSString *gAGLastNotifSenderName = nil;
+static NSString *gAGLastNotifAppID = nil;
+
+static NSString *agFriendlyAppNameForBundleID(NSString *bid) {
+    if (!bid || bid.length == 0) return @"通知";
+    if ([bid isEqualToString:@"com.tencent.xin"]) return @"微信";
+    if ([bid isEqualToString:@"com.apple.MobileSMS"]) return @"短信";
+    if ([bid isEqualToString:@"com.laiwang.DingTalk"]) return @"钉钉";
+    if ([bid isEqualToString:@"com.tencent.wework"]) return @"企业微信";
+    if ([bid isEqualToString:@"com.tencent.mqq"]) return @"QQ";
+    if ([bid containsString:@"lark"]) return @"飞书";
+    if ([bid containsString:@"alipay"]) return @"支付宝";
+    if ([bid containsString:@"taobao"]) return @"淘宝";
+    return bid;
+}
 
 static void agRecordLiveBannerItem(NSString *appID, NSString *title, NSString *body, NSTimeInterval ts) {
-    NSString *full = [[NSString stringWithFormat:@"%@ %@", title ?: @"", body ?: @""]
+    NSString *cleanTitle = [title ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *cleanBody  = [body ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *full = [[NSString stringWithFormat:@"%@ %@", cleanTitle, cleanBody]
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (full.length < 4) return;
+    if (full.length < 2) return;
+
     os_unfair_lock_lock(&gAGBannerRingLock);
     if (!gAGLiveBannerRing) gAGLiveBannerRing = [NSMutableArray arrayWithCapacity:64];
     [gAGLiveBannerRing insertObject:@{
         @"app": appID ?: @"System",
+        @"appName": agFriendlyAppNameForBundleID(appID),
+        @"title": cleanTitle,
+        @"body": cleanBody,
         @"text": full,
         @"ts": @(ts > 0 ? ts : [[NSDate date] timeIntervalSince1970])
     } atIndex:0];
     while (gAGLiveBannerRing.count > 60) [gAGLiveBannerRing removeLastObject];
+
+    if (cleanTitle.length > 0 && ![cleanTitle isEqualToString:@"微信"] && ![cleanTitle isEqualToString:@"信息"]) {
+        NSString *sender = cleanTitle;
+        NSRange colonRange = [sender rangeOfString:@":"];
+        if (colonRange.location != NSNotFound && colonRange.location > 0) {
+            sender = [sender substringToIndex:colonRange.location];
+        }
+        NSRange parenRange = [sender rangeOfString:@"("];
+        if (parenRange.location != NSNotFound && parenRange.location > 0) {
+            sender = [[sender substringToIndex:parenRange.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        }
+        gAGLastNotifSenderName = [sender copy];
+        gAGLastNotifAppID = [appID copy];
+    }
     os_unfair_lock_unlock(&gAGBannerRingLock);
 }
 
@@ -26635,7 +26670,7 @@ static NSArray<NSDictionary *> *agScanRecentMessagesReadOnly(NSTimeInterval maxA
         sqlite3_exec(db, "PRAGMA query_only = ON;", NULL, NULL, NULL);
         int64_t cutoffNano = (int64_t)((cutoffUnix - 978307200.0) * 1000000000.0);
         NSString *sql = [NSString stringWithFormat:
-            @"SELECT text, attributedBody, date FROM message WHERE is_from_me = 0 AND date >= %lld ORDER BY date DESC LIMIT %lu;",
+            @"SELECT m.text, m.attributedBody, m.date, h.id FROM message m LEFT JOIN handle h ON m.handle_id = h.ROWID WHERE m.is_from_me = 0 AND m.date >= %lld ORDER BY m.date DESC LIMIT %lu;",
             cutoffNano, (unsigned long)MAX((NSUInteger)50, limitCount)];
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(db, [sql UTF8String], -1, &stmt, NULL) == SQLITE_OK && stmt) {
@@ -26651,10 +26686,19 @@ static NSArray<NSDictionary *> *agScanRecentMessagesReadOnly(NSTimeInterval maxA
                     if (blob && len > 0) txt = agDecodeAttributedBodyBlob(blob, len);
                 }
                 int64_t rawDate = sqlite3_column_int64(stmt, 2);
+                const unsigned char *cSender = sqlite3_column_text(stmt, 3);
+                NSString *sender = (cSender && strlen((const char *)cSender) > 0) ? [NSString stringWithUTF8String:(const char *)cSender] : @"短信";
                 double appleSec = (rawDate > 100000000000LL) ? ((double)rawDate / 1000000000.0) : (double)rawDate;
                 NSTimeInterval msgTs = appleSec + 978307200.0;
-                if (txt.length >= 4 && msgTs >= cutoffUnix) {
-                    [list addObject:@{@"app": @"SMS", @"text": txt, @"ts": @(msgTs)}];
+                if (txt.length >= 2 && msgTs >= cutoffUnix) {
+                    [list addObject:@{
+                        @"app": @"com.apple.MobileSMS",
+                        @"appName": @"短信",
+                        @"title": sender,
+                        @"body": txt,
+                        @"text": txt,
+                        @"ts": @(msgTs)
+                    }];
                 }
             }
             sqlite3_finalize(stmt);
@@ -26664,7 +26708,6 @@ static NSArray<NSDictionary *> *agScanRecentMessagesReadOnly(NSTimeInterval maxA
     return list;
 }
 
-// 第一层防误判：抹除手机号、热线、手机/银行卡尾号、日期、时间、金额与网址
 static NSString *agCleanSMSInterferenceNumbers(NSString *raw) {
     if (!raw || raw.length == 0) return @"";
     static NSRegularExpression *sCleanRe = nil;
@@ -26684,50 +26727,37 @@ static NSString *agCleanSMSInterferenceNumbers(NSString *raw) {
     return [sCleanRe stringByReplacingMatchesInString:raw options:0 range:NSMakeRange(0, raw.length) withTemplate:@" "];
 }
 
-// 功能 A：全自动识别近 72 小时快递取件码，去重并生成带编号清单
+// ==================== 【模块 01】快递取件码清单 & 验证码自动填入 ====================
 static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     NSArray<NSDictionary *> *msgs = agScanRecentMessagesReadOnly(72.0 * 3600.0, 120);
-
-    static NSRegularExpression *sShelfRe = nil;
-    static NSRegularExpression *sAnchorCodeRe = nil;
-    static NSRegularExpression *sLocRe = nil;
+    static NSRegularExpression *sShelfRe = nil, *sAnchorCodeRe = nil, *sLocRe = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 1. 菜鸟/驿站标准三段式/二段式货架码 (如 16-3-2048, A2-4-105)
         sShelfRe = [NSRegularExpression regularExpressionWithPattern:@"(?<![A-Za-z0-9\\-])([A-Za-z0-9]{1,4}-\\d{1,3}-\\d{2,6}|\\d{1,3}-\\d{3,6})(?![A-Za-z0-9\\-])" options:0 error:nil];
-        // 2. 紧邻锚点词的丰巢/快递柜取件码
         sAnchorCodeRe = [NSRegularExpression regularExpressionWithPattern:@"(?:取件码|提货码|取货码|凭码|取件密码|开箱码|验证代码)[为是:：\\s【\\[]*([A-Za-z0-9\\-]{4,12})" options:NSRegularExpressionCaseInsensitive error:nil];
-        // 3. 存放地点提取
         sLocRe = [NSRegularExpression regularExpressionWithPattern:@"(?:已到|到达|存放在|位于|请到|前往|放至)([^，。！？,;；\\n]{3,22}?(?:驿站|店|柜|点|室|门岗|超市|中心|代收点|架))" options:0 error:nil];
     });
 
     NSArray<NSString *> *stationKeywords = @[@"菜鸟驿站", @"菜鸟", @"丰巢", @"妈妈驿站", @"兔喜生活", @"兔喜", @"近邻宝", @"速递易", @"熊猫快收", @"小麦公社", @"邮政驿站", @"美团柜", @"顺丰", @"京东", @"中通", @"圆通", @"韵达", @"申通", @"极兔", @"德邦", @"EMS", @"快递", @"包裹", @"驿站"];
     NSMutableArray<NSDictionary *> *pickupList = [NSMutableArray array];
     NSMutableSet<NSString *> *seenCodes = [NSMutableSet set];
-
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"MM-dd HH:mm";
 
     for (NSDictionary *item in msgs) {
         NSString *rawText = item[@"text"] ?: @"";
-        BOOL isParcelMsg = ([rawText containsString:@"取件"] || [rawText containsString:@"提货"] ||
-                            [rawText containsString:@"驿站"] || [rawText containsString:@"丰巢"] ||
-                            [rawText containsString:@"快递柜"] || [rawText containsString:@"快件"] ||
-                            [rawText containsString:@"包裹"]);
-        if (!isParcelMsg) continue;
+        if (![rawText containsString:@"取件"] && ![rawText containsString:@"提货"] &&
+            ![rawText containsString:@"驿站"] && ![rawText containsString:@"丰巢"] &&
+            ![rawText containsString:@"快递柜"] && ![rawText containsString:@"快件"] &&
+            ![rawText containsString:@"包裹"]) continue;
 
         NSString *cleaned = agCleanSMSInterferenceNumbers(rawText);
         NSString *code = nil;
-
         NSTextCheckingResult *m1 = [sShelfRe firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
-        if (m1 && m1.numberOfRanges > 1) {
-            code = [cleaned substringWithRange:[m1 rangeAtIndex:1]];
-        }
+        if (m1 && m1.numberOfRanges > 1) code = [cleaned substringWithRange:[m1 rangeAtIndex:1]];
         if (!code) {
             NSTextCheckingResult *m2 = [sAnchorCodeRe firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
-            if (m2 && m2.numberOfRanges > 1) {
-                code = [cleaned substringWithRange:[m2 rangeAtIndex:1]];
-            }
+            if (m2 && m2.numberOfRanges > 1) code = [cleaned substringWithRange:[m2 rangeAtIndex:1]];
         }
         if (!code || code.length < 3 || [seenCodes containsObject:code]) continue;
         [seenCodes addObject:code];
@@ -26740,19 +26770,15 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
             }
         }
         NSString *brandStr = brands.count > 0 ? [brands componentsJoinedByString:@" · "] : @"快递驿站";
-
         NSString *locStr = @"请查看原短信地址";
         NSTextCheckingResult *locMatch = [sLocRe firstMatchInString:rawText options:0 range:NSMakeRange(0, rawText.length)];
-        if (locMatch && locMatch.numberOfRanges > 1) {
-            locStr = [rawText substringWithRange:[locMatch rangeAtIndex:1]];
-        }
+        if (locMatch && locMatch.numberOfRanges > 1) locStr = [rawText substringWithRange:[locMatch rangeAtIndex:1]];
 
-        NSString *timeStr = [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:[item[@"ts"] doubleValue]]];
         [pickupList addObject:@{
             @"code": code,
             @"brand": brandStr,
             @"loc": locStr,
-            @"time": timeStr
+            @"time": [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:[item[@"ts"] doubleValue]]]
         }];
         if (pickupList.count >= 12) break;
     }
@@ -26772,12 +26798,9 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     for (NSUInteger i = 0; i < pickupList.count; i++) {
         NSDictionary *p = pickupList[i];
         NSUInteger num = i + 1;
-        if (i < 3) {
-            [pillCodes addObject:[NSString stringWithFormat:@"%lu.%@", (unsigned long)num, p[@"code"]]];
-        }
+        if (i < 3) [pillCodes addObject:[NSString stringWithFormat:@"%lu.%@", (unsigned long)num, p[@"code"]]];
         [cardText appendFormat:@"\n%lu️⃣ 取件码：【 %@ 】\n   🏷️ 来源：%@ ｜ 🕒 %@\n   📍 位置：%@\n",
          (unsigned long)num, p[@"code"], p[@"brand"], p[@"time"], p[@"loc"]];
-
         if (i < 4) {
             NSString *spokenCode = [p[@"code"] stringByReplacingOccurrencesOfString:@"-" withString:@"杠"];
             [speechParts addObject:[NSString stringWithFormat:@"第 %lu 个，%@，取件码 %@", (unsigned long)num, p[@"brand"], spokenCode]];
@@ -26799,12 +26822,9 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     agSpeakAndBroadcastHardwareResult(mgr, fullSpeech);
 }
 
-// 功能 B：全自动识别最近 10 分钟内的登录/支付验证码并自动填入当前输入框
 static void agExecuteVerificationCodeExtractAndFill(GeminiAssistantManager *mgr, BOOL shouldAutoType) {
-    NSArray<NSDictionary *> *msgs = agScanRecentMessagesReadOnly(600.0, 20); // 严格锁定最近 10 分钟内
-
-    static NSRegularExpression *sCodeRe1 = nil;
-    static NSRegularExpression *sCodeRe2 = nil;
+    NSArray<NSDictionary *> *msgs = agScanRecentMessagesReadOnly(600.0, 20);
+    static NSRegularExpression *sCodeRe1 = nil, *sCodeRe2 = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         sCodeRe1 = [NSRegularExpression regularExpressionWithPattern:@"(?:验证码|校验码|动态码|确认码|安全码|随机码|激活码|code)[为是:：\\s【\\[]*([0-9]{4,8})(?![0-9])" options:NSRegularExpressionCaseInsensitive error:nil];
@@ -26814,22 +26834,15 @@ static void agExecuteVerificationCodeExtractAndFill(GeminiAssistantManager *mgr,
     NSString *foundCode = nil;
     for (NSDictionary *item in msgs) {
         NSString *rawText = item[@"text"] ?: @"";
-        // 排除快递短信，防止将 6 位丰巢取件码误判为登录验证码
         if ([rawText containsString:@"取件码"] || [rawText containsString:@"提货码"] ||
-            [rawText containsString:@"菜鸟驿站"] || [rawText containsString:@"丰巢"]) {
-            continue;
-        }
+            [rawText containsString:@"菜鸟驿站"] || [rawText containsString:@"丰巢"]) continue;
         if (![rawText containsString:@"验证码"] && ![rawText containsString:@"校验码"] &&
             ![rawText containsString:@"动态码"] && ![rawText containsString:@"确认码"] &&
-            ![[rawText lowercaseString] containsString:@"code"]) {
-            continue;
-        }
+            ![[rawText lowercaseString] containsString:@"code"]) continue;
 
         NSString *cleaned = agCleanSMSInterferenceNumbers(rawText);
         NSTextCheckingResult *m = [sCodeRe1 firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
-        if (!m) {
-            m = [sCodeRe2 firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
-        }
+        if (!m) m = [sCodeRe2 firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
         if (m && m.numberOfRanges > 1) {
             foundCode = [cleaned substringWithRange:[m rangeAtIndex:1]];
             break;
@@ -26864,17 +26877,297 @@ static void agExecuteVerificationCodeExtractAndFill(GeminiAssistantManager *mgr,
     }
 }
 
+// ==================== 【模块 02】实时通知问答（“刚谁发消息了”）+ 游戏免切屏后台秒回 ====================
+static void agExecuteRecentNotificationsQuery(GeminiAssistantManager *mgr) {
+    os_unfair_lock_lock(&gAGBannerRingLock);
+    NSArray<NSDictionary *> *notifSnap = gAGLiveBannerRing ? [gAGLiveBannerRing copy] : @[];
+    os_unfair_lock_unlock(&gAGBannerRingLock);
+
+    if (notifSnap.count == 0) {
+        notifSnap = agScanRecentMessagesReadOnly(12.0 * 3600.0, 8);
+    }
+
+    if (notifSnap.count == 0) {
+        NSString *msg = @"🔔 近期暂无收到的新通知或消息记录";
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:msg];
+        [mgr showActionBanner:msg];
+        agSpeakAndBroadcastHardwareResult(mgr, @"近期还没有收到新的消息通知。");
+        return;
+    }
+
+    NSUInteger showCount = MIN((NSUInteger)5, notifSnap.count);
+    NSMutableString *cardText = [NSMutableString stringWithFormat:@"🔔 【最近收到的实时消息通知（前 %lu 条）】\n", (unsigned long)showCount];
+    NSMutableArray<NSString *> *speechItems = [NSMutableArray array];
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"HH:mm";
+
+    for (NSUInteger i = 0; i < showCount; i++) {
+        NSDictionary *n = notifSnap[i];
+        NSString *appName = n[@"appName"] ?: agFriendlyAppNameForBundleID(n[@"app"]);
+        NSString *title = n[@"title"] ?: @"";
+        NSString *body = n[@"body"] ?: (n[@"text"] ?: @"");
+        NSString *timeStr = [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:[n[@"ts"] doubleValue]]];
+
+        [cardText appendFormat:@"\n%lu️⃣ [%@ · %@] (%@)\n   💬 %@\n",
+         (unsigned long)(i + 1), appName, (title.length > 0 ? title : @"通知"), timeStr, body];
+
+        if (i < 3) {
+            [speechItems addObject:[NSString stringWithFormat:@"第 %lu 条，%@ %@发来：%@",
+                                    (unsigned long)(i + 1), appName, (title.length > 0 ? title : @""), body]];
+        }
+    }
+
+    NSDictionary *latest = notifSnap.firstObject;
+    NSString *pillStr = [NSString stringWithFormat:@"🔔 最新[%@]%@：%@",
+                         latest[@"appName"] ?: @"消息",
+                         ([latest[@"title"] length] > 0 ? latest[@"title"] : @""),
+                         latest[@"body"] ?: latest[@"text"]];
+    [[AGGlobalActionPillWindow sharedPill] showActionPill:pillStr];
+    [mgr showActionBanner:pillStr];
+
+    NSMutableString *curTrans = [mgr currentTabTranscript];
+    if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+    [curTrans appendString:cardText];
+    [mgr updateResponseTextViewSmoothly:curTrans];
+    [mgr throttledExpandAndScrollTextViewForce:YES];
+
+    NSString *speech = [NSString stringWithFormat:@"为您播报最近收到的消息：%@。您可以直接说“回复他说加内容”后台秒回。",
+                        [speechItems componentsJoinedByString:@"；"]];
+    agSpeakAndBroadcastHardwareResult(mgr, speech);
+}
+
+static void agExecuteQuickReplyToLatestNotification(GeminiAssistantManager *mgr, NSString *replyContent) {
+    NSString *cleanReply = [replyContent stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (cleanReply.length == 0) return;
+
+    os_unfair_lock_lock(&gAGBannerRingLock);
+    NSString *targetSender = [gAGLastNotifSenderName copy];
+    os_unfair_lock_unlock(&gAGBannerRingLock);
+
+    if (!targetSender || targetSender.length == 0) {
+        [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚠️ 暂未捕捉到最近发消息的联系人，请说“给XX发微信说...”"];
+        agSpeakAndBroadcastHardwareResult(mgr, @"还没有记录到最近发消息的联系人，请直接告诉我给谁发微信。");
+        return;
+    }
+
+    // 优先通过 Darwin 通知让后台存活的微信静默发送（打游戏/看剧 100% 不切屏！）
+    [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"🚀 正在后台免切屏向「%@」秒回微信：%@", targetSender, cleanReply]];
+    NSDictionary *payload = @{
+        @"action": @"send_text",
+        @"targetName": targetSender,
+        @"content": cleanReply,
+        @"timestamp": @([[NSDate date] timeIntervalSince1970])
+    };
+    agWriteJSONToSharedPaths(payload, @"ag_wechat_send.json", agGetWeChatSendFilePath());
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("com.custom.timeguardian.wechat_send"),
+                                         NULL, NULL, YES);
+
+    // 若 1.1 秒后该指令文件仍未被后台微信消费（说明微信未在后台存活），自动拉起微信完成发送保底
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([[NSFileManager defaultManager] fileExistsAtPath:agGetWeChatSendFilePath()]) {
+            [mgr sendWeChatMessageToTarget:targetSender content:cleanReply];
+        }
+    });
+}
+
+// ==================== 【模块 03】看屏识境 · 全局 AI 高情商代回与写作自动填入引擎 ====================
+static void agExecuteScreenContextSmartGhostWriter(GeminiAssistantManager *mgr, NSString *userInstruction, BOOL autoSubmit) {
+    if (gIsScreenVisionAgentBusy) return;
+    gIsScreenVisionAgentBusy = YES;
+
+    [mgr dismissOverlayIfMainCardActive];
+    [[AGGlobalActionPillWindow sharedPill] showActionPill:@"👁️ 正在看屏理解聊天语境并为您拟写回复..."];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.22 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIImage *screenImg = agCaptureSafeScreenBitmapWithMaxEdge(800.0, mgr.overlayWindow);
+        if (!screenImg || !screenImg.CGImage) {
+            gIsScreenVisionAgentBusy = NO;
+            [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚠️ 屏幕捕获失败，请重试"];
+            return;
+        }
+
+        CGRect sb = [UIScreen mainScreen].bounds;
+        NSData *jpgData = UIImageJPEGRepresentation(screenImg, 0.56);
+
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            @autoreleasepool {
+                UIImage *holdImg = screenImg;
+                NSMutableArray<NSDictionary *> *ocrLines = [NSMutableArray array];
+                __block CGPoint detectedInputPt = CGPointMake(sb.size.width * 0.42, sb.size.height - 42.0);
+                __block BOOL foundExplicitInput = NO;
+
+                VNRecognizeTextRequest *ocrReq = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
+                    for (VNRecognizedTextObservation *obs in request.results) {
+                        VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+                        if (!top || top.string.length == 0) continue;
+                        CGRect box = obs.boundingBox;
+                        CGFloat sy = (1.0 - CGRectGetMidY(box)) * sb.size.height;
+                        CGFloat sx = CGRectGetMidX(box) * sb.size.width;
+                        if (sy < 55.0) continue;
+
+                        NSString *str = [top.string stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        // 识别底部聊天输入框占位符或发送栏坐标
+                        if (sy > sb.size.height * 0.45 &&
+                            ([str containsString:@"发消息"] || [str containsString:@"说点什么"] ||
+                             [str containsString:@"输入"] || [str containsString:@"回复"] ||
+                             [str containsString:@"友善评论"] || [str containsString:@"写评论"])) {
+                            detectedInputPt = CGPointMake(sx, sy);
+                            foundExplicitInput = YES;
+                            continue;
+                        }
+
+                        // 根据左右气泡横坐标自动标注发言人角色
+                        NSString *roleTag = @"[屏幕内容]";
+                        if (box.origin.x < 0.24 && CGRectGetMaxX(box) < 0.82) {
+                            roleTag = @"[对方说]";
+                        } else if (box.origin.x > 0.22 && CGRectGetMaxX(box) > 0.76) {
+                            roleTag = @"[我说]";
+                        }
+                        [ocrLines addObject:@{
+                            @"y": @(sy),
+                            @"line": [NSString stringWithFormat:@"%@ %@", roleTag, str]
+                        }];
+                    }
+                }];
+                ocrReq.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+                ocrReq.usesLanguageCorrection = NO;
+                ocrReq.recognitionLanguages = @[@"zh-Hans", @"zh-Hant", @"en-US", @"ja-JP", @"ko-KR"];
+                VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:holdImg.CGImage options:@{}];
+                [handler performRequests:@[ocrReq] error:nil];
+                holdImg = nil;
+
+                [ocrLines sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                    return [a[@"y"] compare:b[@"y"]];
+                }];
+
+                NSMutableString *screenTranscript = [NSMutableString string];
+                for (NSDictionary *item in ocrLines) {
+                    [screenTranscript appendFormat:@"%@\n", item[@"line"]];
+                }
+
+                NSString *clipStr = [[UIPasteboard generalPasteboard].string ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                NSString *writerPrompt = [NSString stringWithFormat:
+                    @"你是一个顶级的私人沟通与高情商代笔助手。用户的代写要求是：【%@】。\n"
+                    @"当前手机屏幕上识别到的聊天上下文/页面内容如下：\n%@\n"
+                    @"%@"
+                    @"请紧密结合屏幕中[对方说]的内容与语境，按照用户的要求拟写一段最得体、自然的回复或文案。\n"
+                    @"【铁律】：只输出最终要填入输入框的那段纯文本本身！严禁输出任何引号、严禁输出“好的/建议回复如下”等任何多余解释！",
+                    userInstruction,
+                    (screenTranscript.length > 0 ? screenTranscript : @"（请直接观察附带的屏幕截图）"),
+                    (clipStr.length > 0 && [userInstruction containsString:@"润色"] ? [NSString stringWithFormat:@"用户剪贴板原草稿：%@\n", clipStr] : @"")];
+
+                AGConfigTab useTab = (agAPIKeyForTab(AGConfigTabPureText).length >= 4) ? AGConfigTabPureText : ((agAPIKeyForTab(AGConfigTabVideoAI).length >= 4) ? AGConfigTabVideoAI : AGConfigTabNativeLive);
+                NSString *apiKey = agAPIKeyForTab(useTab);
+                NSString *endpoint = agEndpointForTab(useTab);
+                NSString *model = agModelForTab(useTab);
+                NSString *proxy = agProxyForTab(useTab);
+
+                NSString *lowerM = [model lowercaseString];
+                if (model.length == 0 || [lowerM containsString:@"native-audio"] || [lowerM containsString:@"-live"] || [lowerM containsString:@"realtime"]) {
+                    NSString *transM = agTransModel();
+                    model = (transM.length > 0 && ![[transM lowercaseString] containsString:@"-live"]) ? transM : @"models/gemini-2.5-flash";
+                }
+
+                BOOL isGoogle = agIsGoogleNativeProtocol(endpoint, model);
+                NSMutableURLRequest *req = nil;
+                NSString *b64Img = jpgData ? [jpgData base64EncodedStringWithOptions:0] : @"";
+
+                if (isGoogle) {
+                    NSString *baseEP = agSanitizeEndpoint(endpoint, useTab);
+                    NSString *fullM = [model hasPrefix:@"models/"] ? model : [NSString stringWithFormat:@"models/%@", model];
+                    NSString *urlStr = [NSString stringWithFormat:@"%@/v1beta/%@:generateContent?key=%@", baseEP, fullM, apiKey];
+                    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+                    req.HTTPMethod = @"POST";
+                    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+                    NSMutableDictionary *genCfg = [@{@"temperature": @0.35, @"maxOutputTokens": @512} mutableCopy];
+                    if ([fullM containsString:@"2.5"] || [fullM containsString:@"3."]) {
+                        genCfg[@"thinkingConfig"] = @{@"thinkingBudget": @0};
+                    }
+                    NSMutableArray *parts = [NSMutableArray array];
+                    if (b64Img.length > 0) {
+                        [parts addObject:@{@"inlineData": @{@"mimeType": @"image/jpeg", @"data": b64Img}}];
+                    }
+                    [parts addObject:@{@"text": writerPrompt}];
+                    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
+                        @"contents": @[@{@"role": @"user", @"parts": parts}],
+                        @"generationConfig": genCfg
+                    } options:0 error:nil];
+                } else {
+                    NSString *urlStr = agSanitizeOpenAIEndpoint(endpoint);
+                    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+                    req.HTTPMethod = @"POST";
+                    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+                    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
+                    NSString *exactM = [model stringByReplacingOccurrencesOfString:@"models/" withString:@""];
+                    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
+                        @"model": exactM,
+                        @"messages": @[@{@"role": @"user", @"content": writerPrompt}],
+                        @"temperature": @0.35,
+                        @"max_tokens": @512
+                    } options:0 error:nil];
+                }
+                req.timeoutInterval = 9.0;
+
+                NSURLSession *sess = [[AGSharedTransSessionRouter sharedRouter] sharedNonStreamSessionForProxy:proxy];
+                [[sess dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+                    gIsScreenVisionAgentBusy = NO;
+                    if (err || !data) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚠️ AI 代写请求超时，请重试"];
+                        });
+                        return;
+                    }
+                    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                    NSString *reply = [[mgr extractTextFromDictionary:json] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    if ([reply hasPrefix:@"\""] && [reply hasSuffix:@"\""] && reply.length > 2) {
+                        reply = [reply substringWithRange:NSMakeRange(1, reply.length - 2)];
+                    }
+                    if ([reply hasPrefix:@"“"] && [reply hasSuffix:@"”"] && reply.length > 2) {
+                        reply = [reply substringWithRange:NSMakeRange(1, reply.length - 2)];
+                    }
+                    if (!reply || reply.length == 0) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [[AGGlobalActionPillWindow sharedPill] showActionPill:@"⚠️ 未能生成有效回复文本"];
+                        });
+                        return;
+                    }
+
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [UIPasteboard generalPasteboard].string = reply;
+                        Class kbCls = objc_getClass("UIKeyboardImpl");
+                        id activeKB = (kbCls && [kbCls respondsToSelector:@selector(activeInstance)]) ? [kbCls activeInstance] : nil;
+
+                        if (activeKB && mgr.currentKeyboardHeight > 20.0) {
+                            // 键盘已处于弹出聚焦状态，0秒直接打字上屏
+                            agInjectTextIntoFocusedInput(reply, autoSubmit);
+                            [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"✍️ 已为您填入：%@", reply]];
+                        } else {
+                            // 键盘尚未弹出：先自动点击屏幕底部聊天输入框唤醒键盘，0.40s 后自动打字填入！
+                            agSimulateScreenTapAtPoint(detectedInputPt);
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.42 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                agInjectTextIntoFocusedInput(reply, autoSubmit);
+                                [[AGGlobalActionPillWindow sharedPill] showActionPill:[NSString stringWithFormat:@"✍️ 已点开输入框并填入：%@", reply]];
+                            });
+                        }
+                    });
+                }] resume];
+            }
+        });
+    });
+}
+
 // ==================== Runtime 零侵入链式挂载（原方法 100% 优先执行） ====================
 static BOOL (*orig_AG_tryExecuteDirectLocalCommand)(GeminiAssistantManager *self, SEL _cmd, NSString *cmdText) = NULL;
 static BOOL hooked_AG_tryExecuteDirectLocalCommand(GeminiAssistantManager *self, SEL _cmd, NSString *cmdText) {
-    // 1. 铁律：永远先执行原有的本地指令逻辑！若原功能命中，直接返回 YES，绝不干渉！
+    // 1. 铁律：永远先执行原有的本地指令逻辑！若原功能命中，直接返回 YES，绝不干涉！
     if (orig_AG_tryExecuteDirectLocalCommand && orig_AG_tryExecuteDirectLocalCommand(self, _cmd, cmdText)) {
         return YES;
     }
     if (!cmdText || cmdText.length < 2) return NO;
     NSString *cmd = [cmdText lowercaseString];
 
-    // 2. 拦截快递取件码查询指令
+    // 2. 【模块 01】快递取件码查询指令
     if ([cmd containsString:@"取件码"] || [cmd containsString:@"提货码"] || [cmd containsString:@"取货码"] ||
         (([cmd containsString:@"快递"] || [cmd containsString:@"包裹"] || [cmd containsString:@"驿站"] || [cmd containsString:@"丰巢"]) &&
          ([cmd containsString:@"几个"] || [cmd containsString:@"多少"] || [cmd containsString:@"查"] || [cmd containsString:@"看"] || [cmd containsString:@"拿"] || [cmd containsString:@"取"] || [cmd containsString:@"有吗"] || [cmd containsString:@"有没有"]))) {
@@ -26882,10 +27175,49 @@ static BOOL hooked_AG_tryExecuteDirectLocalCommand(GeminiAssistantManager *self,
         return YES;
     }
 
-    // 3. 拦截短信验证码读取与自动填入指令
+    // 3. 【模块 01】短信验证码读取与自动填入指令
     if ([cmd containsString:@"验证码"] || [cmd containsString:@"校验码"] || [cmd containsString:@"动态码"]) {
         BOOL autoFill = ([cmd containsString:@"填"] || [cmd containsString:@"输"] || [cmd containsString:@"打进"] || [cmd containsString:@"写进"] || [cmd containsString:@"粘贴"]);
         agExecuteVerificationCodeExtractAndFill(self, autoFill);
+        return YES;
+    }
+
+    // 4. 【模块 02】查询最近实时通知（“刚才谁给我发消息了” / “看看最近通知”）
+    if ([cmd containsString:@"谁给我发"] || [cmd containsString:@"谁找我"] || [cmd containsString:@"刚谁发"] ||
+        [cmd containsString:@"最近通知"] || [cmd containsString:@"刚才的通知"] || [cmd containsString:@"有什么新通知"] ||
+        ([cmd containsString:@"刚才"] && ([cmd containsString:@"什么消息"] || [cmd containsString:@"哪条消息"] || [cmd containsString:@"谁发"]))) {
+        agExecuteRecentNotificationsQuery(self);
+        return YES;
+    }
+
+    // 5. 【模块 03】看屏识境 · 高情商代回 / 委婉拒绝 / 幽默回复 / 外语代回 / 写评论 / 润色填入
+    BOOL isGhostWriteIntent = ([cmd containsString:@"高情商"] || [cmd containsString:@"委婉拒绝"] ||
+                               [cmd containsString:@"幽默回复"] || [cmd containsString:@"幽默地回"] ||
+                               [cmd containsString:@"得体回复"] || [cmd containsString:@"得体地回"] ||
+                               [cmd containsString:@"商务语气"] || [cmd containsString:@"正式语气"] ||
+                               [cmd containsString:@"润色"] || [cmd containsString:@"写条评论"] ||
+                               [cmd containsString:@"写一条评论"] || [cmd containsString:@"夸赞评论"] ||
+                               [cmd containsString:@"用英语回"] || [cmd containsString:@"用英文回"] ||
+                               [cmd containsString:@"用日语回"] || [cmd containsString:@"用韩语回"] ||
+                               [cmd containsString:@"看着屏幕回"] || [cmd containsString:@"回复屏幕上的"] ||
+                               ([cmd containsString:@"怎么回"] && ([cmd containsString:@"填进"] || [cmd containsString:@"帮我回"])) ||
+                               (([cmd containsString:@"帮我回"] || [cmd containsString:@"替我回"]) && ([cmd containsString:@"屏幕"] || [cmd containsString:@"这段话"] || [cmd containsString:@"拒绝"] || [cmd containsString:@"高情商"])));
+    if (isGhostWriteIntent) {
+        BOOL autoSend = ([cmd containsString:@"直接发出去"] || [cmd containsString:@"并发送"] || [cmd containsString:@"直接发送"]);
+        agExecuteScreenContextSmartGhostWriter(self, cmdText, autoSend);
+        return YES;
+    }
+
+    // 6. 【模块 02】免切屏后台秒回最近通知联系人（“回复他说我马上到” / “回他一句好的收到”）
+    static NSRegularExpression *sQuickReplyRe = nil;
+    static dispatch_once_t qrToken;
+    dispatch_once(&qrToken, ^{
+        sQuickReplyRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:帮我|给我|你)?(?:直接)?(?:回复他|回他|回复她|回她|回复刚才那个人|回刚才那个人|回复刚才的消息)(?:一句|说|：|:|\\s)+(.+)$" options:0 error:nil];
+    });
+    NSTextCheckingResult *qrMatch = [sQuickReplyRe firstMatchInString:cmd options:0 range:NSMakeRange(0, cmd.length)];
+    if (qrMatch && qrMatch.numberOfRanges > 1) {
+        NSString *replyBody = [cmdText substringWithRange:[qrMatch rangeAtIndex:1]];
+        agExecuteQuickReplyToLatestNotification(self, replyBody);
         return YES;
     }
 
@@ -26902,6 +27234,16 @@ static void hooked_AG_executeActionDictionary(GeminiAssistantManager *self, SEL 
     if ([type isEqualToString:@"fill_verify_code"]) {
         BOOL autoFill = (dict[@"auto_fill"] == nil) ? YES : [dict[@"auto_fill"] boolValue];
         agExecuteVerificationCodeExtractAndFill(self, autoFill);
+        return;
+    }
+    if ([type isEqualToString:@"query_recent_notifications"]) {
+        agExecuteRecentNotificationsQuery(self);
+        return;
+    }
+    if ([type isEqualToString:@"ghost_write_reply"]) {
+        NSString *inst = dict[@"instruction"] ?: (dict[@"text"] ?: @"高情商得体回复");
+        BOOL submit = [dict[@"submit"] boolValue];
+        agExecuteScreenContextSmartGhostWriter(self, inst, submit);
         return;
     }
     if (orig_AG_executeActionDictionary) {
