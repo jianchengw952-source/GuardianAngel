@@ -15897,7 +15897,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
         NSString *step1Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         NSString *step2Str = [[cleanCmd substringWithRange:[chainMatch rangeAtIndex:2]] stringByTrimmingCharactersInSet:trimSet];
         if (step1Str.length >= 2 && step2Str.length >= 2) {
-            NSRegularExpression *openOnlyRe = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|启动|去|找到)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)$" options:0 error:nil];
+            static NSRegularExpression *openOnlyRe = nil;
+            if (!openOnlyRe) openOnlyRe = [NSRegularExpression regularExpressionWithPattern:@"(?:打开|启动|去|找到)(淘宝|京东|拼多多|美团|抖音|b站|哔哩哔哩|小红书|知乎|微博|百度|闲鱼)$" options:0 error:nil];
             NSTextCheckingResult *m1 = [openOnlyRe firstMatchInString:step1Str options:0 range:NSMakeRange(0, step1Str.length)];
             if (m1 && ([step2Str hasPrefix:@"搜索"] || [step2Str hasPrefix:@"搜"])) {
                 NSString *plt = [step1Str substringWithRange:[m1 rangeAtIndex:1]];
@@ -15949,7 +15950,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
                              ![cleanCmd containsString:@"记录"]);
 
     // 支持语音直接保存收藏点（如：“把当前定位收藏为公司” / “把当前位置保存为家里”）
-    NSRegularExpression *saveFavRe = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:当前|现在)?(?:的)?(?:虚拟)?(?:定位|位置)(?:收藏为|保存为|设为收藏|存为)([^，。！？,.!?\\s]+)" options:0 error:nil];
+    static NSRegularExpression *saveFavRe = nil;
+    if (!saveFavRe) saveFavRe = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:当前|现在)?(?:的)?(?:虚拟)?(?:定位|位置)(?:收藏为|保存为|设为收藏|存为)([^，。！？,.!?\\s]+)" options:0 error:nil];
     NSTextCheckingResult *saveFavMatch = [saveFavRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (saveFavMatch && saveFavMatch.numberOfRanges > 1) {
         NSString *favName = [[cleanCmd substringWithRange:[saveFavMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
@@ -15982,7 +15984,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
     }
 
     // 支持“把[某软件]定位到[某地]”（自动将该软件加入白名单并秒切定位）
-    NSRegularExpression *appLocRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:把|将)?([^，。！？,.!?\\s]{2,8}?)(?:的)?(?:虚拟)?(?:定位|位置)(?:修改到|改到|定到|设到|切到|去|到)([^，。！？,.!?、]+)$" options:0 error:nil];
+    static NSRegularExpression *appLocRe = nil;
+    if (!appLocRe) appLocRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:把|将)?([^，。！？,.!?\\s]{2,8}?)(?:的)?(?:虚拟)?(?:定位|位置)(?:修改到|改到|定到|设到|切到|去|到)([^，。！？,.!?、]+)$" options:0 error:nil];
     NSTextCheckingResult *appLocMatch = [appLocRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (appLocMatch && appLocMatch.numberOfRanges >= 3) {
         NSString *maybeApp = [[cleanCmd substringWithRange:[appLocMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
@@ -16010,12 +16013,14 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
     }
 
     // 优先匹配虚拟定位（支持“把定位改到XX然后把防检测打开”一句话连招，在定位落盘回调后自动开启防检测，绝不被覆盖！）
-    NSRegularExpression *locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
+    static NSRegularExpression *locPinRegex = nil;
+    if (!locPinRegex) locPinRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:把)?(?:我的)?(?:虚拟|打码|打马)?(?:定位|位置|丁维)(?:修改到|修改为|修改成|切换到|瞬移到|定位到|设置到|设置在|改到|改为|改成|定到|定在|设到|设在|修改|设置|瞬移|改|定|设|去|到)([^\n，。！？,!?、]+)" options:0 error:nil];
     NSTextCheckingResult *locMatch = [locPinRegex firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (locMatch && locMatch.numberOfRanges > 1) {
         NSString *targetPlace = [[cleanCmd substringWithRange:[locMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
         // 若用户一句话连说了“把定位改到海口市把防检测打开”，剥离末尾的防检测指令词，提取纯净地名
-        NSRegularExpression *stripAntiDetRe = [NSRegularExpression regularExpressionWithPattern:@"(?:然后|接着|再|并|同时)?(?:帮我|给我)?(?:把|将)?(?:考勤|打卡)?(?:防检测|反检测|房检测|房检车|房间车|房间侧|网检车).*$" options:0 error:nil];
+        static NSRegularExpression *stripAntiDetRe = nil;
+        if (!stripAntiDetRe) stripAntiDetRe = [NSRegularExpression regularExpressionWithPattern:@"(?:然后|接着|再|并|同时)?(?:帮我|给我)?(?:把|将)?(?:考勤|打卡)?(?:防检测|反检测|房检测|房检车|房间车|房间侧|网检车).*$" options:0 error:nil];
         targetPlace = [[stripAntiDetRe stringByReplacingMatchesInString:targetPlace options:0 range:NSMakeRange(0, targetPlace.length) withTemplate:@""] stringByTrimmingCharactersInSet:trimSet];
         if ([targetPlace hasPrefix:@"的"] && targetPlace.length > 1) {
             targetPlace = [targetPlace substringFromIndex:1];
@@ -16085,7 +16090,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
             return YES;
         }
     }
-    NSRegularExpression *wxOpenChatRe = [NSRegularExpression regularExpressionWithPattern:@"(?:(?:打开|进入|调出|切到|看看|在|去|用)微信(?:里|中|上)?[。，,.、\\s]*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|打开|进入|看看)?(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天)?$)|(?:(?:打开|进入|调出|切到|看看)(?:微信)?(?:里|中|上)?[。，,.、\\s]*(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天))" options:0 error:nil];
+    static NSRegularExpression *wxOpenChatRe = nil;
+    if (!wxOpenChatRe) wxOpenChatRe = [NSRegularExpression regularExpressionWithPattern:@"(?:(?:打开|进入|调出|切到|看看|在|去|用)微信(?:里|中|上)?[。，,.、\\s]*(?:然后|接着|再)?(?:帮我|给我)?(?:找到|找一下|搜索|搜一下|打开|进入|看看)?(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天)?$)|(?:(?:打开|进入|调出|切到|看看)(?:微信)?(?:里|中|上)?[。，,.、\\s]*(?:跟|与|和)?([^，。！？,.!?\\s]+?)(?:的微信|的)?(?:聊天窗口|聊天窗|对话框|对话窗|聊天界面|微信聊天))" options:0 error:nil];
     NSTextCheckingResult *wxOpenMatch = [wxOpenChatRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (wxOpenMatch) {
         NSRange r1 = ([wxOpenMatch numberOfRanges] > 1) ? [wxOpenMatch rangeAtIndex:1] : NSMakeRange(NSNotFound, 0);
@@ -16496,7 +16502,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
         return YES;
     }
 
-    NSRegularExpression *visualTypeRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|到|点|点击)?(?:当前页面|屏幕|页面)?(?:的|上|里)?(搜索框|搜索栏|输入框|聊天框|文本框|地址栏|评论框)?(?:里|中|上)?(?:打字|输入|填入|填写|键入)[“\\\"'「：:]?([^”\\\"'」，。！？,.!?]+)[”\\\"'」]?" options:0 error:nil];
+    static NSRegularExpression *visualTypeRe = nil;
+    if (!visualTypeRe) visualTypeRe = [NSRegularExpression regularExpressionWithPattern:@"(?:在|到|点|点击)?(?:当前页面|屏幕|页面)?(?:的|上|里)?(搜索框|搜索栏|输入框|聊天框|文本框|地址栏|评论框)?(?:里|中|上)?(?:打字|输入|填入|填写|键入)[“\\\"'「：:]?([^”\\\"'」，。！？,.!?]+)[”\\\"'」]?" options:0 error:nil];
     NSTextCheckingResult *vTypeMatch = [visualTypeRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (vTypeMatch && vTypeMatch.numberOfRanges >= 3) {
         NSString *boxTarget = ([vTypeMatch rangeAtIndex:1].location != NSNotFound) ? [cleanCmd substringWithRange:[vTypeMatch rangeAtIndex:1]] : @"";
@@ -16518,7 +16525,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
     }
 
     // 10C. 👆 点击屏幕上的文字（支持“按...”与“屏幕上面有XX两个字”，并循环剥离多层前缀防止“屏幕上面的设置”变成“面的设置”）
-    NSRegularExpression *hasWordsTapRe = [NSRegularExpression regularExpressionWithPattern:@"(?:屏幕|页面|界面)(?:上面|上|里)?(?:现在)?有[“\\\"'「]?([^”\\\"'」，。！？,.!?]+?)[”\\\"'」]?(?:两个字|三个字|四个字|这几个字|按钮|选项)" options:0 error:nil];
+    static NSRegularExpression *hasWordsTapRe = nil;
+    if (!hasWordsTapRe) hasWordsTapRe = [NSRegularExpression regularExpressionWithPattern:@"(?:屏幕|页面|界面)(?:上面|上|里)?(?:现在)?有[“\\\"'「]?([^”\\\"'」，。！？,.!?]+?)[”\\\"'」]?(?:两个字|三个字|四个字|这几个字|按钮|选项)" options:0 error:nil];
     NSTextCheckingResult *hasWordsMatch = [hasWordsTapRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (hasWordsMatch && hasWordsMatch.numberOfRanges > 1) {
         NSString *hwTarget = [[cleanCmd substringWithRange:[hasWordsMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
@@ -16535,7 +16543,8 @@ static BOOL gIsRunningAtomicComboSubTask = NO;
                                   [cleanCmd containsString:@"最后一个"] || [cleanCmd containsString:@"最贵"] ||
                                   [cleanCmd containsString:@"最便宜"]) &&
                                  ([cleanCmd containsString:@"打开"] || [cleanCmd containsString:@"选"] || [cleanCmd containsString:@"按钮"] || [cleanCmd containsString:@"图标"] || [cleanCmd containsString:@"结果"] || [cleanCmd containsString:@"商品"]));
-    NSRegularExpression *smartTapRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:你|我|先|再|现在|麻烦|快)?(?:在当前页面|在当全页面|在当前屏幕|在屏幕上|在页面上|现在页面的|现在屏幕上的|屏幕上现在的)?(?:点击|点一下|点开|点选|按下|按一下|点|按|选择|选|触碰|戳)[“\\\"'「]?([^”\\\"'」，。！？,.!?]+)[”\\\"'」]?" options:0 error:nil];
+    static NSRegularExpression *smartTapRe = nil;
+    if (!smartTapRe) smartTapRe = [NSRegularExpression regularExpressionWithPattern:@"^(?:你|我|先|再|现在|麻烦|快)?(?:在当前页面|在当全页面|在当前屏幕|在屏幕上|在页面上|现在页面的|现在屏幕上的|屏幕上现在的)?(?:点击|点一下|点开|点选|按下|按一下|点|按|选择|选|触碰|戳)[“\\\"'「]?([^”\\\"'」，。！？,.!?]+)[”\\\"'」]?" options:0 error:nil];
     NSTextCheckingResult *smartTapMatch = [smartTapRe firstMatchInString:cleanCmd options:0 range:NSMakeRange(0, cleanCmd.length)];
     if (smartTapMatch && smartTapMatch.numberOfRanges > 1) {
         NSString *rawTarget = [[cleanCmd substringWithRange:[smartTapMatch rangeAtIndex:1]] stringByTrimmingCharactersInSet:trimSet];
