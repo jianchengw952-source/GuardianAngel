@@ -26585,8 +26585,7 @@ static NSString *agDecodeAttributedBodyBlob(const void *blobBytes, int blobLen) 
     while (i < blobLen) {
         if (i + 12 < blobLen && memcmp(bytes + i, "NSDictionary", 12) == 0) break;
         uint8_t b = bytes[i];
-        if ((b >= 0x20 && b <= 0x7E) || b == '
-' || b == '' || b == '	') {
+        if ((b >= 0x20 && b <= 0x7E) || b == '\n' || b == '\r' || b == '\t') {
             [utf8Data appendBytes:&b length:1];
             i++;
         } else if ((b & 0xE0) == 0xC0 && (i + 1 < blobLen) && ((bytes[i+1] & 0xC0) == 0x80)) {
@@ -26671,15 +26670,15 @@ static NSString *agCleanSMSInterferenceNumbers(NSString *raw) {
     static NSRegularExpression *sCleanRe = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSString *pat = @"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+"
-                        @"|(?<!\d)1[3-9]\d{9}(?!\d)"
-                        @"|\d{3,4}-\d{7,8}"
-                        @"|(?<!\d)(?:95\d{3,4}|10086|10010|10000|12306|400\d{7})(?!\d)"
-                        @"|(?:尾号|手机尾号|末四位|卡号|后四位|尾数)[为是:：\s]*\d{4}"
-                        @"|\d{4}年\d{1,2}月\d{1,2}日"
-                        @"|\d{1,2}月\d{1,2}日"
-                        @"|\d{1,2}:\d{2}(?::\d{2})?"
-                        @"|\d+(?:\.\d{1,2})?\s*(?:元|块|MB|GB|G|M|小时|分钟|秒|天|件|个)";
+        NSString *pat = @"https?://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+"
+                        @"|(?<!\\d)1[3-9]\\d{9}(?!\\d)"
+                        @"|\\d{3,4}-\\d{7,8}"
+                        @"|(?<!\\d)(?:95\\d{3,4}|10086|10010|10000|12306|400\\d{7})(?!\\d)"
+                        @"|(?:尾号|手机尾号|末四位|卡号|后四位|尾数)[为是:：\\s]*\\d{4}"
+                        @"|\\d{4}年\\d{1,2}月\\d{1,2}日"
+                        @"|\\d{1,2}月\\d{1,2}日"
+                        @"|\\d{1,2}:\\d{2}(?::\\d{2})?"
+                        @"|\\d+(?:\\.\\d{1,2})?\\s*(?:元|块|MB|GB|G|M|小时|分钟|秒|天|件|个)";
         sCleanRe = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionCaseInsensitive error:nil];
     });
     return [sCleanRe stringByReplacingMatchesInString:raw options:0 range:NSMakeRange(0, raw.length) withTemplate:@" "];
@@ -26695,11 +26694,11 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         // 1. 菜鸟/驿站标准三段式/二段式货架码 (如 16-3-2048, A2-4-105)
-        sShelfRe = [NSRegularExpression regularExpressionWithPattern:@"(?<![A-Za-z0-9\-])([A-Za-z0-9]{1,4}-\d{1,3}-\d{2,6}|\d{1,3}-\d{3,6})(?![A-Za-z0-9\-])" options:0 error:nil];
+        sShelfRe = [NSRegularExpression regularExpressionWithPattern:@"(?<![A-Za-z0-9\\-])([A-Za-z0-9]{1,4}-\\d{1,3}-\\d{2,6}|\\d{1,3}-\\d{3,6})(?![A-Za-z0-9\\-])" options:0 error:nil];
         // 2. 紧邻锚点词的丰巢/快递柜取件码
-        sAnchorCodeRe = [NSRegularExpression regularExpressionWithPattern:@"(?:取件码|提货码|取货码|凭码|取件密码|开箱码|验证代码)[为是:：\s【\[]*([A-Za-z0-9\-]{4,12})" options:NSRegularExpressionCaseInsensitive error:nil];
+        sAnchorCodeRe = [NSRegularExpression regularExpressionWithPattern:@"(?:取件码|提货码|取货码|凭码|取件密码|开箱码|验证代码)[为是:：\\s【\\[]*([A-Za-z0-9\\-]{4,12})" options:NSRegularExpressionCaseInsensitive error:nil];
         // 3. 存放地点提取
-        sLocRe = [NSRegularExpression regularExpressionWithPattern:@"(?:已到|到达|存放在|位于|请到|前往|放至)([^，。！？,;；\n]{3,22}?(?:驿站|店|柜|点|室|门岗|超市|中心|代收点|架))" options:0 error:nil];
+        sLocRe = [NSRegularExpression regularExpressionWithPattern:@"(?:已到|到达|存放在|位于|请到|前往|放至)([^，。！？,;；\\n]{3,22}?(?:驿站|店|柜|点|室|门岗|超市|中心|代收点|架))" options:0 error:nil];
     });
 
     NSArray<NSString *> *stationKeywords = @[@"菜鸟驿站", @"菜鸟", @"丰巢", @"妈妈驿站", @"兔喜生活", @"兔喜", @"近邻宝", @"速递易", @"熊猫快收", @"小麦公社", @"邮政驿站", @"美团柜", @"顺丰", @"京东", @"中通", @"圆通", @"韵达", @"申通", @"极兔", @"德邦", @"EMS", @"快递", @"包裹", @"驿站"];
@@ -26767,8 +26766,7 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     }
 
     NSMutableArray<NSString *> *pillCodes = [NSMutableArray array];
-    NSMutableString *cardText = [NSMutableString stringWithFormat:@"📦 【本机待取快递取件码清单（共 %lu 件）】
-", (unsigned long)pickupList.count];
+    NSMutableString *cardText = [NSMutableString stringWithFormat:@"📦 【本机待取快递取件码清单（共 %lu 件）】\n", (unsigned long)pickupList.count];
     NSMutableArray<NSString *> *speechParts = [NSMutableArray array];
 
     for (NSUInteger i = 0; i < pickupList.count; i++) {
@@ -26777,11 +26775,7 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
         if (i < 3) {
             [pillCodes addObject:[NSString stringWithFormat:@"%lu.%@", (unsigned long)num, p[@"code"]]];
         }
-        [cardText appendFormat:@"
-%lu️⃣ 取件码：【 %@ 】
-   🏷️ 来源：%@ ｜ 🕒 %@
-   📍 位置：%@
-",
+        [cardText appendFormat:@"\n%lu️⃣ 取件码：【 %@ 】\n   🏷️ 来源：%@ ｜ 🕒 %@\n   📍 位置：%@\n",
          (unsigned long)num, p[@"code"], p[@"brand"], p[@"time"], p[@"loc"]];
 
         if (i < 4) {
@@ -26795,10 +26789,7 @@ static void agExecuteExpressPickupCodesQuery(GeminiAssistantManager *mgr) {
     [mgr showActionBanner:pillStr];
 
     NSMutableString *curTrans = [mgr currentTabTranscript];
-    if (curTrans.length > 0 && ![curTrans hasSuffix:@"
-"]) [curTrans appendString:@"
-
-"];
+    if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
     [curTrans appendString:cardText];
     [mgr updateResponseTextViewSmoothly:curTrans];
     [mgr throttledExpandAndScrollTextViewForce:YES];
@@ -26816,8 +26807,8 @@ static void agExecuteVerificationCodeExtractAndFill(GeminiAssistantManager *mgr,
     static NSRegularExpression *sCodeRe2 = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sCodeRe1 = [NSRegularExpression regularExpressionWithPattern:@"(?:验证码|校验码|动态码|确认码|安全码|随机码|激活码|code)[为是:：\s【\[]*([0-9]{4,8})(?![0-9])" options:NSRegularExpressionCaseInsensitive error:nil];
-        sCodeRe2 = [NSRegularExpression regularExpressionWithPattern:@"(?<![0-9])([0-9]{4,8})(?![0-9])[^，。！？,.!?\n]{0,8}(?:为您的|是您的|为本次)?(?:验证码|校验码|动态码|确认码)" options:NSRegularExpressionCaseInsensitive error:nil];
+        sCodeRe1 = [NSRegularExpression regularExpressionWithPattern:@"(?:验证码|校验码|动态码|确认码|安全码|随机码|激活码|code)[为是:：\\s【\\[]*([0-9]{4,8})(?![0-9])" options:NSRegularExpressionCaseInsensitive error:nil];
+        sCodeRe2 = [NSRegularExpression regularExpressionWithPattern:@"(?<![0-9])([0-9]{4,8})(?![0-9])[^，。！？,.!?\\n]{0,8}(?:为您的|是您的|为本次)?(?:验证码|校验码|动态码|确认码)" options:NSRegularExpressionCaseInsensitive error:nil];
     });
 
     NSString *foundCode = nil;
@@ -26865,13 +26856,8 @@ static void agExecuteVerificationCodeExtractAndFill(GeminiAssistantManager *mgr,
         [[AGGlobalActionPillWindow sharedPill] showActionPill:okMsg];
         [mgr showActionBanner:okMsg];
         NSMutableString *curTrans = [mgr currentTabTranscript];
-        if (curTrans.length > 0 && ![curTrans hasSuffix:@"
-"]) [curTrans appendString:@"
-
-"];
-        [curTrans appendFormat:@"🔑 【最新短信验证码】：%@
-（已自动为您复制到剪贴板，可直接粘贴）
-", foundCode];
+        if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+        [curTrans appendFormat:@"🔑 【最新短信验证码】：%@\n（已自动为您复制到剪贴板，可直接粘贴）\n", foundCode];
         [mgr updateResponseTextViewSmoothly:curTrans];
         [mgr throttledExpandAndScrollTextViewForce:YES];
         agSpeakAndBroadcastHardwareResult(mgr, [NSString stringWithFormat:@"刚收到的验证码是：%@，已经帮您复制到剪贴板了。", foundCode]);
@@ -26970,4 +26956,3 @@ __attribute__((constructor)) static void agInitSMSAndPickupEvolutionHook(void) {
 // ==============================================================================
 // 🚀 [END OF PATCH]
 // ==============================================================================
-
