@@ -6978,7 +6978,7 @@ static void agProbeRealtimeWebSocketModel(NSString *endpoint, NSString *apiKey, 
             }
         };
     } else if ([lowerProbeM containsString:@"qwen"] || [[endpoint lowercaseString] containsString:@"dashscope"]) {
-        NSString *probeVoice = [lowerProbeM containsString:@"qwen3.5"] ? @"Tina" : ([lowerProbeM containsString:@"qwen3"] ? @"Cherry" : @"Chelsie");
+        NSString *probeVoice = [lowerProbeM containsString:@"turbo"] ? @"Chelsie" : @"Tina";
         handshakePayload = @{
             @"type": @"session.update",
             @"session": @{
@@ -13890,10 +13890,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         BOOL isQwenRealtime = ([lowerModel containsString:@"qwen"] || [lowerEP containsString:@"dashscope"]);
         BOOL isGLMRealtime  = ([lowerModel containsString:@"glm"] || [lowerEP containsString:@"bigmodel"]);
 
-        // 阿里云百炼 Qwen-Omni-Realtime 官方音色匹配：qwen3.5 默认 Tina，qwen3 默认 Cherry，其余 Chelsie（传 alloy 必报错！）
+        // 阿里云百炼 Qwen3.5 / Qwen3.8 Omni-Realtime 统一使用官方音色 Tina（旧版 turbo 用 Chelsie）
         NSString *voiceName = @"alloy";
         if (isQwenRealtime) {
-            voiceName = [lowerModel containsString:@"qwen3.5"] ? @"Tina" : ([lowerModel containsString:@"qwen3"] ? @"Cherry" : @"Chelsie");
+            voiceName = [lowerModel containsString:@"turbo"] ? @"Chelsie" : @"Tina";
         } else if (isGLMRealtime) {
             voiceName = @"tongtong";
         }
@@ -13911,10 +13911,6 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                 @"silence_duration_ms": @(700)
             }
         } mutableCopy];
-
-        if (!self.disableTranscriptionInSetup && isQwenRealtime) {
-            sessionDict[@"input_audio_transcription"] = @{ @"model": @"gummy-realtime-v1" };
-        }
 
         // 仅原生 OpenAI Realtime 注入 function tools；千问与智谱不传 OpenAI tools 数组以防报错断连
         if (agIsWebSearchEnabled() && !self.disableToolsInSetup && !isQwenRealtime && !isGLMRealtime) {
@@ -25730,9 +25726,10 @@ static NSHashTable<CLLocationManager *> *agActiveLocationManagersTable(void) {
 }
 
 static void agPushSpoofedLocationToActiveManagers(void) {
-    if (!agIsCurrentProcessTargetedForLocSpoof()) return;
+    // 铁律：开启防检测时，绝不向考勤软件推送人工 alloc/init 出来的无内核签名 CLLocation，100% 仅使用系统 locationd 原生回调对象！
+    if (!agIsCurrentProcessTargetedForLocSpoof() || agIsAntiDetectionShieldActive()) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!agIsCurrentProcessTargetedForLocSpoof()) return;
+        if (!agIsCurrentProcessTargetedForLocSpoof() || agIsAntiDetectionShieldActive()) return;
         CLLocation *spoofLoc = [[AGLocationSpoofManager sharedSpoofer] constructRealisticSpoofedLocation];
         if (!spoofLoc) return;
         NSArray<CLLocationManager *> *mgrs = [agActiveLocationManagersTable() allObjects];
@@ -26479,12 +26476,9 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr) {
     return NULL;
 }
 
-// 1. 启用 dladdr (原装 origIMP 真实透传) 与 _dyld_get_image_name 隐藏，彻底消除「疑似安装了风险插件」
+// 铁律：绝不对 libdyld (dladdr / _dyld_get_image_name) 执行 MSHookFunction，保持系统共享缓存 0 脏页，根除 Relaxin 下「使用不可信设备打卡」！
 static void agInstallEnvStealthCHooksIfNeeded(void) {
-    if (gHasInstalledEnvStealthCHooks) return;
     gHasInstalledEnvStealthCHooks = YES;
-    MSHookFunction((void *)dladdr, (void *)hooked_dladdr, (void **)&orig_dladdr);
-    MSHookFunction((void *)_dyld_get_image_name, (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
 }
 
 static void agInstallWiFiShieldCHooksIfNeeded(void) {
@@ -26495,9 +26489,8 @@ static void agSyncClientHooksWithCurrentState(void) {
     os_unfair_lock_lock(&gHookSyncLock);
     BOOL spoofActive = agIsCurrentProcessTargetedForLocSpoof();
     BOOL shieldActive = spoofActive && agIsAntiDetectionShieldActive();
-    BOOL envStealthActive = agIsEnvironmentStealthActive();
 
-    if (!spoofActive && !envStealthActive && !gHasInitializedObjCHooks) {
+    if (!spoofActive && !gHasInitializedObjCHooks) {
         os_unfair_lock_unlock(&gHookSyncLock);
         return;
     }
@@ -26545,10 +26538,13 @@ static void agSyncClientHooksWithCurrentState(void) {
         if (!m || !gClientHookTable[i].origIMP || !gClientHookTable[i].hookedIMP) continue;
 
         BOOL shouldEnableThisHook = NO;
-        if (i < 3) {
-            shouldEnableThisHook = (shieldActive || envStealthActive);
-        } else if (spoofActive) {
-            shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
+        if (spoofActive) {
+            if (i < 3) {
+                // UIApplication.canOpenURL: 与 NSFileManager.fileExistsAtPath: 保持苹果原装指针，交由 Relaxin 隐根底层自身处理
+                shouldEnableThisHook = NO;
+            } else {
+                shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
+            }
         }
         IMP targetIMP = shouldEnableThisHook ? gClientHookTable[i].hookedIMP : gClientHookTable[i].origIMP;
         if (method_getImplementation(m) != targetIMP) {
@@ -26556,16 +26552,11 @@ static void agSyncClientHooksWithCurrentState(void) {
         }
     }
 
-    // 关键：仅挂载底层 clientLocation 结构体替换，彻底不碰高德 detectRiskOfFakeLocation 与 CLLocationSourceInformation 金丝雀自检陷阱！
     if (gDynMethod_CLLoc_clientLoc && gOrig_CLLoc_clientLoc) {
         IMP t = spoofActive ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc;
         if (method_getImplementation(gDynMethod_CLLoc_clientLoc) != t) {
             method_setImplementation(gDynMethod_CLLoc_clientLoc, t);
         }
-    }
-
-    if (envStealthActive || shieldActive) {
-        agInstallEnvStealthCHooksIfNeeded();
     }
     os_unfair_lock_unlock(&gHookSyncLock);
 }
