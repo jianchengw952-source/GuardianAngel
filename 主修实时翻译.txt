@@ -25788,10 +25788,6 @@ static int my_TCCAccessPreflight(CFStringRef service, CFDictionaryRef options) {
 // ====== 防闪退替换 2 开始（替换文件底部直至末尾 %ctor） ======
 #import <mach-o/nlist.h>
 
-@interface WKWebView : UIView
-- (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id, NSError *))completionHandler;
-@end
-
 @interface CLLocationSourceInformation (AGInitPrivate)
 - (instancetype)initWithSoftwareSimulationState:(BOOL)isSoftware andExternalAccessoryState:(BOOL)isAccessory;
 @end
@@ -25816,24 +25812,6 @@ static void agClientDiagLogQueued(NSString *line) {
         agClientDiagLog("%s", [copyLine UTF8String]);
         usleep(8000);
     });
-}
-
-static void agCaptureAndLogPopupCallStack(NSString *triggerText, const char *sourceTag) {
-    static NSTimeInterval sLastTrapTime = 0;
-    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-    if (now - sLastTrapTime < 1.0) return;
-    sLastTrapTime = now;
-    NSString *cleanTxt = [[triggerText componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
-    if (cleanTxt.length > 70) cleanTxt = [cleanTxt substringToIndex:70];
-    agClientDiagLogQueued([NSString stringWithFormat:@"🚨TRAP[%s] %@", sourceTag, cleanTxt]);
-}
-
-static inline BOOL agIsRiskPopupString(NSString *s) {
-    if (!s || s.length < 2) return NO;
-    return ([s containsString:@"篡改"] || [s containsString:@"风险"] ||
-            [s containsString:@"虚拟"] || [s containsString:@"模拟"] ||
-            [s containsString:@"作弊"] || [s containsString:@"不可信"] ||
-            [s containsString:@"isMock"] || [s containsString:@"fakeLocation"]);
 }
 
 AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
@@ -26157,6 +26135,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
 
     double origLat = raw->coordinate.latitude;
     double origLon = raw->coordinate.longitude;
+    double unifiedTs = (sLastTelemetryTime > 0.0) ? sLastTelemetryTime : CFAbsoluteTimeGetCurrent();
 
     if (agIsCoordinateMatchingExpectedGCJ(origLat, origLon)) {
         raw->fromSimulationController = NO;
@@ -26169,6 +26148,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
         raw->course             = tel.course;
         raw->rawCourse          = tel.course;
         raw->courseAccuracy     = tel.crsAcc;
+        raw->timestamp          = unifiedTs;
         objc_setAssociatedObject(loc, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -26197,10 +26177,9 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     raw->course         = tel.course;
     raw->rawCourse      = tel.course;
     raw->courseAccuracy = tel.crsAcc;
+    // 核心修复：将同一打卡窗口内的所有硬件帧时间戳锁定为同一个快照时间戳，确保 t1 == t2 恒成立！
+    raw->timestamp      = unifiedTs;
 
-    if (raw->timestamp <= 0.0 || fabs(CFAbsoluteTimeGetCurrent() - raw->timestamp) > 15.0) {
-        raw->timestamp = CFAbsoluteTimeGetCurrent();
-    }
     if (agIsAntiDetectionShieldActive()) {
         if (raw->confidence <= 0) raw->confidence = 68;
         if (raw->lifespan <= 0.0) raw->lifespan = 20.0;
@@ -26210,8 +26189,8 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
 
     static NSUInteger sMutateLogCnt = 0;
     if (++sMutateLogCnt <= 8) {
-        agClientDiagLogQueued([NSString stringWithFormat:@"MUTATE_OK #%lu (%.5f,%.5f) hAcc=%.4f spd=%.2f",
-                               (unsigned long)sMutateLogCnt, raw->coordinate.latitude, raw->coordinate.longitude, raw->horizontalAccuracy, raw->speed]);
+        agClientDiagLogQueued([NSString stringWithFormat:@"MUTATE_OK #%lu (%.5f,%.5f) hAcc=%.4f ts=%.2f",
+                               (unsigned long)sMutateLogCnt, raw->coordinate.latitude, raw->coordinate.longitude, raw->horizontalAccuracy, raw->timestamp]);
     }
 }
 
@@ -26271,20 +26250,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 %end
 
-%hook UILabel
-- (void)setText:(NSString *)text {
-    if (agIsRiskPopupString(text)) agCaptureAndLogPopupCallStack(text, "UILabel");
-    %orig(text);
-}
-%end
-
-%hook WKWebView
-- (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id, NSError *))completionHandler {
-    if (agIsRiskPopupString(javaScriptString)) agCaptureAndLogPopupCallStack(javaScriptString, "WKWebView.JS");
-    %orig(javaScriptString, completionHandler);
-}
-%end
-
 %hook UIApplication
 - (BOOL)canOpenURL:(NSURL *)url {
     if (url && agIsEnvironmentStealthActive()) {
@@ -26315,28 +26280,28 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 %hook CLLocation
 - (instancetype)initWithLatitude:(CLLocationDegrees)latitude longitude:(CLLocationDegrees)longitude {
     CLLocation *instance = %orig(latitude, longitude);
-    if (instance && !sIsCreatingInternalSpoofLocation && agIsCoordinateMatchingExpectedGCJ(latitude, longitude)) {
+    if (instance && !sIsCreatingInternalSpoofLocation) {
         objc_setAssociatedObject(instance, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN);
     }
     return instance;
 }
 - (instancetype)initWithCoordinate:(CLLocationCoordinate2D)coordinate altitude:(CLLocationDistance)altitude horizontalAccuracy:(CLLocationAccuracy)hAccuracy verticalAccuracy:(CLLocationAccuracy)vAccuracy timestamp:(NSDate *)timestamp {
     CLLocation *instance = %orig(coordinate, altitude, hAccuracy, vAccuracy, timestamp);
-    if (instance && !sIsCreatingInternalSpoofLocation && agIsCoordinateMatchingExpectedGCJ(coordinate.latitude, coordinate.longitude)) {
+    if (instance && !sIsCreatingInternalSpoofLocation) {
         objc_setAssociatedObject(instance, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN);
     }
     return instance;
 }
 - (instancetype)initWithCoordinate:(CLLocationCoordinate2D)coordinate altitude:(CLLocationDistance)altitude horizontalAccuracy:(CLLocationAccuracy)hAccuracy verticalAccuracy:(CLLocationAccuracy)vAccuracy course:(CLLocationDirection)course speed:(CLLocationSpeed)speed timestamp:(NSDate *)timestamp {
     CLLocation *instance = %orig(coordinate, altitude, hAccuracy, vAccuracy, course, speed, timestamp);
-    if (instance && !sIsCreatingInternalSpoofLocation && agIsCoordinateMatchingExpectedGCJ(coordinate.latitude, coordinate.longitude)) {
+    if (instance && !sIsCreatingInternalSpoofLocation) {
         objc_setAssociatedObject(instance, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN);
     }
     return instance;
 }
 - (instancetype)initWithCoordinate:(CLLocationCoordinate2D)coordinate altitude:(CLLocationDistance)altitude horizontalAccuracy:(CLLocationAccuracy)hAccuracy verticalAccuracy:(CLLocationAccuracy)vAccuracy course:(CLLocationDirection)course courseAccuracy:(CLLocationDirectionAccuracy)courseAccuracy speed:(CLLocationSpeed)speed speedAccuracy:(CLLocationSpeedAccuracy)speedAccuracy timestamp:(NSDate *)timestamp {
     CLLocation *instance = %orig(coordinate, altitude, hAccuracy, vAccuracy, course, courseAccuracy, speed, speedAccuracy, timestamp);
-    if (instance && !sIsCreatingInternalSpoofLocation && agIsCoordinateMatchingExpectedGCJ(coordinate.latitude, coordinate.longitude)) {
+    if (instance && !sIsCreatingInternalSpoofLocation) {
         objc_setAssociatedObject(instance, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN);
     }
     return instance;
@@ -26390,48 +26355,48 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     return %orig;
 }
 - (CLLocationAccuracy)horizontalAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.hAcc;
     }
     return %orig;
 }
 - (CLLocationAccuracy)verticalAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.vAcc;
     }
     return %orig;
 }
 - (CLLocationDirection)course {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.course;
     }
     return %orig;
 }
 - (CLLocationSpeed)speed {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.speed;
     }
     return %orig;
 }
 - (CLLocationSpeedAccuracy)speedAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.spdAcc;
     }
     return %orig;
 }
 - (CLLocationDirectionAccuracy)courseAccuracy {
-    if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (!agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) agMutateLocationInternalInPlace(self);
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.crsAcc;
     }
@@ -26440,12 +26405,11 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 - (NSDate *)timestamp {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         agMutateLocationInternalInPlace(self);
+        if (sLastTelemetryTime > 0.0) {
+            return [NSDate dateWithTimeIntervalSinceReferenceDate:sLastTelemetryTime];
+        }
     }
-    NSDate *origDate = %orig;
-    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self)) {
-        return (origDate && fabs([origDate timeIntervalSinceNow]) < 30.0) ? origDate : [NSDate date];
-    }
-    return origDate;
+    return %orig;
 }
 - (CLLocationSourceInformation *)sourceInformation {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
@@ -26540,8 +26504,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 static IMP gOrig_CLLoc_clientLoc = NULL;
 static Method gDynMethod_CLLoc_clientLoc = NULL;
-static IMP gOrig_CLLoc_initClientLoc = NULL;
-static Method gDynMethod_CLLoc_initClientLoc = NULL;
 
 typedef struct {
     const char *clsName;
@@ -26612,51 +26574,6 @@ static BOOL agDyn_AMap_requestLocationWithReGeocode(id self, SEL _cmd, BOOL with
     return gRiskClassSlots[0].origReqLoc ? ((BOOL(*)(id, SEL, BOOL, id))gRiskClassSlots[0].origReqLoc)(self, _cmd, withReGeocode, safeBlock) : NO;
 }
 
-static id agDyn_CLLoc_initWithClientLocation(CLLocation *self, SEL _cmd, AGCLDaemonLocation clientLoc) {
-    BOOL isAMapGCJ = NO;
-    if (agIsCurrentProcessTargetedForLocSpoof() && !sIsCreatingInternalSpoofLocation) {
-        AGSpoofedTelemetry tel;
-        if (agGetCurrentSpoofedTelemetry(&tel) && tel.valid) {
-            if (agIsCoordinateMatchingExpectedGCJ(clientLoc.coordinate.latitude, clientLoc.coordinate.longitude)) {
-                isAMapGCJ = YES;
-                clientLoc.fromSimulationController = NO;
-                if (clientLoc.type <= 0 || clientLoc.type > 2) clientLoc.type = 1;
-                if (clientLoc.integrity == 0) clientLoc.integrity = 50;
-                clientLoc.horizontalAccuracy = tel.hAcc;
-                clientLoc.verticalAccuracy   = tel.vAcc;
-                clientLoc.speed              = tel.speed;
-                clientLoc.speedAccuracy      = tel.spdAcc;
-                clientLoc.course             = tel.course;
-                clientLoc.rawCourse          = tel.course;
-                clientLoc.courseAccuracy     = tel.crsAcc;
-            } else {
-                clientLoc.coordinate.latitude = tel.lat;
-                clientLoc.coordinate.longitude = tel.lon;
-                clientLoc.rawCoordinate.latitude = tel.lat;
-                clientLoc.rawCoordinate.longitude = tel.lon;
-                clientLoc.fromSimulationController = NO;
-                if (clientLoc.type <= 0 || clientLoc.type > 2) clientLoc.type = 1;
-                if (clientLoc.integrity == 0) clientLoc.integrity = 50;
-                if (clientLoc.suitability <= 0) clientLoc.suitability = 1;
-                clientLoc.horizontalAccuracy = tel.hAcc;
-                clientLoc.verticalAccuracy   = tel.vAcc;
-                clientLoc.altitude = tel.alt;
-                clientLoc.ellipsoidalAltitude = tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
-                clientLoc.speed          = tel.speed;
-                clientLoc.speedAccuracy  = tel.spdAcc;
-                clientLoc.course         = tel.course;
-                clientLoc.rawCourse      = tel.course;
-                clientLoc.courseAccuracy = tel.crsAcc;
-            }
-        }
-    }
-    id instance = gOrig_CLLoc_initClientLoc ? ((id(*)(id, SEL, AGCLDaemonLocation))gOrig_CLLoc_initClientLoc)(self, _cmd, clientLoc) : nil;
-    if (instance && agIsCurrentProcessTargetedForLocSpoof() && !sIsCreatingInternalSpoofLocation) {
-        objc_setAssociatedObject(instance, isAMapGCJ ? kAGAppCreatedCustomLocationKey : kAGInternalMutatedLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    return instance;
-}
-
 static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         agMutateLocationInternalInPlace(self);
@@ -26665,22 +26582,11 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
     memset(&raw, 0, sizeof(raw));
     if (gOrig_CLLoc_clientLoc) raw = ((AGCLDaemonLocation(*)(id, SEL))gOrig_CLLoc_clientLoc)(self, _cmd);
     if (agIsCurrentProcessTargetedForLocSpoof()) {
-        AGSpoofedTelemetry tel;
         if (agIsInAppCustomConstructedLocation(self)) {
             raw.fromSimulationController = NO;
-            if (raw.type <= 0 || raw.type > 2) raw.type = 1;
-            if (raw.integrity == 0) raw.integrity = 50;
-            if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
-                raw.horizontalAccuracy = tel.hAcc;
-                raw.verticalAccuracy   = tel.vAcc;
-                raw.speed              = tel.speed;
-                raw.speedAccuracy      = tel.spdAcc;
-                raw.course             = tel.course;
-                raw.rawCourse          = tel.course;
-                raw.courseAccuracy     = tel.crsAcc;
-            }
             return raw;
         }
+        AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             raw.coordinate.latitude = tel.lat;
             raw.coordinate.longitude = tel.lon;
@@ -26699,6 +26605,7 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
             raw.course         = tel.course;
             raw.rawCourse      = tel.course;
             raw.courseAccuracy = tel.crsAcc;
+            raw.timestamp      = (sLastTelemetryTime > 0.0) ? sLastTelemetryTime : CFAbsoluteTimeGetCurrent();
         }
     }
     return raw;
@@ -26751,8 +26658,6 @@ typedef struct {
 static AGMethodIMPBackup gClientHookTable[] = {
     {"NSObject", "methodForSelector:", NO, YES, NULL, NULL, NULL},
     {"NSObject", "instanceMethodForSelector:", YES, YES, NULL, NULL, NULL},
-    {"UILabel", "setText:", NO, NO, NULL, NULL, NULL},
-    {"WKWebView", "evaluateJavaScript:completionHandler:", NO, NO, NULL, NULL, NULL},
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
@@ -26762,7 +26667,7 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CLLocation", "verticalAccuracy", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speedAccuracy", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "courseAccuracy", NO, NO, NULL, NULL, NULL},
-    {"CLLocation", "timestamp", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "timestamp", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "sourceInformation", NO, NO, NULL, NULL, NULL},
     {"NEHotspotNetwork", "SSID", NO, YES, NULL, NULL, NULL},
     {"NEHotspotNetwork", "BSSID", NO, YES, NULL, NULL, NULL},
@@ -26794,7 +26699,6 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const cha
     if (!addr) return NULL;
     uintptr_t cleanAddr = ((uintptr_t)addr & 0x0000007fffffffffULL);
     if (gOrig_CLLoc_clientLoc && cleanAddr == ((uintptr_t)agDyn_CLLoc_clientLoc & 0x0000007fffffffffULL)) return (const void *)gOrig_CLLoc_clientLoc;
-    if (gOrig_CLLoc_initClientLoc && cleanAddr == ((uintptr_t)agDyn_CLLoc_initWithClientLocation & 0x0000007fffffffffULL)) return (const void *)gOrig_CLLoc_initClientLoc;
     if (cleanAddr == ((uintptr_t)agDyn_Risk_detectRiskGetter & 0x0000007fffffffffULL) && gRiskClassSlots[0].origGet) return (const void *)gRiskClassSlots[0].origGet;
     if (cleanAddr == ((uintptr_t)agDyn_Risk_setDetectRiskSetter & 0x0000007fffffffffULL) && gRiskClassSlots[0].origSet) return (const void *)gRiskClassSlots[0].origSet;
     if (cleanAddr == ((uintptr_t)agDyn_AMap_requestLocationWithReGeocode & 0x0000007fffffffffULL) && gRiskClassSlots[0].origReqLoc) return (const void *)gRiskClassSlots[0].origReqLoc;
@@ -26881,19 +26785,10 @@ static void agOnAppMachOImageAdded(const struct mach_header *header, intptr_t sl
 static void agInstallEnvStealthCHooksIfNeeded(void) {
     if (gHasInstalledEnvStealthCHooks || !agIsEnvironmentStealthActive()) return;
     gHasInstalledEnvStealthCHooks = YES;
-    void *symDl = dlsym(RTLD_DEFAULT, "dladdr");
-    if (symDl) MSHookFunction(symDl, (void *)hooked_dladdr, (void **)&orig_dladdr);
-    if (!orig_dladdr) orig_dladdr = (int (*)(const void *, Dl_info *))symDl;
-
-    void *symMImp = dlsym(RTLD_DEFAULT, "method_getImplementation");
-    if (symMImp) MSHookFunction(symMImp, (void *)hooked_method_getImplementation, (void **)&orig_method_getImplementation);
-    if (!orig_method_getImplementation) orig_method_getImplementation = (IMP (*)(Method))symMImp;
-
-    void *symCImp = dlsym(RTLD_DEFAULT, "class_getMethodImplementation");
-    if (symCImp) MSHookFunction(symCImp, (void *)hooked_class_getMethodImplementation, (void **)&orig_class_getMethodImplementation);
-    if (!orig_class_getMethodImplementation) orig_class_getMethodImplementation = (IMP (*)(Class, SEL))symCImp;
-
+    orig_dladdr = (int (*)(const void *, Dl_info *))dlsym(RTLD_DEFAULT, "dladdr");
     orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))dlsym(RTLD_DEFAULT, "CNCopyCurrentNetworkInfo");
+    orig_method_getImplementation = (IMP (*)(Method))dlsym(RTLD_DEFAULT, "method_getImplementation");
+    orig_class_getMethodImplementation = (IMP (*)(Class, SEL))dlsym(RTLD_DEFAULT, "class_getMethodImplementation");
     orig_dyld_image_count = (uint32_t (*)(void))dlsym(RTLD_DEFAULT, "_dyld_image_count");
     orig_dyld_get_image_name = (const char *(*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
     orig_dyld_get_image_header = (const struct mach_header *(*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
@@ -26943,9 +26838,6 @@ static void agSyncClientHooksWithCurrentState(void) {
                 gDynMethod_CLLoc_clientLoc = class_getInstanceMethod(clLocCls, selClientLoc);
                 if (gDynMethod_CLLoc_clientLoc) gOrig_CLLoc_clientLoc = orig_method_getImplementation ? orig_method_getImplementation(gDynMethod_CLLoc_clientLoc) : method_getImplementation(gDynMethod_CLLoc_clientLoc);
             }
-            SEL selInitClientLoc = sel_registerName("initWithClientLocation:");
-            gDynMethod_CLLoc_initClientLoc = class_getInstanceMethod(clLocCls, selInitClientLoc);
-            if (gDynMethod_CLLoc_initClientLoc) gOrig_CLLoc_initClientLoc = orig_method_getImplementation ? orig_method_getImplementation(gDynMethod_CLLoc_initClientLoc) : method_getImplementation(gDynMethod_CLLoc_initClientLoc);
         }
         SEL selGetRisk = sel_registerName("detectRiskOfFakeLocation");
         SEL selSetRisk = sel_registerName("setDetectRiskOfFakeLocation:");
@@ -26973,9 +26865,6 @@ static void agSyncClientHooksWithCurrentState(void) {
     }
     if (gDynMethod_CLLoc_clientLoc && gOrig_CLLoc_clientLoc) {
         method_setImplementation(gDynMethod_CLLoc_clientLoc, spoofActive ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc);
-    }
-    if (gDynMethod_CLLoc_initClientLoc && gOrig_CLLoc_initClientLoc) {
-        method_setImplementation(gDynMethod_CLLoc_initClientLoc, spoofActive ? (IMP)agDyn_CLLoc_initWithClientLocation : gOrig_CLLoc_initClientLoc);
     }
     for (size_t i = 0; i < kAGRiskClassSlotCount; i++) {
         if (gRiskClassSlots[i].mGet && gRiskClassSlots[i].origGet) {
