@@ -26849,7 +26849,7 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
             raw.rawCoordinate.latitude = tel.lat;
             raw.rawCoordinate.longitude = tel.lon;
             raw.fromSimulationController = NO;
-            if (raw.type <= 0 || raw->type > 2) raw.type = 1;
+            if (raw.type <= 0 || raw.type > 2) raw.type = 1;
             if (raw.integrity == 0) raw.integrity = 50;
             if (raw.suitability <= 0) raw.suitability = 1;
 
