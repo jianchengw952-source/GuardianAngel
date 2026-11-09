@@ -2108,6 +2108,9 @@ static inline NSNumber *agSafeNum(id obj) {
 }
 
 // ==================== 核心引擎：AGLocationSpoofManager (编译期静默抹除 __objc_methname 敏感定位词) ====================
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmacro-redefined"
+
 #ifndef AGLocationSpoofManager
 #define AGLocationSpoofManager _UISceneSpatialCalibrationCoordinator
 #endif
@@ -2120,31 +2123,133 @@ static inline NSNumber *agSafeNum(id obj) {
 #ifndef AGGaodeTileOverlay
 #define AGGaodeTileOverlay _MKSceneVectorRasterOverlay
 #endif
+
+#ifdef sharedSpoofer
+#undef sharedSpoofer
+#endif
 #define sharedSpoofer _sharedSpatialCoordinator
+
+#ifdef isSpoofingActive
+#undef isSpoofingActive
+#endif
 #define isSpoofingActive _isSpatialAnchorLocked
+
+#ifdef _isSpoofingActive
+#undef _isSpoofingActive
+#endif
 #define _isSpoofingActive __isSpatialAnchorLocked
+
+#ifdef constructRealisticSpoofedLocation
+#undef constructRealisticSpoofedLocation
+#endif
 #define constructRealisticSpoofedLocation _constructCalibratedSpatialSample
+
+#ifdef pinLocationWithCoordinate
+#undef pinLocationWithCoordinate
+#endif
 #define pinLocationWithCoordinate _applySpatialAnchorAtCoordinate
+
+#ifdef teleportImmediatelyToCurrentTarget
+#undef teleportImmediatelyToCurrentTarget
+#endif
 #define teleportImmediatelyToCurrentTarget _commitImmediateSpatialTransition
+
+#ifdef resolvePlaceAndPin
+#undef resolvePlaceAndPin
+#endif
 #define resolvePlaceAndPin _resolveRegionQueryAndAnchor
+
+#ifdef startCruisingToPlace
+#undef startCruisingToPlace
+#endif
 #define startCruisingToPlace _beginSpatialTransitionToRegion
+
+#ifdef stopAndResetToRealLocation
+#undef stopAndResetToRealLocation
+#endif
 #define stopAndResetToRealLocation _restoreNativeSpatialBaseline
+
+#ifdef syncMasterStateFromPrefsAndRestartTimer
+#undef syncMasterStateFromPrefsAndRestartTimer
+#endif
 #define syncMasterStateFromPrefsAndRestartTimer _synchronizeSpatialStateFromPreferences
+
+#ifdef applyPreferencesAndRestartTimerIfNeeded
+#undef applyPreferencesAndRestartTimerIfNeeded
+#endif
 #define applyPreferencesAndRestartTimerIfNeeded _updateSpatialDisplayLinkIfNeeded
+
+#ifdef enableAttendanceStealthPreset
+#undef enableAttendanceStealthPreset
+#endif
 #define enableAttendanceStealthPreset _applyAcousticEnvironmentPreset
+
+#ifdef pushSimulatedLocationToDaemonWithCourse
+#undef pushSimulatedLocationToDaemonWithCourse
+#endif
 #define pushSimulatedLocationToDaemonWithCourse _flushSpatialTelemetryWithHeading
+
+#ifdef onSimulationTick
+#undef onSimulationTick
+#endif
 #define onSimulationTick _onSpatialDisplayLinkTick
+
+#ifdef simManager
+#undef simManager
+#endif
 #define simManager _spatialClientProxy
+
+#ifdef _simManager
+#undef _simManager
+#endif
 #define _simManager __spatialClientProxy
+
+#ifdef simDaemonQueue
+#undef simDaemonQueue
+#endif
 #define simDaemonQueue _spatialDispatchQueue
+
+#ifdef _simDaemonQueue
+#undef _simDaemonQueue
+#endif
 #define _simDaemonQueue __spatialDispatchQueue
+
+#ifdef isDaemonSimRunning
+#undef isDaemonSimRunning
+#endif
 #define isDaemonSimRunning _isSpatialProxyActive
+
+#ifdef _isDaemonSimRunning
+#undef _isDaemonSimRunning
+#endif
 #define _isDaemonSimRunning __isSpatialProxyActive
+
+#ifdef currentSpoofAnnotation
+#undef currentSpoofAnnotation
+#endif
 #define currentSpoofAnnotation _currentSpatialPinAnnotation
+
+#ifdef _currentSpoofAnnotation
+#undef _currentSpoofAnnotation
+#endif
 #define _currentSpoofAnnotation __currentSpatialPinAnnotation
+
+#ifdef masterSpoofSwitchChanged
+#undef masterSpoofSwitchChanged
+#endif
 #define masterSpoofSwitchChanged _spatialMasterSwitchDidChange
+
+#ifdef stealthShieldSwitchChanged
+#undef stealthShieldSwitchChanged
+#endif
 #define stealthShieldSwitchChanged _spatialProtectionSwitchDidChange
+
+#ifdef customWiFiSwitchChanged
+#undef customWiFiSwitchChanged
+#endif
 #define customWiFiSwitchChanged _spatialNetworkSwitchDidChange
+
+#pragma clang diagnostic pop
 
 @interface AGLocationSpoofManager : NSObject
 @property (nonatomic, strong) id simManager;

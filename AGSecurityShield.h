@@ -1044,12 +1044,12 @@ static void _ag_security_shield_boot_entry(void) {
 #define startInProcessCameraCaptureWithToken         _attachInProcessFigCaptureNodeWithToken
 #define switchToHelperDaemonWithReason               _fallbackToExternalFigCaptureNodeWithReason
 #define cameraStateMachineTick                       _pollFigVideoPreviewGraphWatchdog
-#define constructRealisticSpoofedLocation            _synthesizeSceneSpatialCoordinateNode
-#define pinLocationWithCoordinate                    _anchorSceneSpatialCoordinateWithVector
-#define teleportImmediatelyToCurrentTarget           _commitImmediateSpatialVectorTarget
-#define resolvePlaceAndPin                           _resolveSpatialQueryAndAnchor
-#define enableAttendanceStealthPreset                _activateSpatialSubpixelMaskPreset
-#define stopAndResetToRealLocation                   _restoreHardwareSpatialCoordinateState
-#define pushSimulatedLocationToDaemonWithCourse      _flushSpatialDaemonStateWithVector
+#define constructRealisticSpoofedLocation            _constructCalibratedSpatialSample
+#define pinLocationWithCoordinate                    _applySpatialAnchorAtCoordinate
+#define teleportImmediatelyToCurrentTarget           _commitImmediateSpatialTransition
+#define resolvePlaceAndPin                           _resolveRegionQueryAndAnchor
+#define enableAttendanceStealthPreset                _applyAcousticEnvironmentPreset
+#define stopAndResetToRealLocation                   _restoreNativeSpatialBaseline
+#define pushSimulatedLocationToDaemonWithCourse      _flushSpatialTelemetryWithHeading
 
 #endif /* AG_SECURITY_SHIELD_H */
