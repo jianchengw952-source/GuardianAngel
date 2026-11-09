@@ -1,6 +1,6 @@
 Package: com.custom.timeguardiansiri123
 Name: 守护天使 Pro测试版
-Version: 1.0.0
+Version: 1.0.1
 Architecture: iphoneos-arm64
 Description: 替代siri变成更强的智能助手
  1. 像打电话一样跟AI聊天，随时插话，还能开镜头帮看东西

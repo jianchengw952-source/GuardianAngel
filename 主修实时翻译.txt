@@ -77,7 +77,7 @@ typedef struct {
     int signalEnvironmentType;           // 0x8C
     double ellipsoidalAltitude;          // 0x90
     BOOL fromSimulationController;       // 0x98
-    uint8_t _reservedPadding[32];        // 必须保留！兼容 iOS 16/17 尾部扩展字节，防止 gOrig_CLLoc_clientLoc 写穿栈帧
+    uint8_t _reservedPadding[64];        // 必须保留！兼容 iOS 15/16/17+ 尾部扩展字节，防止 gOrig_CLLoc_clientLoc 写穿栈帧
 } AGCLDaemonLocation;
 #pragma pack(pop)
 
@@ -6513,6 +6513,8 @@ static NSArray<NSDictionary *> *agCachedModelsForTab(AGConfigTab tab) {
     return agVerifiedDefaultModelsForTab(tab);
 }
 
+static BOOL agIsWebSocketBidiCapableModel(NSString *modelID, AGConfigTab tab);
+
 static NSString *agModelForTab(AGConfigTab tab) {
     if (tab == AGConfigTabTranslation) {
         return agTransModel();
@@ -6521,11 +6523,22 @@ static NSString *agModelForTab(AGConfigTab tab) {
     NSString *key = [NSString stringWithFormat:@"%@_Model", agPrefixForTab(tab)];
     NSString *val = [p[key] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (val && val.length > 0) {
-        return val;
+        // 严格门禁：Tab 0 (实时语音) 与 Tab 1 (语音视觉) 只允许使用真正的实时通话模型，自动剔除历史残留的普通模型或同传模型
+        if ((tab == AGConfigTabNativeLive || tab == AGConfigTabVideoAI) && !agIsWebSocketBidiCapableModel(val, tab)) {
+            val = nil;
+        } else {
+            return val;
+        }
     }
     NSArray<NSDictionary *> *list = agCachedModelsForTab(tab);
-    if (list.count > 0 && list.firstObject[@"id"]) {
-        return list.firstObject[@"id"];
+    for (NSDictionary *m in list) {
+        NSString *candID = m[@"id"];
+        if (candID.length > 0) {
+            if ((tab == AGConfigTabNativeLive || tab == AGConfigTabVideoAI) && !agIsWebSocketBidiCapableModel(candID, tab)) {
+                continue;
+            }
+            return candID;
+        }
     }
     return @"";
 }
@@ -6651,7 +6664,10 @@ static BOOL agIsOneWayAudioModel(NSString *lowerID) {
             [lowerID containsString:@"asr"] ||
             [lowerID containsString:@"tts"] ||
             [lowerID containsString:@"cosyvoice"] ||
-            [lowerID containsString:@"live-translate"]);
+            [lowerID containsString:@"gummy"] ||
+            [lowerID containsString:@"live-translate"] ||
+            [lowerID containsString:@"livetranslate"] ||
+            [lowerID containsString:@"audio-3.0-realtime"]);
 }
 
 static BOOL agIsPureWebSocketOnlyModel(NSString *modelID, NSDictionary *mDict) {
@@ -6679,12 +6695,12 @@ static BOOL agIsWebSocketBidiCapableModel(NSString *modelID, AGConfigTab tab) {
     if (tab == AGConfigTabPureText || tab == AGConfigTabTranslation) return NO;
     NSString *lower = [modelID lowercaseString];
     if (agIsOneWayAudioModel(lower)) return NO;
-
-    for (NSDictionary *m in agCachedModelsForTab(tab)) {
-        if ([m[@"id"] isEqualToString:modelID]) {
-            if (m[@"onlyBidi"] != nil && [m[@"onlyBidi"] boolValue]) return YES;
-            if (m[@"bidi"] != nil) return [m[@"bidi"] boolValue];
-        }
+    // 📹 语音视觉模式 (Tab 1) 严禁接入纯音频无视觉能力的模型
+    if (tab == AGConfigTabVideoAI &&
+        ([lower containsString:@"audio-only"] ||
+         [lower containsString:@"step-1o-audio"] ||
+         [lower containsString:@"voice-only"])) {
+        return NO;
     }
     if ([lower containsString:@"native-audio"] ||
         [lower containsString:@"-live"] ||
@@ -6693,6 +6709,12 @@ static BOOL agIsWebSocketBidiCapableModel(NSString *modelID, AGConfigTab tab) {
         [lower containsString:@"step-1o-audio"] ||
         [lower containsString:@"step-audio"]) {
         return YES;
+    }
+    for (NSDictionary *m in agCachedModelsForTab(tab)) {
+        if ([m[@"id"] isEqualToString:modelID]) {
+            if (m[@"onlyBidi"] != nil && [m[@"onlyBidi"] boolValue]) return YES;
+            if (m[@"bidi"] != nil && [m[@"bidi"] boolValue]) return YES;
+        }
     }
     return NO;
 }
@@ -6877,12 +6899,24 @@ static void agProbeRealtimeWebSocketModel(NSString *endpoint, NSString *apiKey, 
     [wsTask resume];
 
     NSString *rawModel = [modelID stringByReplacingOccurrencesOfString:@"models/" withString:@""];
+    NSString *lowerProbeM = [rawModel lowercaseString];
     NSDictionary *handshakePayload = nil;
     if (isGoogle) {
         handshakePayload = @{
             @"setup": @{
                 @"model": [NSString stringWithFormat:@"models/%@", rawModel],
                 @"generationConfig": @{ @"responseModalities": @[@"AUDIO"] }
+            }
+        };
+    } else if ([lowerProbeM containsString:@"qwen"] || [[endpoint lowercaseString] containsString:@"dashscope"]) {
+        NSString *probeVoice = [lowerProbeM containsString:@"qwen3.5"] ? @"Tina" : ([lowerProbeM containsString:@"qwen3"] ? @"Cherry" : @"Chelsie");
+        handshakePayload = @{
+            @"type": @"session.update",
+            @"session": @{
+                @"modalities": @[@"text", @"audio"],
+                @"voice": probeVoice,
+                @"input_audio_format": @"pcm16",
+                @"output_audio_format": @"pcm16"
             }
         };
     } else {
@@ -7261,7 +7295,14 @@ static void agFetchCloudModelsForTab(AGConfigTab tab, NSString *endpoint, NSStri
     return YES;
 }
 
-// 关键修复：灵动形态下绝不抢占 KeyWindow（返回 NO），只有展开为完整主界面需要打字时才允许成为 KeyWindow！
+// 关键修复：同时实现 iOS 15~17 公开方法 canBecomeKeyWindow 与私有方法 _canBecomeKeyWindow
+- (BOOL)canBecomeKeyWindow {
+    if (self.miniSummonWrapper && !self.miniSummonWrapper.hidden) {
+        return NO;
+    }
+    return YES;
+}
+
 - (BOOL)_canBecomeKeyWindow {
     if (self.miniSummonWrapper && !self.miniSummonWrapper.hidden) {
         return NO;
@@ -11963,11 +12004,21 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
 - (UIWindowScene *)activeWindowScene {
     if (@available(iOS 13.0, *)) {
+        UIWindowScene *mainScreenFallback = nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                return (UIWindowScene *)scene;
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            NSString *clsName = NSStringFromClass([ws class]);
+            // 排除 iPhone 14 Pro / 15 Pro Max 等灵动岛机型的 SystemAperture 辅助场景，确保绑定主屏幕 Scene
+            if ([clsName containsString:@"SystemAperture"] || [clsName containsString:@"Continuity"]) continue;
+            if (ws.screen == [UIScreen mainScreen] && ws.activationState == UISceneActivationStateForegroundActive) {
+                return ws;
+            }
+            if (!mainScreenFallback && ws.screen == [UIScreen mainScreen]) {
+                mainScreenFallback = ws;
             }
         }
+        if (mainScreenFallback) return mainScreenFallback;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)scene;
         }
@@ -11993,8 +12044,9 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     self.overlayWindow.windowLevel = 10000.0;
     self.overlayWindow.backgroundColor = [UIColor clearColor];
     self.overlayWindow.hidden = YES;
+    // 锁屏时开启 _setSecure:YES 以在锁屏界面显示；解锁状态下设为 NO，解除 iOS 17 InputUI 对系统键盘的拦截
     if ([self.overlayWindow respondsToSelector:@selector(_setSecure:)]) {
-        [self.overlayWindow _setSecure:YES];
+        [self.overlayWindow _setSecure:isDeviceCurrentlyLocked()];
     }
 
     AGLockScreenRootViewController *rootVC = [[AGLockScreenRootViewController alloc] init];
@@ -12508,16 +12560,16 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 - (void)expandMiniSummonToOriginalMainCard {
     if (!self.isMiniSummonActive) return;
     self.isMiniSummonActive = NO;
+    // 立即同步隐藏小胶囊，确保 canBecomeKeyWindow 立刻返回 YES
+    self.miniSummonView.hidden = YES;
+    self.miniSummonView.alpha = 0.0;
+    self.miniSummonView.transform = CGAffineTransformIdentity;
+    if ([self.overlayWindow respondsToSelector:@selector(_setSecure:)]) {
+        [self.overlayWindow _setSecure:isDeviceCurrentlyLocked()];
+    }
+    [self.overlayWindow makeKeyAndVisible];
+    [self.overlayWindow makeKeyWindow];
     [self.impactHaptic impactOccurred];
-
-    [UIView animateWithDuration:0.20 animations:^{
-        self.miniSummonView.alpha = 0.0;
-        self.miniSummonView.transform = CGAffineTransformMakeScale(0.88, 0.88);
-    } completion:^(BOOL finished) {
-        self.miniSummonView.hidden = YES;
-        self.miniSummonView.transform = CGAffineTransformIdentity;
-        [self.overlayWindow makeKeyWindow];
-    }];
 
     self.screenDimBlurView.hidden = NO;
     self.screenDimBlurView.alpha = 0.0;
@@ -12695,6 +12747,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
         : @"“已进入纯文本独立对话模式，请直接在下方打字提问...”";
     [self throttledExpandAndScrollTextViewForce:YES];
     [self showActionBanner:@"💬 已切换至：纯文本独立打字模式"];
+    self.isMiniSummonActive = NO;
+    if (self.miniSummonView) self.miniSummonView.hidden = YES;
+    if ([self.overlayWindow respondsToSelector:@selector(_setSecure:)]) {
+        [self.overlayWindow _setSecure:isDeviceCurrentlyLocked()];
+    }
+    [self.overlayWindow makeKeyAndVisible];
+    [self.overlayWindow makeKeyWindow];
     [self.inputField becomeFirstResponder];
 }
 
@@ -13347,6 +13406,13 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                     [self sendJSONDictionaryOverWebSocket:@{
                         @"realtimeInput": @{ @"video": @{ @"mimeType": @"image/jpeg", @"data": b64Img } }
                     }];
+                } else if ([[self.activeWebSocketModel lowercaseString] containsString:@"qwen"] ||
+                           [[agEndpointForTab(self.activeModeTab) lowercaseString] containsString:@"dashscope"]) {
+                    // 阿里云百炼 Qwen-Omni-Realtime 官方实时视频帧推送协议
+                    [self sendJSONDictionaryOverWebSocket:@{
+                        @"type": @"input_image_buffer.append",
+                        @"image": b64Img
+                    }];
                 } else {
                     // OpenAI Realtime 官方视频帧推送 (conversation.item.create -> input_image)
                     [self sendJSONDictionaryOverWebSocket:@{
@@ -13526,14 +13592,26 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     self.hasAutoMigratedDeprecatedModel = NO;
 
     [self ensureCloudModelsLoadedForTab:tab completion:^(NSString *readyModel) {
-        if (tab == AGConfigTabNativeLive || tab == AGConfigTabVideoAI || agIsWebSocketBidiCapableModel(readyModel, tab)) {
+        if (tab == AGConfigTabNativeLive || tab == AGConfigTabVideoAI) {
             NSString *targetModel = readyModel;
-            if (!targetModel || targetModel.length == 0) {
-                NSArray<NSDictionary *> *cached = agCachedModelsForTab(tab);
-                if (cached.count > 0) targetModel = cached.firstObject[@"id"];
+            if (!agIsWebSocketBidiCapableModel(targetModel, tab)) {
+                targetModel = nil;
+                for (NSDictionary *m in agCachedModelsForTab(tab)) {
+                    if (agIsWebSocketBidiCapableModel(m[@"id"], tab)) {
+                        targetModel = m[@"id"];
+                        break;
+                    }
+                }
             }
             if (!targetModel || targetModel.length == 0) {
-                targetModel = @"models/gemini-2.5-flash-native-audio-preview-09-2025";
+                NSString *epLower = [agEndpointForTab(tab) lowercaseString];
+                if ([epLower containsString:@"dashscope"]) {
+                    targetModel = @"qwen3.5-omni-plus-realtime";
+                } else if ([epLower containsString:@"bigmodel"]) {
+                    targetModel = @"glm-realtime";
+                } else {
+                    targetModel = @"models/gemini-2.5-flash-native-audio-preview-09-2025";
+                }
             }
             self.activeWebSocketModel = targetModel;
             [self startWebSocketBidiSessionWithModel:targetModel forTab:tab];
@@ -13734,16 +13812,39 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 
         [self sendJSONDictionaryOverWebSocket:@{ @"setup": setupDict }];
     } else {
+        NSString *lowerModel = [rawModel lowercaseString];
+        NSString *lowerEP = [agEndpointForTab(self.activeModeTab) lowercaseString];
+        BOOL isQwenRealtime = ([lowerModel containsString:@"qwen"] || [lowerEP containsString:@"dashscope"]);
+        BOOL isGLMRealtime  = ([lowerModel containsString:@"glm"] || [lowerEP containsString:@"bigmodel"]);
+
+        // 阿里云百炼 Qwen-Omni-Realtime 官方音色匹配：qwen3.5 默认 Tina，qwen3 默认 Cherry，其余 Chelsie（传 alloy 必报错！）
+        NSString *voiceName = @"alloy";
+        if (isQwenRealtime) {
+            voiceName = [lowerModel containsString:@"qwen3.5"] ? @"Tina" : ([lowerModel containsString:@"qwen3"] ? @"Cherry" : @"Chelsie");
+        } else if (isGLMRealtime) {
+            voiceName = @"tongtong";
+        }
+
         NSMutableDictionary *sessionDict = [@{
             @"modalities": @[@"text", @"audio"],
             @"instructions": sysInstruction,
-            @"voice": @"alloy",
+            @"voice": voiceName,
             @"input_audio_format": @"pcm16",
             @"output_audio_format": @"pcm16",
-            @"turn_detection": @{ @"type": @"server_vad" }
+            @"turn_detection": @{
+                @"type": @"server_vad",
+                @"threshold": @(0.5),
+                @"prefix_padding_ms": @(300),
+                @"silence_duration_ms": @(700)
+            }
         } mutableCopy];
 
-        if (agIsWebSearchEnabled() && !self.disableToolsInSetup) {
+        if (!self.disableTranscriptionInSetup && isQwenRealtime) {
+            sessionDict[@"input_audio_transcription"] = @{ @"model": @"gummy-realtime-v1" };
+        }
+
+        // 仅原生 OpenAI Realtime 注入 function tools；千问与智谱不传 OpenAI tools 数组以防报错断连
+        if (agIsWebSearchEnabled() && !self.disableToolsInSetup && !isQwenRealtime && !isGLMRealtime) {
             sessionDict[@"tools"] = @[
                 @{
                     @"type": @"function",
@@ -13767,7 +13868,8 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             @"type": @"session.update",
             @"session": sessionDict
         };
-        agLiveDiagLog(@"WS_SETUP_OPENAI", @"Sending OpenAI session.update: tools=%d | search=%d", (sessionDict[@"tools"] != nil), agIsWebSearchEnabled());
+        agLiveDiagLog(@"WS_SETUP_OPENAI", @"Sending Realtime session.update: model=%@ | voice=%@ | tools=%d | search=%d",
+                      rawModel, voiceName, (sessionDict[@"tools"] != nil), agIsWebSearchEnabled());
         [self sendJSONDictionaryOverWebSocket:sessionUpdate];
     }
 }
@@ -13890,11 +13992,18 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
 }
 
 - (void)handleIncomingWebSocketJSON:(NSDictionary *)json {
-    if (json[@"error"]) {
-        NSString *errMsg = json[@"error"][@"message"] ?: @"实时流模型返回错误";
+    if (json[@"error"] || [json[@"type"] isEqualToString:@"error"]) {
+        NSString *errMsg = [json[@"error"] isKindOfClass:[NSDictionary class]] ? (json[@"error"][@"message"] ?: [json[@"error"] description]) : (json[@"message"] ?: @"实时流返回参数错误");
+        agLiveDiagLog(@"WS_SERVER_ERR_JSON", @"Server error JSON (model=%@, toolsDisabled=%d, transDisabled=%d): %@",
+                      self.activeWebSocketModel, self.disableToolsInSetup, self.disableTranscriptionInSetup, errMsg);
+        if (!self.disableToolsInSetup || !self.disableTranscriptionInSetup) {
+            self.disableToolsInSetup = YES;
+            self.disableTranscriptionInSetup = YES;
+            NSString *boundModel = [self.activeWebSocketModel copy];
+            [self startWebSocketBidiSessionWithModel:boundModel forTab:self.activeModeTab];
+            return;
+        }
         self.subStatusLabel.text = [NSString stringWithFormat:@"⚠️ %@", errMsg];
-        [self stopAllVoiceEngines];
-        [self migrateAwayFromUnavailableModelAndRetry:nil audioData:nil isGreeting:YES];
         return;
     }
 
@@ -14339,6 +14448,12 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
                                 [self sendJSONDictionaryOverWebSocket:@{
                                     @"realtimeInput": @{ @"video": @{ @"mimeType": @"image/jpeg", @"data": b64Img } }
                                 }];
+                            } else if ([[self.activeWebSocketModel lowercaseString] containsString:@"qwen"] ||
+                                       [[agEndpointForTab(self.activeModeTab) lowercaseString] containsString:@"dashscope"]) {
+                                [self sendJSONDictionaryOverWebSocket:@{
+                                    @"type": @"input_image_buffer.append",
+                                    @"image": b64Img
+                                }];
                             } else {
                                 [self sendJSONDictionaryOverWebSocket:@{
                                     @"type": @"conversation.item.create",
@@ -14533,11 +14648,39 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
     }
 
     NSString *eventType = json[@"type"];
-    if ([eventType isEqualToString:@"response.audio.delta"] && json[@"delta"]) {
+    if (([eventType isEqualToString:@"response.audio.delta"] ||
+         [eventType isEqualToString:@"response.output_audio.delta"]) && json[@"delta"]) {
         NSData *pcm24k = [[NSData alloc] initWithBase64EncodedString:json[@"delta"] options:NSDataBase64DecodingIgnoreUnknownCharacters];
         if (pcm24k.length > 0) [self enqueueAndPlayIncomingPCM24kData:pcm24k];
-    } else if ([eventType isEqualToString:@"response.audio_transcript.delta"] && json[@"delta"]) {
+    } else if (([eventType isEqualToString:@"response.audio_transcript.delta"] ||
+                [eventType isEqualToString:@"response.output_audio_transcript.delta"] ||
+                [eventType isEqualToString:@"response.text.delta"] ||
+                [eventType isEqualToString:@"response.output_text.delta"]) && json[@"delta"]) {
+        if (self.isLastTranscriptLineUser) {
+            [[self currentTabTranscript] appendString:@"\n"];
+            self.isLastTranscriptLineUser = NO;
+        }
         [self appendIncomingTextDelta:json[@"delta"]];
+    } else if (([eventType isEqualToString:@"conversation.item.input_audio_transcription.completed"] ||
+                [eventType isEqualToString:@"conversation.item.input_audio_transcription.delta"]) &&
+               (json[@"transcript"] || json[@"delta"])) {
+        NSString *userDelta = json[@"transcript"] ?: json[@"delta"];
+        if ([userDelta isKindOfClass:[NSString class]] && userDelta.length > 0) {
+            NSMutableString *curTrans = [self currentTabTranscript];
+            self.isMutedByLocalBargeIn = NO;
+            if (!self.isLastTranscriptLineUser) {
+                if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) [curTrans appendString:@"\n\n"];
+                [curTrans appendString:@"🗣️ 您："];
+                self.isLastTranscriptLineUser = YES;
+            }
+            [curTrans appendString:userDelta];
+            [self.currentVoiceQueryBuffer appendString:userDelta];
+            [self updateResponseTextViewSmoothly:curTrans];
+            self.subStatusLabel.text = [NSString stringWithFormat:@"🎙️ 正在听您说：%@", self.currentVoiceQueryBuffer];
+            [self throttledExpandAndScrollTextViewForce:NO];
+            [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkDeferredVoiceLocalCommand) object:nil];
+            [self performSelector:@selector(checkDeferredVoiceLocalCommand) withObject:nil afterDelay:0.25];
+        }
     } else if ([eventType isEqualToString:@"input_audio_buffer.speech_started"]) {
         self.aiPlaybackEndTime = 0;
         dispatch_async(self.audioPlayQueue, ^{
@@ -14549,12 +14692,36 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             } @catch (NSException *e) {}
         });
     } else if ([eventType isEqualToString:@"response.done"]) {
+        NSString *committedQuery = (self.lastCommittedUserVoiceQuery.length > 0) ? self.lastCommittedUserVoiceQuery : (self.currentVoiceQueryBuffer ?: @"");
+        agRecordDialogueTurnToUniversalMemory(committedQuery, self.accumulatedReplyText ?: @"");
+        self.lastCommittedUserVoiceQuery = nil;
+        [self.currentVoiceQueryBuffer setString:@""];
+        [self flushPCM24kStagingBuffer];
+        self.isLastTranscriptLineUser = NO;
+
+        NSString *actPrefix = ag_sec_cloud_action_tag_prefix();
+        if (actPrefix.length > 0 && [self.accumulatedReplyText containsString:actPrefix]) {
+            BOOL actionExecuted = NO;
+            [self parseAndExecuteActions:self.accumulatedReplyText executed:&actionExecuted];
+            if (actionExecuted) {
+                [self.accumulatedReplyText setString:@""];
+                [self.pendingSpeechChunk setString:@""];
+            }
+        }
+        NSMutableString *curTrans = [self currentTabTranscript];
+        if (curTrans.length > 0 && ![curTrans hasSuffix:@"\n"]) {
+            [curTrans appendString:@"\n\n"];
+            [self updateResponseTextViewSmoothly:curTrans];
+            [self throttledExpandAndScrollTextViewForce:YES];
+        }
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         NSTimeInterval remain = MAX(0.05, self.aiPlaybackEndTime - now);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             self.aiPlaybackEndTime = 0;
             self.wsBargeInVoiceTicks = 0;
-            self.subStatusLabel.text = @"📞 实时语音通话中 (直接说话，支持随时插话打断)...";
+            self.subStatusLabel.text = (self.activeModeTab == AGConfigTabVideoAI)
+                ? @"📞📹 实时视频通话中 (直接说话，支持随时插话打断)..."
+                : @"📞 实时语音通话中 (直接说话，支持随时插话打断)...";
             [self setWaveBarsLevel:0.0];
         });
     }
@@ -15078,7 +15245,10 @@ static void agDarwinPrefsChangedCallback(CFNotificationCenterRef center, void *o
             strongSelf.wsBargeInVoiceTicks = 0;
         }
 
-        double targetRate = strongSelf.isGoogleBidiProtocol ? 16000.0 : 24000.0;
+        // 阿里云百炼 Qwen-Omni-Realtime 与 Google Bidi 官方均规定上行麦克风输入为 16000 Hz 单声道 PCM（下行播放为 24000 Hz）
+        NSString *curWSModelLower = [strongSelf.activeWebSocketModel lowercaseString] ?: @"";
+        BOOL isQwenRealtime = ([curWSModelLower containsString:@"qwen"] || [[agEndpointForTab(strongSelf.activeModeTab) lowercaseString] containsString:@"dashscope"]);
+        double targetRate = (strongSelf.isGoogleBidiProtocol || isQwenRealtime) ? 16000.0 : 24000.0;
         double ratio = inSampleRate / targetRate;
         NSUInteger outFrames = (NSUInteger)((double)inFrames / ratio);
         if (outFrames == 0) return;
@@ -20252,6 +20422,33 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
     });
 }
 
+- (BOOL)textFieldShouldBeginEditing:(UITextField *)textField {
+    @try {
+        self.isMiniSummonActive = NO;
+        if (self.miniSummonView) self.miniSummonView.hidden = YES;
+        if ([self.overlayWindow respondsToSelector:@selector(_setSecure:)]) {
+            [self.overlayWindow _setSecure:isDeviceCurrentlyLocked()];
+        }
+        [self.overlayWindow makeKeyAndVisible];
+        [self.overlayWindow makeKeyWindow];
+
+        // 兼容 iOS 15 ~ iOS 17 全机型：动态提升系统键盘窗口层级至悬浮窗 (10000.0) 之上，确保键盘 100% 可见可点
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try {
+                for (UIWindow *win in [UIApplication sharedApplication].windows) {
+                    NSString *clsName = NSStringFromClass([win class]);
+                    if ([clsName containsString:@"TextEffects"] || [clsName containsString:@"Keyboard"]) {
+                        if (win.windowLevel <= self.overlayWindow.windowLevel) {
+                            win.windowLevel = self.overlayWindow.windowLevel + 10.0;
+                        }
+                    }
+                }
+            } @catch (NSException *e) {}
+        });
+    } @catch (NSException *e) {}
+    return YES;
+}
+
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     NSString *text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (text.length > 0) {
@@ -20280,6 +20477,16 @@ static BOOL agIsActiveDatabaseOrMappedFile(NSString *itemName) {
                     }
                 }];
             } else {
+                if (self.isVideoChatActive && self.latestFrameJPEGData.length > 0) {
+                    NSString *b64Img = [self.latestFrameJPEGData base64EncodedStringWithOptions:0];
+                    if ([[self.activeWebSocketModel lowercaseString] containsString:@"qwen"] ||
+                        [[agEndpointForTab(self.activeModeTab) lowercaseString] containsString:@"dashscope"]) {
+                        [self sendJSONDictionaryOverWebSocket:@{
+                            @"type": @"input_image_buffer.append",
+                            @"image": b64Img
+                        }];
+                    }
+                }
                 [self sendJSONDictionaryOverWebSocket:@{
                     @"type": @"conversation.item.create",
                     @"item": @{ @"type": @"message", @"role": @"user", @"content": @[ @{ @"type": @"input_text", @"text": text } ] }
@@ -21278,7 +21485,7 @@ static NSString *agSanitizeInternalModelTags(NSString *text) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"天使守护1.0.0测试版";
+    self.title = @"天使守护1.0.1测试版";
     self.view.backgroundColor = [UIColor colorWithRed:0.07 green:0.06 blue:0.13 alpha:1.0];
     self.expandedModuleTab = -1;
 
