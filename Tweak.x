@@ -2171,7 +2171,7 @@ static void agSpringBoardLocAppHookLogCallback(CFNotificationCenterRef center, v
         }
         uint16_t seq16 = 0;
         memcpy(&seq16, rawBuf, 2);
-        if (seq16 != 0 && seq16 != sLastSeenSeq[s] && rawBuf[2] != ' ') {
+        if (seq16 != 0 && seq16 != sLastSeenSeq[s] && rawBuf[2] != 0) {
             sLastSeenSeq[s] = seq16;
             agLiveDiagLog(@"DING_DIAG", @"%s", (const char *)(rawBuf + 2));
         }
