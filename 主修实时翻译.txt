@@ -25833,21 +25833,20 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
             agReportAntiDetectionInterceptFromClient(1);
             static NSUInteger sDladdrHookHitCount = 0;
             sDladdrHookHitCount++;
-            if (sDladdrHookHitCount <= 8) {
-                agClientDiagLog("DLADDR_INTERCEPT #%lu method=%s", (unsigned long)sDladdrHookHitCount, hookName ?: "unknown");
+            if (sDladdrHookHitCount <= 10) {
+                agClientDiagLog("DLADDR_HIT #%lu method=%s", (unsigned long)sDladdrHookHitCount, hookName ?: "unknown");
             }
             return orig_dladdr(origIMP, info);
         }
     }
     int ret = orig_dladdr ? orig_dladdr(addr, info) : 0;
     if (agIsEnvironmentStealthActive()) {
-        // 若 Relaxin 下 libroothide 对本插件地址返回了 ret==0，将其修复为 CoreLocation 真实信息
         if (ret == 0 && addr && info && gSelfDylibBase != NULL) {
             uintptr_t a = ((uintptr_t)addr & 0x0000007fffffffffULL);
             uintptr_t base = ((uintptr_t)gSelfDylibBase & 0x0000007fffffffffULL);
             if (a >= base && a < base + 0x400000) {
                 agReportAntiDetectionInterceptFromClient(1);
-                agClientDiagLog("DLADDR_ROOTHIDE_ZERO_FIXED off=0x%lx", (unsigned long)(a - base));
+                agClientDiagLog("DLADDR_RH_ZERO_FIX off=0x%lx", (unsigned long)(a - base));
                 if (gCoreLocationValidSym && orig_dladdr) {
                     return orig_dladdr(gCoreLocationValidSym, info);
                 }
@@ -25863,7 +25862,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
                                strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
             if (shouldMask) {
                 agReportAntiDetectionInterceptFromClient(1);
-                agClientDiagLog("DLADDR_JB_MASKED sym=%s", info->dli_sname ?: "anon");
+                agClientDiagLog("DLADDR_MASK sym=%s", info->dli_sname ?: "anon");
                 if (gCoreLocationValidSym && orig_dladdr) {
                     return orig_dladdr(gCoreLocationValidSym, info);
                 }
@@ -25875,6 +25874,97 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
     return ret;
 }
 
+static IMP (*orig_method_getImplementation)(Method m) = NULL;
+static IMP hooked_method_getImplementation(Method m) {
+    IMP realIMP = orig_method_getImplementation ? orig_method_getImplementation(m) : NULL;
+    if (realIMP && agIsEnvironmentStealthActive()) {
+        const char *hookName = NULL;
+        const void *origIMP = agResolveOriginalIMPForHookedAddr((const void *)realIMP, &hookName);
+        if (origIMP) {
+            agReportAntiDetectionInterceptFromClient(1);
+            static NSUInteger sImpChkCount = 0;
+            sImpChkCount++;
+            if (sImpChkCount <= 12) {
+                agClientDiagLog("M_IMP_CHK #%lu sel=%s", (unsigned long)sImpChkCount, hookName ?: "unknown");
+            }
+            return (IMP)origIMP;
+        }
+    }
+    return realIMP;
+}
+
+static IMP (*orig_class_getMethodImplementation)(Class cls, SEL name) = NULL;
+static IMP hooked_class_getMethodImplementation(Class cls, SEL name) {
+    IMP realIMP = orig_class_getMethodImplementation ? orig_class_getMethodImplementation(cls, name) : NULL;
+    if (realIMP && agIsEnvironmentStealthActive()) {
+        const char *hookName = NULL;
+        const void *origIMP = agResolveOriginalIMPForHookedAddr((const void *)realIMP, &hookName);
+        if (origIMP) {
+            agReportAntiDetectionInterceptFromClient(1);
+            static NSUInteger sClsImpChkCount = 0;
+            sClsImpChkCount++;
+            if (sClsImpChkCount <= 12) {
+                agClientDiagLog("CLS_IMP_CHK #%lu sel=%s", (unsigned long)sClsImpChkCount, hookName ?: "unknown");
+            }
+            return (IMP)origIMP;
+        }
+    }
+    return realIMP;
+}
+
+static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
+static const char *hooked_dyld_get_image_name(uint32_t image_index) {
+    const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
+    if (name && agIsEnvironmentStealthActive()) {
+        if (agIsSuspiciousJailbreakPath(name) || strstr(name, "AngelGuardian") != NULL) {
+            agReportAntiDetectionInterceptFromClient(1);
+            static BOOL sLoggedDyld = NO;
+            if (!sLoggedDyld) {
+                sLoggedDyld = YES;
+                agClientDiagLog("DYLD_IMG_MASKED idx=%u", image_index);
+            }
+            return gCoreLocationPath;
+        }
+    }
+    return name;
+}
+
+static const char *(*orig_class_getImageName)(Class cls) = NULL;
+static const char *hooked_class_getImageName(Class cls) {
+    const char *name = orig_class_getImageName ? orig_class_getImageName(cls) : NULL;
+    if (name && agIsEnvironmentStealthActive()) {
+        if (agIsSuspiciousJailbreakPath(name) || strstr(name, "AngelGuardian") != NULL) {
+            agReportAntiDetectionInterceptFromClient(1);
+            agClientDiagLog("CLS_IMG_MASKED cls=%s", cls ? class_getName(cls) : "nil");
+            return gCoreLocationPath;
+        }
+    }
+    return name;
+}
+
+static const char * _Nonnull * _Nonnull (*orig_objc_copyImageNames)(unsigned int *outCount) = NULL;
+static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int *outCount) {
+    const char **names = orig_objc_copyImageNames ? orig_objc_copyImageNames(outCount) : NULL;
+    if (names && outCount && *outCount > 0 && agIsEnvironmentStealthActive()) {
+        unsigned int writeIdx = 0;
+        unsigned int total = *outCount;
+        for (unsigned int i = 0; i < total; i++) {
+            if (names[i] && (agIsSuspiciousJailbreakPath(names[i]) || strstr(names[i], "AngelGuardian") != NULL)) {
+                continue;
+            }
+            names[writeIdx++] = names[i];
+        }
+        if (writeIdx != total) {
+            agReportAntiDetectionInterceptFromClient(1);
+            agClientDiagLog("OBJC_IMGS_FILTERED %u->%u", total, writeIdx);
+        }
+        *outCount = writeIdx;
+    }
+    return names;
+}
+
+// 彻底斩断「GPS 在目标点、Wi-Fi BSSID 却在 60 公里外真实家里」的交叉穿帮：
+// wifiMode == 2 时返回用户指定的公司 Wi-Fi；wifiMode == 1（默认防检测）时返回基于目标虚拟坐标生成的确定性虚拟路由器 BSSID！
 static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     if (!agIsAntiDetectionShieldActive()) return 0;
 
@@ -25884,27 +25974,47 @@ static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     if (!agReadSpoofStateFromKernel(&kActive, &kScope, &kShield, &wifiMode, &lat, &lon, NULL, NULL, NULL)) {
         return 0;
     }
-    if (!kActive || !kShield || wifiMode != 2) return 0;
+    if (!kActive || !kShield || wifiMode == 0) return 0;
 
-    NSString *ssid = nil;
-    NSString *bssid = nil;
-    if (!agReadCustomWiFiFromKernel(&ssid, &bssid)) {
-        NSDictionary *p = agReadOnlyPrefs();
-        ssid = [p[@"AG_AntiDet_FakeSSID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        bssid = [[p[@"AG_AntiDet_FakeBSSID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    }
-    if (ssid.length > 0 && bssid.length >= 11) {
-        if (outCustomWiFiDict) {
-            NSData *ssidData = [ssid dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-            *outCustomWiFiDict = @{
-                @"SSID": [ssid copy],
-                @"BSSID": [bssid copy],
-                @"SSIDDATA": [ssidData copy]
-            };
+    if (wifiMode == 2) {
+        NSString *ssid = nil;
+        NSString *bssid = nil;
+        if (!agReadCustomWiFiFromKernel(&ssid, &bssid)) {
+            NSDictionary *p = agReadOnlyPrefs();
+            ssid = [p[@"AG_AntiDet_FakeSSID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            bssid = [[p[@"AG_AntiDet_FakeBSSID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
         }
-        return 2;
+        if (ssid.length > 0 && bssid.length >= 11) {
+            if (outCustomWiFiDict) {
+                NSData *ssidData = [ssid dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+                *outCustomWiFiDict = @{
+                    @"SSID": [ssid copy],
+                    @"BSSID": [bssid copy],
+                    @"SSIDDATA": [ssidData copy]
+                };
+            }
+            return 2;
+        }
     }
-    return 0;
+
+    // wifiMode == 1 (默认防检测模式)：根据目标虚拟坐标生成恒定且不在异地高德库中的虚拟企业级路由器 BSSID，消除异地 BSSID 穿帮
+    uint32_t latInt = (uint32_t)(fabs(lat) * 1000.0);
+    uint32_t lonInt = (uint32_t)(fabs(lon) * 1000.0);
+    uint32_t h = (latInt * 2654435761u) ^ (lonInt * 2246822519u);
+    uint8_t b3 = (uint8_t)((h >> 16) & 0xFF);
+    uint8_t b4 = (uint8_t)((h >> 8) & 0xFF);
+    uint8_t b5 = (uint8_t)((h & 0xFE) | 0x02);
+    NSString *virtualSSID  = [NSString stringWithFormat:@"ChinaNet-%02X%02X", b3, (uint8_t)(b4 ^ 0x3C)];
+    NSString *virtualBSSID = [NSString stringWithFormat:@"c8:3a:35:%02x:%02x:%02x", b3, b4, b5];
+    if (outCustomWiFiDict) {
+        NSData *ssidData = [virtualSSID dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+        *outCustomWiFiDict = @{
+            @"SSID": virtualSSID,
+            @"BSSID": virtualBSSID,
+            @"SSIDDATA": ssidData
+        };
+    }
+    return 2;
 }
 
 // ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地内存标量无损覆写 ====================
@@ -25993,7 +26103,15 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     }
 }
 
-// ==================== Delegate 边界动态拦截：让 [CLLocation class] 在防检测开启时实现 0 Hook ====================
+// ==================== Delegate 边界动态拦截与原厂指针还原登记表 ====================
+typedef struct {
+    IMP origIMP;
+    IMP hookedIMP;
+    char desc[48];
+} AGDelegateHookRecord;
+
+static AGDelegateHookRecord gDelHookRecords[32];
+static size_t gDelHookRecordCount = 0;
 static NSMutableSet<NSString *> *gHookedDelegateClasses = nil;
 static os_unfair_lock gDelHookLock = OS_UNFAIR_LOCK_INIT;
 
@@ -26027,6 +26145,14 @@ static void agHookLocationManagerDelegateIfNeeded(id delegate) {
             }
             ((void(*)(id, SEL, id, id))origIMP)(selfObj, selUpdateLocs, mgr, locations);
         });
+        os_unfair_lock_lock(&gDelHookLock);
+        if (gDelHookRecordCount < 32) {
+            gDelHookRecords[gDelHookRecordCount].origIMP = origIMP;
+            gDelHookRecords[gDelHookRecordCount].hookedIMP = newIMP;
+            snprintf(gDelHookRecords[gDelHookRecordCount].desc, 47, "%s.didUpdateLocs", [clsName UTF8String]);
+            gDelHookRecordCount++;
+        }
+        os_unfair_lock_unlock(&gDelHookLock);
         method_setImplementation(mUpdate, newIMP);
     }
 
@@ -26041,6 +26167,14 @@ static void agHookLocationManagerDelegateIfNeeded(id delegate) {
             }
             ((void(*)(id, SEL, id, id, id))origLegacy)(selfObj, selLegacy, mgr, newLoc, oldLoc);
         });
+        os_unfair_lock_lock(&gDelHookLock);
+        if (gDelHookRecordCount < 32) {
+            gDelHookRecords[gDelHookRecordCount].origIMP = origLegacy;
+            gDelHookRecords[gDelHookRecordCount].hookedIMP = newLegacy;
+            snprintf(gDelHookRecords[gDelHookRecordCount].desc, 47, "%s.didUpdateToLoc", [clsName UTF8String]);
+            gDelHookRecordCount++;
+        }
+        os_unfair_lock_unlock(&gDelHookLock);
         method_setImplementation(mLegacy, newLegacy);
     }
 }
@@ -26077,7 +26211,13 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     if (!interfaceName || CFStringGetLength(interfaceName) == 0) return NULL;
     NSDictionary *customWiFi = nil;
     NSInteger mode = agResolveWiFiProtectionMode(&customWiFi);
-    agClientDiagLog("WIFI_QUERY if=%s mode=%ld", CFStringGetCStringPtr(interfaceName, kCFStringEncodingUTF8) ?: "en0", (long)mode);
+    static NSUInteger sWiFiLogCount = 0;
+    sWiFiLogCount++;
+    if (sWiFiLogCount <= 6) {
+        agClientDiagLog("WIFI_SPOOF #%lu mode=%ld bssid=%s",
+                        (unsigned long)sWiFiLogCount, (long)mode,
+                        customWiFi[@"BSSID"] ? [customWiFi[@"BSSID"] UTF8String] : "pass");
+    }
     if (mode > 0) {
         agReportAntiDetectionInterceptFromClient(3);
     }
@@ -26649,7 +26789,7 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
 
 %end // end group SpringBoardOnlyHooks
 
-// ==================== 5. 最小化 Hook 面 + 兼容 Relaxin/Dopamine 的双源 GOT 重绑定引擎 ====================
+// ==================== 5. 全量原厂指针伪装映射表 + 多符号 GOT 重绑定引擎 ====================
 typedef struct {
     const char *clsName;
     const char *selName;
@@ -26661,7 +26801,7 @@ typedef struct {
 } AGMethodIMPBackup;
 
 static AGMethodIMPBackup gClientHookTable[] = {
-    // --- 0~17: 环境与已由 _internal 原地内存覆写接管的属性 (全部保持苹果原装 dyld 共享缓存 IMP 指针) ---
+    // --- 0~17: 环境与已由 _internal 内存提供数据的属性 (全部保持苹果原装 dyld 共享缓存 IMP 指针) ---
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
@@ -26686,7 +26826,7 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"NEHotspotNetwork", "BSSID", NO, YES, NULL, NULL, NULL},
     {"CLLocationManager", "accuracyAuthorization", NO, YES, NULL, NULL, NULL},
 
-    // --- 21~29: CLLocation 实例方法 (开启防检测时由 Delegate 边界 + _internal 原地内存改写接管，自动恢复原厂 IMP 指针！) ---
+    // --- 21~35: 定位核心方法 (由 hooked_method_getImplementation / hooked_dladdr 100% 还原原厂指针) ---
     {"CLLocation", "initWithLatitude:longitude:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:", NO, NO, NULL, NULL, NULL},
@@ -26696,8 +26836,6 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CLLocation", "course", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speed", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "distanceFromLocation:", NO, NO, NULL, NULL, NULL},
-
-    // --- 30~35: CLLocationManager 与 CLGeocoder 入口 ---
     {"CLLocationManager", "setDelegate:", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "location", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "startUpdatingLocation", NO, NO, NULL, NULL, NULL},
@@ -26711,6 +26849,7 @@ static BOOL gHasInitializedObjCHooks = NO;
 static BOOL gHasInstalledEnvStealthCHooks = NO;
 static NSUInteger gTotalGOTDladdrMatches = 0;
 static NSUInteger gTotalGOTWiFiMatches = 0;
+static NSUInteger gTotalGOTImpMatches = 0;
 static os_unfair_lock gHookSyncLock = OS_UNFAIR_LOCK_INIT;
 
 static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const char **outHookName) {
@@ -26729,20 +26868,38 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const cha
             }
         }
     }
+    os_unfair_lock_lock(&gDelHookLock);
+    for (size_t j = 0; j < gDelHookRecordCount; j++) {
+        uintptr_t delClean = ((uintptr_t)gDelHookRecords[j].hookedIMP & 0x0000007fffffffffULL);
+        if (cleanAddr == delClean && gDelHookRecords[j].origIMP) {
+            if (outHookName) *outHookName = gDelHookRecords[j].desc;
+            const void *orig = (const void *)gDelHookRecords[j].origIMP;
+            os_unfair_lock_unlock(&gDelHookLock);
+            return orig;
+        }
+    }
+    os_unfair_lock_unlock(&gDelHookLock);
     return NULL;
 }
 
-// 同时匹配 dlsym 原厂地址与 &dladdr (兼容 Relaxin libroothide 抢先绑定的 GOT 槽位)
 static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, intptr_t slide) {
     if (!header || header->magic != MH_MAGIC_64) return;
     if ((header->cpusubtype & 0x00ffffff) == 2 /* CPU_SUBTYPE_ARM64E */) return;
 
-    uintptr_t targetDl1 = orig_dladdr ? ((uintptr_t)orig_dladdr & 0x0000007fffffffffULL) : 0;
-    uintptr_t targetDl2 = ((uintptr_t)&dladdr & 0x0000007fffffffffULL);
-    uintptr_t targetWf1 = orig_CNCopyCurrentNetworkInfo ? ((uintptr_t)orig_CNCopyCurrentNetworkInfo & 0x0000007fffffffffULL) : 0;
-    uintptr_t targetWf2 = ((uintptr_t)&CNCopyCurrentNetworkInfo & 0x0000007fffffffffULL);
-    uintptr_t myDlHook  = ((uintptr_t)&hooked_dladdr & 0x0000007fffffffffULL);
-    uintptr_t myWfHook  = ((uintptr_t)&hooked_CNCopyCurrentNetworkInfo & 0x0000007fffffffffULL);
+    uintptr_t tDl1  = orig_dladdr ? ((uintptr_t)orig_dladdr & 0x0000007fffffffffULL) : 0;
+    uintptr_t tDl2  = ((uintptr_t)&dladdr & 0x0000007fffffffffULL);
+    uintptr_t tWf1  = orig_CNCopyCurrentNetworkInfo ? ((uintptr_t)orig_CNCopyCurrentNetworkInfo & 0x0000007fffffffffULL) : 0;
+    uintptr_t tWf2  = ((uintptr_t)&CNCopyCurrentNetworkInfo & 0x0000007fffffffffULL);
+    uintptr_t tImp1 = orig_method_getImplementation ? ((uintptr_t)orig_method_getImplementation & 0x0000007fffffffffULL) : 0;
+    uintptr_t tImp2 = ((uintptr_t)&method_getImplementation & 0x0000007fffffffffULL);
+    uintptr_t tCImp1 = orig_class_getMethodImplementation ? ((uintptr_t)orig_class_getMethodImplementation & 0x0000007fffffffffULL) : 0;
+    uintptr_t tCImp2 = ((uintptr_t)&class_getMethodImplementation & 0x0000007fffffffffULL);
+    uintptr_t tDyld1 = orig_dyld_get_image_name ? ((uintptr_t)orig_dyld_get_image_name & 0x0000007fffffffffULL) : 0;
+    uintptr_t tDyld2 = ((uintptr_t)&_dyld_get_image_name & 0x0000007fffffffffULL);
+    uintptr_t tCImg1 = orig_class_getImageName ? ((uintptr_t)orig_class_getImageName & 0x0000007fffffffffULL) : 0;
+    uintptr_t tCImg2 = ((uintptr_t)&class_getImageName & 0x0000007fffffffffULL);
+    uintptr_t tOImg1 = orig_objc_copyImageNames ? ((uintptr_t)orig_objc_copyImageNames & 0x0000007fffffffffULL) : 0;
+    uintptr_t tOImg2 = ((uintptr_t)&objc_copyImageNames & 0x0000007fffffffffULL);
 
     const struct mach_header_64 *h64 = (const struct mach_header_64 *)header;
     uintptr_t cur = (uintptr_t)h64 + sizeof(struct mach_header_64);
@@ -26769,22 +26926,36 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
                     size_t count = sect->size / sizeof(void *);
                     for (size_t k = 0; k < count; k++) {
                         uintptr_t val = ((uintptr_t)slots[k] & 0x0000007fffffffffULL);
-                        if (val == 0 || val == myDlHook || val == myWfHook) continue;
+                        if (val == 0) continue;
 
                         void *replacement = NULL;
-                        if ((targetDl1 != 0 && val == targetDl1) || (targetDl2 != 0 && val == targetDl2)) {
-                            if (val == targetDl2 && targetDl2 != targetDl1) {
-                                orig_dladdr = (int (*)(const void *, Dl_info *))slots[k];
-                            }
+                        if ((tDl1 != 0 && val == tDl1) || (tDl2 != 0 && val == tDl2)) {
+                            if (val == tDl2 && tDl2 != tDl1) orig_dladdr = (int (*)(const void *, Dl_info *))slots[k];
                             replacement = (void *)hooked_dladdr;
                             gTotalGOTDladdrMatches++;
-                        } else if ((targetWf1 != 0 && val == targetWf1) || (targetWf2 != 0 && val == targetWf2)) {
-                            if (val == targetWf2 && targetWf2 != targetWf1) {
-                                orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))slots[k];
-                            }
+                        } else if ((tWf1 != 0 && val == tWf1) || (tWf2 != 0 && val == tWf2)) {
+                            if (val == tWf2 && tWf2 != tWf1) orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))slots[k];
                             replacement = (void *)hooked_CNCopyCurrentNetworkInfo;
                             gTotalGOTWiFiMatches++;
+                        } else if ((tImp1 != 0 && val == tImp1) || (tImp2 != 0 && val == tImp2)) {
+                            if (val == tImp2 && tImp2 != tImp1) orig_method_getImplementation = (IMP (*)(Method))slots[k];
+                            replacement = (void *)hooked_method_getImplementation;
+                            gTotalGOTImpMatches++;
+                        } else if ((tCImp1 != 0 && val == tCImp1) || (tCImp2 != 0 && val == tCImp2)) {
+                            if (val == tCImp2 && tCImp2 != tCImp1) orig_class_getMethodImplementation = (IMP (*)(Class, SEL))slots[k];
+                            replacement = (void *)hooked_class_getMethodImplementation;
+                            gTotalGOTImpMatches++;
+                        } else if ((tDyld1 != 0 && val == tDyld1) || (tDyld2 != 0 && val == tDyld2)) {
+                            if (val == tDyld2 && tDyld2 != tDyld1) orig_dyld_get_image_name = (const char *(*)(uint32_t))slots[k];
+                            replacement = (void *)hooked_dyld_get_image_name;
+                        } else if ((tCImg1 != 0 && val == tCImg1) || (tCImg2 != 0 && val == tCImg2)) {
+                            if (val == tCImg2 && tCImg2 != tCImg1) orig_class_getImageName = (const char *(*)(Class))slots[k];
+                            replacement = (void *)hooked_class_getImageName;
+                        } else if ((tOImg1 != 0 && val == tOImg1) || (tOImg2 != 0 && val == tOImg2)) {
+                            if (val == tOImg2 && tOImg2 != tOImg1) orig_objc_copyImageNames = (const char * _Nonnull * _Nonnull (*)(unsigned int *))slots[k];
+                            replacement = (void *)hooked_objc_copyImageNames;
                         }
+
                         if (replacement && slots[k] != replacement) {
                             vm_address_t page = (vm_address_t)&slots[k] & ~(vm_address_t)(vm_page_size - 1);
                             if (vm_protect(mach_task_self(), page, vm_page_size, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
@@ -26819,6 +26990,23 @@ static void agInstallEnvStealthCHooksIfNeeded(void) {
     if (!orig_CNCopyCurrentNetworkInfo) {
         orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))(&CNCopyCurrentNetworkInfo);
         if (!orig_CNCopyCurrentNetworkInfo) orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))dlsym(RTLD_DEFAULT, "CNCopyCurrentNetworkInfo");
+    }
+    if (!orig_method_getImplementation) {
+        orig_method_getImplementation = (IMP (*)(Method))(&method_getImplementation);
+        if (!orig_method_getImplementation) orig_method_getImplementation = (IMP (*)(Method))dlsym(RTLD_DEFAULT, "method_getImplementation");
+    }
+    if (!orig_class_getMethodImplementation) {
+        orig_class_getMethodImplementation = (IMP (*)(Class, SEL))(&class_getMethodImplementation);
+        if (!orig_class_getMethodImplementation) orig_class_getMethodImplementation = (IMP (*)(Class, SEL))dlsym(RTLD_DEFAULT, "class_getMethodImplementation");
+    }
+    if (!orig_dyld_get_image_name) {
+        orig_dyld_get_image_name = (const char *(*)(uint32_t))(&_dyld_get_image_name);
+    }
+    if (!orig_class_getImageName) {
+        orig_class_getImageName = (const char *(*)(Class))(&class_getImageName);
+    }
+    if (!orig_objc_copyImageNames) {
+        orig_objc_copyImageNames = (const char * _Nonnull * _Nonnull (*)(unsigned int *))(&objc_copyImageNames);
     }
     _dyld_register_func_for_add_image(agOnAppMachOImageAdded);
 }
@@ -26884,10 +27072,8 @@ static void agSyncClientHooksWithCurrentState(void) {
             if (i < 18) {
                 // 0~17 项：环境与已由 _internal 内存提供数据的属性，保持苹果原装 IMP 指针
                 shouldEnableThisHook = NO;
-            } else if (i >= 21 && i <= 29) {
-                // 21~29 项：CLLocation 的 9 个方法，当开启防检测 (shieldActive=YES) 时全部恢复为苹果原装 CoreLocation 指针，实现 CLLocation 公开方法 0 Hook！
-                shouldEnableThisHook = !shieldActive;
             } else {
+                // 18~35 项：由 hooked_method_getImplementation / hooked_class_getMethodImplementation / hooked_dladdr 100% 隐藏 Hook 指针
                 shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
             }
         }
@@ -26898,8 +27084,7 @@ static void agSyncClientHooksWithCurrentState(void) {
     }
 
     if (gDynMethod_CLLoc_clientLoc && gOrig_CLLoc_clientLoc) {
-        // 开启防检测时连 clientLocation 也恢复为苹果原装指针，全靠 Delegate 边界 + location 入口原地改写 _internal 内存！
-        IMP t = (spoofActive && !shieldActive) ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc;
+        IMP t = spoofActive ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc;
         if (method_getImplementation(gDynMethod_CLLoc_clientLoc) != t) {
             method_setImplementation(gDynMethod_CLLoc_clientLoc, t);
         }
@@ -26912,9 +27097,11 @@ static void agSyncClientHooksWithCurrentState(void) {
         NSInteger kScp = 0, kWf = 0;
         agReadSpoofStateFromKernel(&kAct, &kScp, &kSh, &kWf, NULL, NULL, NULL, NULL, NULL);
         const char *shortBid = [[[NSBundle mainBundle] bundleIdentifier] UTF8String] ?: "app";
-        agClientDiagLog("SYNC bid=%s act=%d sh=%d wf=%ld got_dl=%lu got_wf=%lu clZeroHook=%d",
+        agClientDiagLog("SYNC bid=%s act=%d sh=%d wf=%ld got_dl=%lu got_wf=%lu got_imp=%lu",
                         shortBid, kAct, kSh, (long)kWf,
-                        (unsigned long)gTotalGOTDladdrMatches, (unsigned long)gTotalGOTWiFiMatches, shieldActive);
+                        (unsigned long)gTotalGOTDladdrMatches,
+                        (unsigned long)gTotalGOTWiFiMatches,
+                        (unsigned long)gTotalGOTImpMatches);
     }
 }
 
