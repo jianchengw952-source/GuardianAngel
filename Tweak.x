@@ -2095,14 +2095,15 @@ static CLLocation *agCreateHardwareGradeLocation(CLLocationCoordinate2D coord, d
     return loc;
 }
 
-// 跨进程 4 槽位内核寄存器环形日志通道 (穿透钉钉沙盒，由 SpringBoard 落盘至 /tmp/ag_live_diagnostic.log)
-static void agInitDiagRingTokens(int outTokens[4][12], int *outIdxToken) {
-    static int sTokens[4][12] = {{0}};
+// 跨进程 16 槽位内核寄存器环形日志通道 (穿透钉钉沙盒，零丢包落盘至 /tmp/ag_live_diagnostic.log)
+#define AG_DIAG_RING_SLOTS 16
+static void agInitDiagRingTokens(int outTokens[AG_DIAG_RING_SLOTS][12], int *outIdxToken) {
+    static int sTokens[AG_DIAG_RING_SLOTS][12] = {{0}};
     static int sIdxTok = 0;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         notify_register_check("com.apple.coremedia.spatial.d_idx", &sIdxTok);
-        for (int s = 0; s < 4; s++) {
+        for (int s = 0; s < AG_DIAG_RING_SLOTS; s++) {
             for (int w = 0; w < 12; w++) {
                 char key[48];
                 snprintf(key, sizeof(key), "com.apple.coremedia.spatial.d%d_%d", s, w);
@@ -2118,6 +2119,7 @@ static void agInitDiagRingTokens(int outTokens[4][12], int *outIdxToken) {
 
 static void agClientDiagLog(const char *fmt, ...) {
     if (agIsSpringBoardProcess()) return;
+    static os_unfair_lock sClientLogLock = OS_UNFAIR_LOCK_INIT;
     char msg[90];
     memset(msg, 0, sizeof(msg));
     va_list args;
@@ -2125,15 +2127,16 @@ static void agClientDiagLog(const char *fmt, ...) {
     vsnprintf(msg, sizeof(msg) - 1, fmt, args);
     va_end(args);
 
-    int tokens[4][12];
+    int tokens[AG_DIAG_RING_SLOTS][12];
     int idxTok = 0;
     agInitDiagRingTokens(tokens, &idxTok);
     if (idxTok == 0) return;
 
+    os_unfair_lock_lock(&sClientLogLock);
     uint64_t curSeq = 0;
     notify_get_state(idxTok, &curSeq);
     curSeq++;
-    int slot = (int)(curSeq & 3);
+    int slot = (int)(curSeq & (AG_DIAG_RING_SLOTS - 1));
 
     uint8_t rawBuf[96];
     memset(rawBuf, 0, sizeof(rawBuf));
@@ -2148,6 +2151,8 @@ static void agClientDiagLog(const char *fmt, ...) {
         notify_set_state(tokens[slot][w], word);
     }
     notify_set_state(idxTok, curSeq);
+    os_unfair_lock_unlock(&sClientLogLock);
+
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)kAGLocAppHookLogNotification,
                                          NULL, NULL, YES);
@@ -2156,12 +2161,12 @@ static void agClientDiagLog(const char *fmt, ...) {
 static void agSpringBoardLocAppHookLogCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     if (!agIsSpringBoardProcess()) return;
-    static uint16_t sLastSeenSeq[4] = {0, 0, 0, 0};
-    int tokens[4][12];
+    static uint16_t sLastSeenSeq[AG_DIAG_RING_SLOTS] = {0};
+    int tokens[AG_DIAG_RING_SLOTS][12];
     int idxTok = 0;
     agInitDiagRingTokens(tokens, &idxTok);
 
-    for (int s = 0; s < 4; s++) {
+    for (int s = 0; s < AG_DIAG_RING_SLOTS; s++) {
         uint8_t rawBuf[97];
         memset(rawBuf, 0, sizeof(rawBuf));
         for (int w = 0; w < 12; w++) {
@@ -25819,7 +25824,37 @@ AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
             strstr(path, "TrollStore") != NULL ||
             strstr(path, "Choicy") != NULL ||
             strstr(path, "/apt/") != NULL ||
+            strstr(path, "AngelGuardian") != NULL ||
             strstr(path, "ag_live_diagnostic") != NULL);
+}
+
+// 原地擦除本插件在内存中的 Mach-O Header LC_ID_DYLIB 标识，防止钉钉通过 _dyld_get_image_header 直接扫描内存头
+static void agScrubSelfMachOHeaderInMemory(void *baseAddr) {
+    if (!baseAddr) return;
+    struct mach_header_64 *h64 = (struct mach_header_64 *)baseAddr;
+    if (h64->magic != MH_MAGIC_64) return;
+
+    vm_address_t page = (vm_address_t)baseAddr & ~(vm_address_t)(vm_page_size - 1);
+    if (vm_protect(mach_task_self(), page, vm_page_size * 2, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+        return;
+    }
+    uintptr_t cur = (uintptr_t)h64 + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < h64->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)cur;
+        if (lc->cmd == LC_ID_DYLIB) {
+            struct dylib_command *dc = (struct dylib_command *)lc;
+            uint32_t off = dc->dylib.name.offset;
+            if (off < lc->cmdsize) {
+                char *namePtr = (char *)lc + off;
+                size_t maxLen = lc->cmdsize - off - 1;
+                const char * benignName = "/System/Library/Frameworks/CoreLocation.framework/CoreLocation";
+                memset(namePtr, 0, maxLen + 1);
+                strncpy(namePtr, benignName, maxLen);
+            }
+        }
+        cur += lc->cmdsize;
+    }
+    vm_protect(mach_task_self(), page, vm_page_size * 2, false, VM_PROT_READ | VM_PROT_EXECUTE);
 }
 
 static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const char **outHookName);
@@ -25833,7 +25868,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
             agReportAntiDetectionInterceptFromClient(1);
             static NSUInteger sDladdrHookHitCount = 0;
             sDladdrHookHitCount++;
-            if (sDladdrHookHitCount <= 10) {
+            if (sDladdrHookHitCount <= 12) {
                 agClientDiagLog("DLADDR_HIT #%lu method=%s", (unsigned long)sDladdrHookHitCount, hookName ?: "unknown");
             }
             return orig_dladdr(origIMP, info);
@@ -25856,7 +25891,6 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
             char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
             BOOL shouldMask = ((gSelfDylibBase != NULL && info->dli_fbase == gSelfDylibBase) ||
                                agIsSuspiciousJailbreakPath(info->dli_fname) ||
-                               strstr(info->dli_fname, "AngelGuardian") != NULL ||
                                strstr(info->dli_fname, ag_enc_cstr_ellekit(bEk)) != NULL ||
                                strstr(info->dli_fname, ag_enc_cstr_libroothide(bRh)) != NULL ||
                                strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
@@ -25912,28 +25946,96 @@ static IMP hooked_class_getMethodImplementation(Class cls, SEL name) {
     return realIMP;
 }
 
+// ==================== 全套 Dyld 镜像索引重映射表 (彻底从总数与索引中剔除 idx=862 等插件镜像，告别重复 CoreLocation 与 Header 泄露) ====================
+static uint32_t (*orig_dyld_image_count)(void) = NULL;
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
-static const char *hooked_dyld_get_image_name(uint32_t image_index) {
-    const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
-    if (name && agIsEnvironmentStealthActive()) {
-        if (agIsSuspiciousJailbreakPath(name) || strstr(name, "AngelGuardian") != NULL) {
-            agReportAntiDetectionInterceptFromClient(1);
-            static BOOL sLoggedDyld = NO;
-            if (!sLoggedDyld) {
-                sLoggedDyld = YES;
-                agClientDiagLog("DYLD_IMG_MASKED idx=%u", image_index);
-            }
-            return gCoreLocationPath;
-        }
+static const struct mach_header *(*orig_dyld_get_image_header)(uint32_t image_index) = NULL;
+static intptr_t (*orig_dyld_get_image_vmaddr_slide)(uint32_t image_index) = NULL;
+
+static uint32_t gCleanDyldIndices[2048];
+static uint32_t gCleanDyldCount = 0;
+static uint32_t gLastRawDyldCount = 0;
+static os_unfair_lock gDyldTableLock = OS_UNFAIR_LOCK_INIT;
+
+static void agRefreshCleanDyldTableIfNeeded(void) {
+    static BOOL sLoggedHiddenIdx = NO;
+    uint32_t rawCount = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
+    if (rawCount == 0) return;
+    os_unfair_lock_lock(&gDyldTableLock);
+    if (gCleanDyldCount > 0 && rawCount == gLastRawDyldCount) {
+        os_unfair_lock_unlock(&gDyldTableLock);
+        return;
     }
-    return name;
+    uint32_t cleanIdx = 0;
+    for (uint32_t i = 0; i < rawCount && cleanIdx < 2048; i++) {
+        const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
+        const struct mach_header *hdr = orig_dyld_get_image_header ? orig_dyld_get_image_header(i) : _dyld_get_image_header(i);
+        char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
+        BOOL isTweak = ((gSelfDylibBase != NULL && hdr == gSelfDylibBase) ||
+                        (name && (agIsSuspiciousJailbreakPath(name) ||
+                                  strstr(name, ag_enc_cstr_ellekit(bEk)) != NULL ||
+                                  strstr(name, ag_enc_cstr_libroothide(bRh)) != NULL ||
+                                  strstr(name, ag_enc_cstr_mobilesubstrate(bMs)) != NULL)));
+        if (isTweak) {
+            if (!sLoggedHiddenIdx) {
+                const char *shortName = name ? (strrchr(name, '/') ? strrchr(name, '/') + 1 : name) : "anon";
+                agClientDiagLog("DYLD_HIDE idx=%u file=%s", i, shortName);
+            }
+            continue;
+        }
+        gCleanDyldIndices[cleanIdx++] = i;
+    }
+    sLoggedHiddenIdx = YES;
+    gCleanDyldCount = cleanIdx;
+    gLastRawDyldCount = rawCount;
+    os_unfair_lock_unlock(&gDyldTableLock);
+}
+
+static inline uint32_t agMapCleanDyldIndex(uint32_t idx) {
+    agRefreshCleanDyldTableIfNeeded();
+    if (gCleanDyldCount == 0) return idx;
+    if (idx < gCleanDyldCount) return gCleanDyldIndices[idx];
+    // 若调用方使用了未过滤前的 idx (如 862)，映射到不同的原生系统库索引，绝不重复返回同一个库或插件 Header
+    return gCleanDyldIndices[(idx * 7 + 13) % gCleanDyldCount];
+}
+
+static uint32_t hooked_dyld_image_count(void) {
+    if (agIsEnvironmentStealthActive()) {
+        agRefreshCleanDyldTableIfNeeded();
+        if (gCleanDyldCount > 0) return gCleanDyldCount;
+    }
+    return orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
+}
+
+static const char *hooked_dyld_get_image_name(uint32_t image_index) {
+    if (agIsEnvironmentStealthActive()) {
+        uint32_t mapped = agMapCleanDyldIndex(image_index);
+        return orig_dyld_get_image_name ? orig_dyld_get_image_name(mapped) : _dyld_get_image_name(mapped);
+    }
+    return orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
+}
+
+static const struct mach_header *hooked_dyld_get_image_header(uint32_t image_index) {
+    if (agIsEnvironmentStealthActive()) {
+        uint32_t mapped = agMapCleanDyldIndex(image_index);
+        return orig_dyld_get_image_header ? orig_dyld_get_image_header(mapped) : _dyld_get_image_header(mapped);
+    }
+    return orig_dyld_get_image_header ? orig_dyld_get_image_header(image_index) : NULL;
+}
+
+static intptr_t hooked_dyld_get_image_vmaddr_slide(uint32_t image_index) {
+    if (agIsEnvironmentStealthActive()) {
+        uint32_t mapped = agMapCleanDyldIndex(image_index);
+        return orig_dyld_get_image_vmaddr_slide ? orig_dyld_get_image_vmaddr_slide(mapped) : _dyld_get_image_vmaddr_slide(mapped);
+    }
+    return orig_dyld_get_image_vmaddr_slide ? orig_dyld_get_image_vmaddr_slide(image_index) : 0;
 }
 
 static const char *(*orig_class_getImageName)(Class cls) = NULL;
 static const char *hooked_class_getImageName(Class cls) {
     const char *name = orig_class_getImageName ? orig_class_getImageName(cls) : NULL;
     if (name && agIsEnvironmentStealthActive()) {
-        if (agIsSuspiciousJailbreakPath(name) || strstr(name, "AngelGuardian") != NULL) {
+        if (agIsSuspiciousJailbreakPath(name)) {
             agReportAntiDetectionInterceptFromClient(1);
             agClientDiagLog("CLS_IMG_MASKED cls=%s", cls ? class_getName(cls) : "nil");
             return gCoreLocationPath;
@@ -25949,7 +26051,7 @@ static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int 
         unsigned int writeIdx = 0;
         unsigned int total = *outCount;
         for (unsigned int i = 0; i < total; i++) {
-            if (names[i] && (agIsSuspiciousJailbreakPath(names[i]) || strstr(names[i], "AngelGuardian") != NULL)) {
+            if (names[i] && agIsSuspiciousJailbreakPath(names[i])) {
                 continue;
             }
             names[writeIdx++] = names[i];
@@ -25963,8 +26065,6 @@ static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int 
     return names;
 }
 
-// 彻底斩断「GPS 在目标点、Wi-Fi BSSID 却在 60 公里外真实家里」的交叉穿帮：
-// wifiMode == 2 时返回用户指定的公司 Wi-Fi；wifiMode == 1（默认防检测）时返回基于目标虚拟坐标生成的确定性虚拟路由器 BSSID！
 static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     if (!agIsAntiDetectionShieldActive()) return 0;
 
@@ -25997,7 +26097,6 @@ static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
         }
     }
 
-    // wifiMode == 1 (默认防检测模式)：根据目标虚拟坐标生成恒定且不在异地高德库中的虚拟企业级路由器 BSSID，消除异地 BSSID 穿帮
     uint32_t latInt = (uint32_t)(fabs(lat) * 1000.0);
     uint32_t lonInt = (uint32_t)(fabs(lon) * 1000.0);
     uint32_t h = (latInt * 2654435761u) ^ (lonInt * 2246822519u);
@@ -26017,7 +26116,7 @@ static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     return 2;
 }
 
-// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地内存标量无损覆写 ====================
+// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地内存覆写 + 抹除 fMatchInfo 异地道路残留 ====================
 static const void * const kAGInternalMutatedLocationKey = &kAGInternalMutatedLocationKey;
 
 static void agMutateLocationInternalInPlace(CLLocation *loc) {
@@ -26025,6 +26124,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     if (agIsInAppCustomConstructedLocation(loc) || agIsCleanSpoofedLocation(loc)) return;
 
     static Ivar sInternalIvar = NULL;
+    static Ivar sMatchInfoIvar = NULL;
     static ptrdiff_t sFLocOffset = -1;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -26033,6 +26133,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
         if (internalCls) {
             Ivar fLocIvar = class_getInstanceVariable(internalCls, "fLocation");
             if (fLocIvar) sFLocOffset = ivar_getOffset(fLocIvar);
+            sMatchInfoIvar = class_getInstanceVariable(internalCls, "fMatchInfo");
         }
     });
     if (!sInternalIvar || sFLocOffset < 0) return;
@@ -26057,6 +26158,14 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
             }
         }
         objc_setAssociatedObject(loc, kAGInternalMutatedLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    // 关键清理：清空 CLLocationInternal 内部的 fMatchInfo 异地道路匹配对象，防止 loc.matchInfo.matchCoordinate 暴露 60 公里外的真实坐标
+    if (sMatchInfoIvar) {
+        id oldMatch = object_getIvar(internalObj, sMatchInfoIvar);
+        if (oldMatch) {
+            object_setIvar(internalObj, sMatchInfoIvar, nil);
+        }
     }
 
     raw->coordinate.latitude = tel.lat;
@@ -26103,7 +26212,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     }
 }
 
-// ==================== Delegate 边界动态拦截与原厂指针还原登记表 ====================
+// ==================== Delegate 边界动态拦截 + 钉钉 DTCLocationManager 内部方法解剖探针 ====================
 typedef struct {
     IMP origIMP;
     IMP hookedIMP;
@@ -26114,6 +26223,34 @@ static AGDelegateHookRecord gDelHookRecords[32];
 static size_t gDelHookRecordCount = 0;
 static NSMutableSet<NSString *> *gHookedDelegateClasses = nil;
 static os_unfair_lock gDelHookLock = OS_UNFAIR_LOCK_INIT;
+
+static void agDumpClassMethodsToDiag(Class cls, const char *tag) {
+    if (!cls) return;
+    unsigned int mCount = 0;
+    Method *mList = class_copyMethodList(cls, &mCount);
+    if (!mList || mCount == 0) {
+        if (mList) free(mList);
+        return;
+    }
+    char lineBuf[80];
+    memset(lineBuf, 0, sizeof(lineBuf));
+    snprintf(lineBuf, sizeof(lineBuf) - 1, "%s(%u):", tag, mCount);
+    for (unsigned int i = 0; i < mCount; i++) {
+        const char *mName = sel_getName(method_getName(mList[i]));
+        if (!mName || strncmp(mName, ".cxx", 4) == 0) continue;
+        if (strlen(lineBuf) + strlen(mName) + 2 >= 76) {
+            agClientDiagLog("%s", lineBuf);
+            memset(lineBuf, 0, sizeof(lineBuf));
+            snprintf(lineBuf, sizeof(lineBuf) - 1, "%s+:", tag);
+        }
+        strncat(lineBuf, " ", sizeof(lineBuf) - strlen(lineBuf) - 1);
+        strncat(lineBuf, mName, sizeof(lineBuf) - strlen(lineBuf) - 1);
+    }
+    if (strlen(lineBuf) > 0) {
+        agClientDiagLog("%s", lineBuf);
+    }
+    free(mList);
+}
 
 static void agHookLocationManagerDelegateIfNeeded(id delegate) {
     if (!delegate || !agIsCurrentProcessTargetedForLocSpoof()) return;
@@ -26132,6 +26269,9 @@ static void agHookLocationManagerDelegateIfNeeded(id delegate) {
     os_unfair_lock_unlock(&gDelHookLock);
 
     agClientDiagLog("DEL_HOOK cls=%s", [clsName UTF8String]);
+    if ([clsName containsString:@"DTC"] || [clsName containsString:@"ADT"] || [clsName containsString:@"DT"]) {
+        agDumpClassMethodsToDiag(delCls, [clsName UTF8String]);
+    }
 
     SEL selUpdateLocs = @selector(locationManager:didUpdateLocations:);
     Method mUpdate = class_getInstanceMethod(delCls, selUpdateLocs);
@@ -26141,6 +26281,12 @@ static void agHookLocationManagerDelegateIfNeeded(id delegate) {
             if (agIsCurrentProcessTargetedForLocSpoof() && [locations isKindOfClass:[NSArray class]]) {
                 for (CLLocation *loc in locations) {
                     agMutateLocationInternalInPlace(loc);
+                }
+                if ([clsName containsString:@"DTC"] && locations.count > 0) {
+                    CLLocation *firstLoc = locations.firstObject;
+                    CLLocationCoordinate2D c = [firstLoc coordinate];
+                    agClientDiagLog("DTC_RECV cnt=%lu coord=(%.5f,%.5f) acc=%.2f",
+                                    (unsigned long)locations.count, c.latitude, c.longitude, [firstLoc horizontalAccuracy]);
                 }
             }
             ((void(*)(id, SEL, id, id))origIMP)(selfObj, selUpdateLocs, mgr, locations);
@@ -26213,7 +26359,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     NSInteger mode = agResolveWiFiProtectionMode(&customWiFi);
     static NSUInteger sWiFiLogCount = 0;
     sWiFiLogCount++;
-    if (sWiFiLogCount <= 6) {
+    if (sWiFiLogCount <= 3) {
         agClientDiagLog("WIFI_SPOOF #%lu mode=%ld bssid=%s",
                         (unsigned long)sWiFiLogCount, (long)mode,
                         customWiFi[@"BSSID"] ? [customWiFi[@"BSSID"] UTF8String] : "pass");
@@ -26894,8 +27040,16 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
     uintptr_t tImp2 = ((uintptr_t)&method_getImplementation & 0x0000007fffffffffULL);
     uintptr_t tCImp1 = orig_class_getMethodImplementation ? ((uintptr_t)orig_class_getMethodImplementation & 0x0000007fffffffffULL) : 0;
     uintptr_t tCImp2 = ((uintptr_t)&class_getMethodImplementation & 0x0000007fffffffffULL);
+
+    uintptr_t tCnt1  = orig_dyld_image_count ? ((uintptr_t)orig_dyld_image_count & 0x0000007fffffffffULL) : 0;
+    uintptr_t tCnt2  = ((uintptr_t)&_dyld_image_count & 0x0000007fffffffffULL);
     uintptr_t tDyld1 = orig_dyld_get_image_name ? ((uintptr_t)orig_dyld_get_image_name & 0x0000007fffffffffULL) : 0;
     uintptr_t tDyld2 = ((uintptr_t)&_dyld_get_image_name & 0x0000007fffffffffULL);
+    uintptr_t tHdr1  = orig_dyld_get_image_header ? ((uintptr_t)orig_dyld_get_image_header & 0x0000007fffffffffULL) : 0;
+    uintptr_t tHdr2  = ((uintptr_t)&_dyld_get_image_header & 0x0000007fffffffffULL);
+    uintptr_t tSld1  = orig_dyld_get_image_vmaddr_slide ? ((uintptr_t)orig_dyld_get_image_vmaddr_slide & 0x0000007fffffffffULL) : 0;
+    uintptr_t tSld2  = ((uintptr_t)&_dyld_get_image_vmaddr_slide & 0x0000007fffffffffULL);
+
     uintptr_t tCImg1 = orig_class_getImageName ? ((uintptr_t)orig_class_getImageName & 0x0000007fffffffffULL) : 0;
     uintptr_t tCImg2 = ((uintptr_t)&class_getImageName & 0x0000007fffffffffULL);
     uintptr_t tOImg1 = orig_objc_copyImageNames ? ((uintptr_t)orig_objc_copyImageNames & 0x0000007fffffffffULL) : 0;
@@ -26945,9 +27099,18 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
                             if (val == tCImp2 && tCImp2 != tCImp1) orig_class_getMethodImplementation = (IMP (*)(Class, SEL))slots[k];
                             replacement = (void *)hooked_class_getMethodImplementation;
                             gTotalGOTImpMatches++;
+                        } else if ((tCnt1 != 0 && val == tCnt1) || (tCnt2 != 0 && val == tCnt2)) {
+                            if (val == tCnt2 && tCnt2 != tCnt1) orig_dyld_image_count = (uint32_t (*)(void))slots[k];
+                            replacement = (void *)hooked_dyld_image_count;
                         } else if ((tDyld1 != 0 && val == tDyld1) || (tDyld2 != 0 && val == tDyld2)) {
                             if (val == tDyld2 && tDyld2 != tDyld1) orig_dyld_get_image_name = (const char *(*)(uint32_t))slots[k];
                             replacement = (void *)hooked_dyld_get_image_name;
+                        } else if ((tHdr1 != 0 && val == tHdr1) || (tHdr2 != 0 && val == tHdr2)) {
+                            if (val == tHdr2 && tHdr2 != tHdr1) orig_dyld_get_image_header = (const struct mach_header *(*)(uint32_t))slots[k];
+                            replacement = (void *)hooked_dyld_get_image_header;
+                        } else if ((tSld1 != 0 && val == tSld1) || (tSld2 != 0 && val == tSld2)) {
+                            if (val == tSld2 && tSld2 != tSld1) orig_dyld_get_image_vmaddr_slide = (intptr_t (*)(uint32_t))slots[k];
+                            replacement = (void *)hooked_dyld_get_image_vmaddr_slide;
                         } else if ((tCImg1 != 0 && val == tCImg1) || (tCImg2 != 0 && val == tCImg2)) {
                             if (val == tCImg2 && tCImg2 != tCImg1) orig_class_getImageName = (const char *(*)(Class))slots[k];
                             replacement = (void *)hooked_class_getImageName;
@@ -26999,8 +27162,17 @@ static void agInstallEnvStealthCHooksIfNeeded(void) {
         orig_class_getMethodImplementation = (IMP (*)(Class, SEL))(&class_getMethodImplementation);
         if (!orig_class_getMethodImplementation) orig_class_getMethodImplementation = (IMP (*)(Class, SEL))dlsym(RTLD_DEFAULT, "class_getMethodImplementation");
     }
+    if (!orig_dyld_image_count) {
+        orig_dyld_image_count = (uint32_t (*)(void))dlsym(RTLD_DEFAULT, "_dyld_image_count");
+    }
     if (!orig_dyld_get_image_name) {
-        orig_dyld_get_image_name = (const char *(*)(uint32_t))(&_dyld_get_image_name);
+        orig_dyld_get_image_name = (const char *(*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+    }
+    if (!orig_dyld_get_image_header) {
+        orig_dyld_get_image_header = (const struct mach_header *(*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
+    }
+    if (!orig_dyld_get_image_vmaddr_slide) {
+        orig_dyld_get_image_vmaddr_slide = (intptr_t (*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_vmaddr_slide");
     }
     if (!orig_class_getImageName) {
         orig_class_getImageName = (const char *(*)(Class))(&class_getImageName);
@@ -27070,10 +27242,8 @@ static void agSyncClientHooksWithCurrentState(void) {
         BOOL shouldEnableThisHook = NO;
         if (spoofActive) {
             if (i < 18) {
-                // 0~17 项：环境与已由 _internal 内存提供数据的属性，保持苹果原装 IMP 指针
                 shouldEnableThisHook = NO;
             } else {
-                // 18~35 项：由 hooked_method_getImplementation / hooked_class_getMethodImplementation / hooked_dladdr 100% 隐藏 Hook 指针
                 shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
             }
         }
@@ -27164,6 +27334,9 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
         Dl_info selfInfo;
         if (dladdr((const void *)&agIsCurrentProcessTargetedForLocSpoof, &selfInfo) != 0) {
             gSelfDylibBase = selfInfo.dli_fbase;
+            if (!isSpringBoard && !isPreferences && gSelfDylibBase != NULL) {
+                agScrubSelfMachOHeaderInMemory(gSelfDylibBase);
+            }
         }
         Dl_info clInfo;
         void *clSym = dlsym(RTLD_DEFAULT, "CLLocationCoordinate2DMake");
