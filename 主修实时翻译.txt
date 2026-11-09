@@ -25797,11 +25797,13 @@ static int my_TCCAccessPreflight(CFStringRef service, CFDictionaryRef options) {
 @end
 
 typedef void (^AGAMapLocatingCompletionBlock)(CLLocation *location, id regeocode, NSError *error);
+typedef void (*AGDyldImageCallback)(const struct mach_header *header, intptr_t vmaddr_slide);
 
 static void *gSelfDylibBase = NULL;
 static void *gCoreLocationBase = NULL;
 static void *gCoreLocationValidSym = NULL;
 static const char *gCoreLocationPath = "/System/Library/Frameworks/CoreLocation.framework/CoreLocation";
+static NSTimeInterval gLastMutateTriggerTime = 0;
 
 static void agClientDiagLogQueued(NSString *line) {
     if (!line || line.length == 0 || agIsSpringBoardProcess()) return;
@@ -25881,7 +25883,7 @@ static NSString *agResolveObjCMethodForAddress(uintptr_t targetPC) {
 static void agCaptureAndLogPopupCallStack(NSString *triggerText, const char *sourceTag) {
     static NSTimeInterval sLastTrapTime = 0;
     NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-    if (now - sLastTrapTime < 1.5) return;
+    if (now - sLastTrapTime < 1.2) return;
     sLastTrapTime = now;
 
     void *callstack[24];
@@ -26028,16 +26030,71 @@ static IMP hooked_class_getMethodImplementation(Class cls, SEL name) {
     return realIMP;
 }
 
-// ==================== 全套 Dyld 镜像索引重映射表 ====================
+// ==================== 全套 Dyld 镜像索引重映射与回调过滤 ====================
 static uint32_t (*orig_dyld_image_count)(void) = NULL;
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index) = NULL;
 static const struct mach_header *(*orig_dyld_get_image_header)(uint32_t image_index) = NULL;
 static intptr_t (*orig_dyld_get_image_vmaddr_slide)(uint32_t image_index) = NULL;
+static void (*orig_dyld_register_func_for_add_image)(AGDyldImageCallback func) = NULL;
 
 static uint32_t gCleanDyldIndices[2048];
 static uint32_t gCleanDyldCount = 0;
 static uint32_t gLastRawDyldCount = 0;
 static os_unfair_lock gDyldTableLock = OS_UNFAIR_LOCK_INIT;
+
+static AGDyldImageCallback gRegisteredAppDyldCallbacks[64];
+static size_t gRegisteredAppDyldCallbackCount = 0;
+static os_unfair_lock gDyldCbLock = OS_UNFAIR_LOCK_INIT;
+
+static BOOL agIsMachOHeaderJailbreakTweak(const struct mach_header *header) {
+    if (!header) return NO;
+    if (gSelfDylibBase != NULL && header == gSelfDylibBase) return YES;
+    Dl_info info;
+    memset(&info, 0, sizeof(info));
+    if (orig_dladdr && orig_dladdr(header, &info) != 0 && info.dli_fname) {
+        char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
+        if (agIsSuspiciousJailbreakPath(info.dli_fname) ||
+            strstr(info.dli_fname, ag_enc_cstr_ellekit(bEk)) != NULL ||
+            strstr(info.dli_fname, ag_enc_cstr_libroothide(bRh)) != NULL ||
+            strstr(info.dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL) {
+            return YES;
+        }
+    } else if (orig_dladdr && orig_dladdr(header, &info) == 0) {
+        // RootHide 对 .jbroot 内的动态库调用 dladdr 会返回 0，直接判定为需要隐藏的越狱镜像
+        return YES;
+    }
+    return NO;
+}
+
+static void hooked_dyld_register_func_for_add_image(AGDyldImageCallback func) {
+    if (!func) return;
+    if (!agIsEnvironmentStealthActive()) {
+        if (orig_dyld_register_func_for_add_image) orig_dyld_register_func_for_add_image(func);
+        return;
+    }
+    agReportAntiDetectionInterceptFromClient(1);
+    agClientDiagLogQueued(@"DYLD_REG_CB_INTERCEPTED");
+    // 仅向钉钉的回调函数推送干净的系统与 App 自身镜像，彻底过滤 roothide / ellekit / AngelGuardian！
+    uint32_t rawCount = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
+    for (uint32_t i = 0; i < rawCount; i++) {
+        const struct mach_header *hdr = orig_dyld_get_image_header ? orig_dyld_get_image_header(i) : _dyld_get_image_header(i);
+        const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
+        char bEk[12] = {0}, bRh[16] = {0}, bMs[20] = {0};
+        BOOL isTweak = ((gSelfDylibBase != NULL && hdr == gSelfDylibBase) ||
+                        (name && (agIsSuspiciousJailbreakPath(name) ||
+                                  strstr(name, ag_enc_cstr_ellekit(bEk)) != NULL ||
+                                  strstr(name, ag_enc_cstr_libroothide(bRh)) != NULL ||
+                                  strstr(name, ag_enc_cstr_mobilesubstrate(bMs)) != NULL)));
+        if (isTweak) continue;
+        intptr_t slide = orig_dyld_get_image_vmaddr_slide ? orig_dyld_get_image_vmaddr_slide(i) : _dyld_get_image_vmaddr_slide(i);
+        func(hdr, slide);
+    }
+    os_unfair_lock_lock(&gDyldCbLock);
+    if (gRegisteredAppDyldCallbackCount < 64) {
+        gRegisteredAppDyldCallbacks[gRegisteredAppDyldCallbackCount++] = func;
+    }
+    os_unfair_lock_unlock(&gDyldCbLock);
+}
 
 static void agRefreshCleanDyldTableIfNeeded(void) {
     uint32_t rawCount = orig_dyld_image_count ? orig_dyld_image_count() : _dyld_image_count();
@@ -26170,7 +26227,7 @@ static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     return 1;
 }
 
-// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地一次性锁定覆写 ====================
+// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 诞生源头一次性锁定覆写 ====================
 static const void * const kAGInternalMutatedLocationKey = &kAGInternalMutatedLocationKey;
 
 static void agMutateLocationInternalInPlace(CLLocation *loc) {
@@ -26251,6 +26308,7 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
         if (raw->rawReferenceFrame == 0) raw->rawReferenceFrame = 1;
     }
 
+    gLastMutateTriggerTime = CFAbsoluteTimeGetCurrent();
     static NSUInteger sMutateLogCnt = 0;
     if (++sMutateLogCnt <= 8) {
         agClientDiagLogQueued([NSString stringWithFormat:@"MUTATE_OK #%lu (%.5f,%.5f) hAcc=%.4f",
@@ -26305,7 +26363,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     return orig_CNCopyCurrentNetworkInfo ? orig_CNCopyCurrentNetworkInfo(interfaceName) : NULL;
 }
 
-// ==================== 3. 实例级自洽的客户端定位、IMP 自检伪装与 WKWebView 抓包 Hook ====================
+// ==================== 3. 实例级自洽的客户端定位、IMP 自检伪装与全链路抓包 Hook ====================
 %group StealthLocationClientHooks
 
 %hook NSObject
@@ -26330,24 +26388,39 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 %end
 
+%hook UIViewController
+
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if (viewControllerToPresent && (CFAbsoluteTimeGetCurrent() - gLastMutateTriggerTime < 15.0)) {
+        NSString *vcCls = NSStringFromClass([viewControllerToPresent class]) ?: @"unknown";
+        agCaptureAndLogPopupCallStack(vcCls, "PRESENT_VC");
+    }
+    %orig(viewControllerToPresent, flag, completion);
+}
+
+%end
+
 %hook WKWebView
 
 - (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id, NSError *))completionHandler {
-    if (javaScriptString && javaScriptString.length >= 4) {
-        if ([javaScriptString containsString:@"风险"] ||
-            [javaScriptString containsString:@"插件"] ||
-            [javaScriptString containsString:@"不可信"] ||
-            [javaScriptString containsString:@"虚拟"] ||
-            [javaScriptString containsString:@"作弊"] ||
-            [javaScriptString containsString:@"isMock"] ||
-            [javaScriptString containsString:@"fake"] ||
-            [javaScriptString containsString:@"110.195"] ||
-            [javaScriptString containsString:@"errorCode"]) {
+    if (javaScriptString && javaScriptString.length >= 2) {
+        BOOL inLocWindow = (CFAbsoluteTimeGetCurrent() - gLastMutateTriggerTime < 12.0);
+        BOOL hasRiskKw = ([javaScriptString containsString:@"风险"] ||
+                          [javaScriptString containsString:@"插件"] ||
+                          [javaScriptString containsString:@"不可信"] ||
+                          [javaScriptString containsString:@"虚拟"] ||
+                          [javaScriptString containsString:@"作弊"] ||
+                          [javaScriptString containsString:@"异常"] ||
+                          [javaScriptString containsString:@"mock"] ||
+                          [javaScriptString containsString:@"fake"] ||
+                          [javaScriptString containsString:@"latitude"] ||
+                          [javaScriptString containsString:@"110.20"]);
+        if (inLocWindow || hasRiskKw) {
             static NSUInteger sJSLogCnt = 0;
-            if (++sJSLogCnt <= 10) {
+            if (++sJSLogCnt <= 20) {
                 NSString *cleanJS = [[javaScriptString componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
-                if (cleanJS.length > 72) cleanJS = [cleanJS substringToIndex:72];
-                agClientDiagLogQueued([NSString stringWithFormat:@"JS_EVAL #%lu %@", (unsigned long)sJSLogCnt, cleanJS]);
+                if (cleanJS.length > 74) cleanJS = [cleanJS substringToIndex:74];
+                agClientDiagLogQueued([NSString stringWithFormat:@"WK_JS #%lu %@", (unsigned long)sJSLogCnt, cleanJS]);
             }
         }
     }
@@ -26488,6 +26561,32 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     return origCoord;
 }
 
+- (CLLocationCoordinate2D)rawCoordinate {
+    CLLocationCoordinate2D origRaw = %orig;
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
+        if (agIsInAppCustomConstructedLocation(self)) {
+            return origRaw;
+        }
+        AGSpoofedTelemetry tel;
+        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
+            return CLLocationCoordinate2DMake(tel.lat, tel.lon);
+        }
+    }
+    return origRaw;
+}
+
+- (CLLocationDirection)rawCourse {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
+        AGSpoofedTelemetry tel;
+        if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid && (tel.speed > 0.1 || agIsAntiDetectionShieldActive())) {
+            return tel.course;
+        }
+    }
+    return %orig;
+}
+
 - (CLLocationDistance)altitude {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
         agMutateLocationInternalInPlace(self);
@@ -26571,6 +26670,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (NSDate *)timestamp {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
+    }
     NSDate *origDate = %orig;
     if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self)) {
         if (origDate && fabs([origDate timeIntervalSinceNow]) < 30.0) {
@@ -26582,6 +26684,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationSourceInformation *)sourceInformation {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
+    }
     CLLocationSourceInformation *origInfo = %orig;
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self)) {
         if (@available(iOS 15.0, *)) {
@@ -26815,9 +26920,11 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 %end // end group StealthLocationClientHooks
 
-// ==================== 3B. 动态无符号注册的底层 clientLocation 与高德/钉钉防检测脱敏函数 ====================
+// ==================== 3B. 动态无符号注册的底层 initWithClientLocation / clientLocation 结构体替换函数 ====================
 static IMP gOrig_CLLoc_clientLoc = NULL;
 static Method gDynMethod_CLLoc_clientLoc = NULL;
+static IMP gOrig_CLLoc_initClientLoc = NULL;
+static Method gDynMethod_CLLoc_initClientLoc = NULL;
 
 typedef struct {
     const char *clsName;
@@ -26902,6 +27009,41 @@ static BOOL agDyn_AMap_requestLocationWithReGeocode(id self, SEL _cmd, BOOL with
         return ((BOOL(*)(id, SEL, BOOL, id))gRiskClassSlots[0].origReqLoc)(self, _cmd, withReGeocode, safeBlock);
     }
     return NO;
+}
+
+// 在 CLLocation 诞生的第 0 毫秒直接改写 clientLocation 结构体，杜绝 rawCoordinate 泄漏真坐标！
+static id agDyn_CLLoc_initWithClientLocation(CLLocation *self, SEL _cmd, AGCLDaemonLocation clientLoc) {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !sIsCreatingInternalSpoofLocation) {
+        AGSpoofedTelemetry tel;
+        if (agGetCurrentSpoofedTelemetry(&tel) && tel.valid) {
+            clientLoc.coordinate.latitude = tel.lat;
+            clientLoc.coordinate.longitude = tel.lon;
+            clientLoc.rawCoordinate.latitude = tel.lat;
+            clientLoc.rawCoordinate.longitude = tel.lon;
+            clientLoc.fromSimulationController = NO;
+            if (clientLoc.type <= 0 || clientLoc.type > 2) clientLoc.type = 1;
+            if (clientLoc.integrity == 0) clientLoc.integrity = 50;
+            if (clientLoc.suitability <= 0) clientLoc.suitability = 1;
+            clientLoc.horizontalAccuracy = tel.hAcc;
+            clientLoc.verticalAccuracy   = tel.vAcc;
+            clientLoc.altitude = tel.alt;
+            clientLoc.ellipsoidalAltitude = tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
+            if (clientLoc.timestamp <= 0.0 || fabs(CFAbsoluteTimeGetCurrent() - clientLoc.timestamp) > 15.0) {
+                clientLoc.timestamp = CFAbsoluteTimeGetCurrent();
+            }
+            if (agIsAntiDetectionShieldActive()) {
+                if (clientLoc.confidence <= 0) clientLoc.confidence = 68;
+                if (clientLoc.lifespan <= 0.0) clientLoc.lifespan = 20.0;
+                if (clientLoc.referenceFrame == 0) clientLoc.referenceFrame = 1;
+                if (clientLoc.rawReferenceFrame == 0) clientLoc.rawReferenceFrame = 1;
+            }
+        }
+    }
+    id instance = gOrig_CLLoc_initClientLoc ? ((id(*)(id, SEL, AGCLDaemonLocation))gOrig_CLLoc_initClientLoc)(self, _cmd, clientLoc) : nil;
+    if (instance && agIsCurrentProcessTargetedForLocSpoof() && !sIsCreatingInternalSpoofLocation) {
+        agMutateLocationInternalInPlace(instance);
+    }
+    return instance;
 }
 
 static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
@@ -27019,6 +27161,7 @@ typedef struct {
 static AGMethodIMPBackup gClientHookTable[] = {
     {"NSObject", "methodForSelector:", NO, YES, NULL, NULL, NULL},
     {"NSObject", "instanceMethodForSelector:", YES, YES, NULL, NULL, NULL},
+    {"UIViewController", "presentViewController:animated:completion:", NO, NO, NULL, NULL, NULL},
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
@@ -27048,6 +27191,8 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "copyWithZone:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "coordinate", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "rawCoordinate", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "rawCourse", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "course", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speed", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "distanceFromLocation:", NO, NO, NULL, NULL, NULL},
@@ -27072,6 +27217,10 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const cha
     if (gOrig_CLLoc_clientLoc && cleanAddr == ((uintptr_t)agDyn_CLLoc_clientLoc & 0x0000007fffffffffULL)) {
         if (outHookName) *outHookName = "CLLocation.clientLocation";
         return (const void *)gOrig_CLLoc_clientLoc;
+    }
+    if (gOrig_CLLoc_initClientLoc && cleanAddr == ((uintptr_t)agDyn_CLLoc_initWithClientLocation & 0x0000007fffffffffULL)) {
+        if (outHookName) *outHookName = "CLLocation.initWithClientLocation:";
+        return (const void *)gOrig_CLLoc_initClientLoc;
     }
     if (cleanAddr == ((uintptr_t)agDyn_Risk_detectRiskGetter & 0x0000007fffffffffULL)) {
         for (size_t i = 0; i < kAGRiskClassSlotCount; i++) {
@@ -27126,6 +27275,8 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
     uintptr_t tHdr2  = ((uintptr_t)&_dyld_get_image_header & 0x0000007fffffffffULL);
     uintptr_t tSld1  = orig_dyld_get_image_vmaddr_slide ? ((uintptr_t)orig_dyld_get_image_vmaddr_slide & 0x0000007fffffffffULL) : 0;
     uintptr_t tSld2  = ((uintptr_t)&_dyld_get_image_vmaddr_slide & 0x0000007fffffffffULL);
+    uintptr_t tReg1  = orig_dyld_register_func_for_add_image ? ((uintptr_t)orig_dyld_register_func_for_add_image & 0x0000007fffffffffULL) : 0;
+    uintptr_t tReg2  = ((uintptr_t)&_dyld_register_func_for_add_image & 0x0000007fffffffffULL);
 
     uintptr_t tCImg1 = orig_class_getImageName ? ((uintptr_t)orig_class_getImageName & 0x0000007fffffffffULL) : 0;
     uintptr_t tCImg2 = ((uintptr_t)&class_getImageName & 0x0000007fffffffffULL);
@@ -27188,6 +27339,9 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
                         } else if ((tSld1 != 0 && val == tSld1) || (tSld2 != 0 && val == tSld2)) {
                             if (val == tSld2 && tSld2 != tSld1) orig_dyld_get_image_vmaddr_slide = (intptr_t (*)(uint32_t))slots[k];
                             replacement = (void *)hooked_dyld_get_image_vmaddr_slide;
+                        } else if ((tReg1 != 0 && val == tReg1) || (tReg2 != 0 && val == tReg2)) {
+                            if (val == tReg2 && tReg2 != tReg1) orig_dyld_register_func_for_add_image = (void (*)(AGDyldImageCallback))slots[k];
+                            replacement = (void *)hooked_dyld_register_func_for_add_image;
                         } else if ((tCImg1 != 0 && val == tCImg1) || (tCImg2 != 0 && val == tCImg2)) {
                             if (val == tCImg2 && tCImg2 != tCImg1) orig_class_getImageName = (const char *(*)(Class))slots[k];
                             replacement = (void *)hooked_class_getImageName;
@@ -27212,10 +27366,21 @@ static void agRebindGOTPointersInMachOHeader(const struct mach_header *header, i
 
 static void agOnAppMachOImageAdded(const struct mach_header *header, intptr_t slide) {
     if (!header || !agIsEnvironmentStealthActive()) return;
-    Dl_info info;
-    if (orig_dladdr && orig_dladdr(header, &info) != 0 && info.dli_fname) {
-        if (strstr(info.dli_fname, ".app/") != NULL && !agIsSuspiciousJailbreakPath(info.dli_fname)) {
-            agRebindGOTPointersInMachOHeader(header, slide);
+    BOOL isTweak = agIsMachOHeaderJailbreakTweak(header);
+    if (!isTweak) {
+        Dl_info info;
+        if (orig_dladdr && orig_dladdr(header, &info) != 0 && info.dli_fname) {
+            if (strstr(info.dli_fname, ".app/") != NULL) {
+                agRebindGOTPointersInMachOHeader(header, slide);
+            }
+        }
+        os_unfair_lock_lock(&gDyldCbLock);
+        size_t cbCnt = gRegisteredAppDyldCallbackCount;
+        AGDyldImageCallback cbs[64];
+        if (cbCnt > 0) memcpy(cbs, gRegisteredAppDyldCallbacks, cbCnt * sizeof(AGDyldImageCallback));
+        os_unfair_lock_unlock(&gDyldCbLock);
+        for (size_t i = 0; i < cbCnt; i++) {
+            if (cbs[i]) cbs[i](header, slide);
         }
     }
 }
@@ -27251,13 +27416,20 @@ static void agInstallEnvStealthCHooksIfNeeded(void) {
     if (!orig_dyld_get_image_vmaddr_slide) {
         orig_dyld_get_image_vmaddr_slide = (intptr_t (*)(uint32_t))dlsym(RTLD_DEFAULT, "_dyld_get_image_vmaddr_slide");
     }
+    if (!orig_dyld_register_func_for_add_image) {
+        orig_dyld_register_func_for_add_image = (void (*)(AGDyldImageCallback))dlsym(RTLD_DEFAULT, "_dyld_register_func_for_add_image");
+    }
     if (!orig_class_getImageName) {
         orig_class_getImageName = (const char *(*)(Class))(&class_getImageName);
     }
     if (!orig_objc_copyImageNames) {
         orig_objc_copyImageNames = (const char * _Nonnull * _Nonnull (*)(unsigned int *))(&objc_copyImageNames);
     }
-    _dyld_register_func_for_add_image(agOnAppMachOImageAdded);
+    if (orig_dyld_register_func_for_add_image) {
+        orig_dyld_register_func_for_add_image(agOnAppMachOImageAdded);
+    } else {
+        _dyld_register_func_for_add_image(agOnAppMachOImageAdded);
+    }
 }
 
 static void agSyncClientHooksWithCurrentState(void) {
@@ -27308,6 +27480,11 @@ static void agSyncClientHooksWithCurrentState(void) {
                     gOrig_CLLoc_clientLoc = method_getImplementation(gDynMethod_CLLoc_clientLoc);
                 }
             }
+            SEL selInitClientLoc = sel_registerName("initWithClientLocation:");
+            gDynMethod_CLLoc_initClientLoc = class_getInstanceMethod(clLocCls, selInitClientLoc);
+            if (gDynMethod_CLLoc_initClientLoc) {
+                gOrig_CLLoc_initClientLoc = method_getImplementation(gDynMethod_CLLoc_initClientLoc);
+            }
         }
 
         SEL selGetRisk = sel_registerName("detectRiskOfFakeLocation");
@@ -27352,6 +27529,13 @@ static void agSyncClientHooksWithCurrentState(void) {
         IMP t = spoofActive ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc;
         if (method_getImplementation(gDynMethod_CLLoc_clientLoc) != t) {
             method_setImplementation(gDynMethod_CLLoc_clientLoc, t);
+        }
+    }
+
+    if (gDynMethod_CLLoc_initClientLoc && gOrig_CLLoc_initClientLoc) {
+        IMP tInit = spoofActive ? (IMP)agDyn_CLLoc_initWithClientLocation : gOrig_CLLoc_initClientLoc;
+        if (method_getImplementation(gDynMethod_CLLoc_initClientLoc) != tInit) {
+            method_setImplementation(gDynMethod_CLLoc_initClientLoc, tInit);
         }
     }
 
