@@ -10006,7 +10006,7 @@ static NSString *agRadar24hFilePath(void) {
 #endif
 }
 
-// 客户端纯 C 零开销上报防检测拦截事件（限流每 2 秒最多上报 1 次，0 文件 I/O，0 对象分配）
+// 客户端纯 C 零开销上报防检测拦截事件（异步派发，不阻塞考勤软件同步检测线程，同时完整保留24h雷达统计）
 // detectType: 1=扫描越狱路径/动态库镜像, 2=探测高德/系统假定位标记, 3=探测路由器Wi-Fi(BSSID), 4=探测越狱URL协议
 static void agReportAntiDetectionInterceptFromClient(uint32_t detectType) {
     if (gCurrentProcessBundleHash == 0) return;
@@ -10016,16 +10016,19 @@ static void agReportAntiDetectionInterceptFromClient(uint32_t detectType) {
     if (now - sLastReportTime[detectType] < 2.0) return;
     sLastReportTime[detectType] = now;
 
-    static int sRadarToken = 0;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        notify_register_check("com.apple.coremedia.spatial.rd", &sRadarToken);
+    uint32_t capturedHash = gCurrentProcessBundleHash;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        static int sRadarToken = 0;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            notify_register_check("com.apple.coremedia.spatial.rd", &sRadarToken);
+        });
+        if (sRadarToken != 0) {
+            uint64_t payload = (((uint64_t)capturedHash) << 32) | ((uint64_t)(detectType & 0xFF));
+            notify_set_state(sRadarToken, payload ^ agKernelObfuscateMask(0x505));
+            notify_post("com.apple.coremedia.spatial.radar");
+        }
     });
-    if (sRadarToken != 0) {
-        uint64_t payload = (((uint64_t)gCurrentProcessBundleHash) << 32) | ((uint64_t)(detectType & 0xFF));
-        notify_set_state(sRadarToken, payload ^ agKernelObfuscateMask(0x505));
-        notify_post("com.apple.coremedia.spatial.radar");
-    }
 }
 
 // SpringBoard 端接收客户端拦截信标并记入 24 小时滚动雷达账本
@@ -25334,6 +25337,10 @@ static UIView *hooked_AGBuildModuleCard(AngelGuardianSettingsViewController *sel
 }
 
 __attribute__((constructor)) static void agInitNativeTranslationSettingsHook(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (![bid isEqualToString:@"com.apple.springboard"] && ![bid isEqualToString:@"com.apple.Preferences"]) {
+        return;
+    }
     Class cls = objc_getClass(AG_CLS_PREFS_CTRL_CSTR);
     SEL sel = @selector(buildIndependentModuleAccordionCardForTab:originY:width:);
     if (cls && sel) {
@@ -25546,6 +25553,7 @@ static int my_TCCAccessPreflight(CFStringRef service, CFDictionaryRef options) {
 }
 
 // ====== 防闪退替换 2 开始（替换文件底部直至末尾 %ctor） ======
+#import <mach-o/nlist.h>
 
 static void *gSelfDylibBase = NULL;
 static void *gCoreLocationBase = NULL;
@@ -25596,10 +25604,12 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr);
 
 static int (*orig_dladdr)(const void *addr, Dl_info *info) = NULL;
 static int hooked_dladdr(const void *addr, Dl_info *info) {
-    // 1. 若查询的是被 Hook 的定位方法指针 (兼容 arm64/arm64e PAC)，直接透传苹果原装 origIMP 给系统 dladdr，返回 100% 原厂真实符号信息！
+    // 1. 若查询的是被 Hook 的定位或传感器方法指针 (兼容 arm64/arm64e PAC)，直接透传苹果原装 origIMP 给系统 dladdr
+    // 彻底解决 Relaxin (libroothide 对插件地址返回 0) 与 Dopamine (暴露 /var/jb 插件路径) 引发的「不可信设备」！
     if (addr && info && orig_dladdr && agIsEnvironmentStealthActive()) {
         const void *origIMP = agResolveOriginalIMPForHookedAddr(addr);
         if (origIMP) {
+            agReportAntiDetectionInterceptFromClient(1);
             return orig_dladdr(origIMP, info);
         }
     }
@@ -25613,6 +25623,7 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
                            strstr(info->dli_fname, ag_enc_cstr_libroothide(bRh)) != NULL ||
                            strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
         if (shouldMask) {
+            agReportAntiDetectionInterceptFromClient(1);
             if (gCoreLocationValidSym && orig_dladdr) {
                 return orig_dladdr(gCoreLocationValidSym, info);
             }
@@ -25683,7 +25694,7 @@ static int hooked_access(const char *path, int amode) {
     return orig_access ? orig_access(path, amode) : -1;
 }
 
-// 方案 A：仅当用户主动开启「伪装指定 Wi-Fi (wifiMode == 2)」且填写了 SSID/MAC 时才替换 Wi-Fi，默认绝不返回 NULL 破坏真实网络状态一致性
+// 仅当用户主动开启「伪装指定 Wi-Fi (wifiMode == 2)」且填写了 SSID/MAC 时才替换 Wi-Fi，默认绝不返回 NULL 破坏真实网络状态一致性
 static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     if (!agIsAntiDetectionShieldActive()) return 0;
 
@@ -25884,16 +25895,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
                 fabs(origCoord.longitude - expectedGCJ.longitude) < 0.0002) {
                 objc_setAssociatedObject(self, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 return origCoord;
-            }
-            if (agIsAntiDetectionShieldActive()) {
-                static SEL sSetRefSel = NULL;
-                static dispatch_once_t onceToken;
-                dispatch_once(&onceToken, ^{
-                    sSetRefSel = sel_registerName("setReferenceFrame:");
-                });
-                if ([self respondsToSelector:sSetRefSel]) {
-                    ((void(*)(id, SEL, int))objc_msgSend)(self, sSetRefSel, 1);
-                }
             }
             return CLLocationCoordinate2DMake(tel.lat, tel.lon);
         }
@@ -26122,12 +26123,19 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     if (agIsAntiDetectionShieldActive()) {
         double kSpeed = 0.0;
         agReadSpoofStateFromKernel(NULL, NULL, NULL, NULL, NULL, NULL, NULL, &kSpeed, NULL);
+        static NSInteger sSessionBaseSteps = 0;
+        static NSTimeInterval sSessionStartTs = 0;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            sSessionBaseSteps = 1520 + (NSInteger)arc4random_uniform(360);
+            sSessionStartTs = CFAbsoluteTimeGetCurrent();
+        });
         if (kSpeed >= 0.2 && kSpeed <= 4.5) {
-            NSInteger baseSteps = orig ? [orig integerValue] : 1680;
-            NSInteger delta = (NSInteger)(((uint64_t)CFAbsoluteTimeGetCurrent() % 3600) * 1.6);
-            return @(MAX(baseSteps, 1200 + delta));
+            NSInteger baseSteps = orig ? MAX([orig integerValue], sSessionBaseSteps) : sSessionBaseSteps;
+            NSInteger delta = (NSInteger)(MAX(0.0, CFAbsoluteTimeGetCurrent() - sSessionStartTs) * 1.6);
+            return @(baseSteps + delta);
         } else if (orig == nil || [orig integerValue] == 0) {
-            return @(1520 + ((NSInteger)CFAbsoluteTimeGetCurrent() % 180));
+            return @(sSessionBaseSteps);
         }
     }
     return orig;
@@ -26242,7 +26250,7 @@ static BOOL agDyn_AMap_detectRisk(id self, SEL _cmd) {
 
 static void agDyn_AMap_setDetectRisk(id self, SEL _cmd, BOOL detectRisk) {
     if (agIsAntiDetectionShieldActive()) {
-        detectRisk = NO; // 强制将高德定位 SDK 内部成员变量 _detectRiskOfFakeLocation 锁定为 NO
+        detectRisk = NO;
     }
     if (gOrig_AMap_setDetectRisk) {
         ((void(*)(id, SEL, BOOL))gOrig_AMap_setDetectRisk)(self, _cmd, detectRisk);
@@ -26291,10 +26299,9 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
     if (agIsCurrentProcessTargetedForLocSpoof()) {
         BOOL shieldOn = agIsAntiDetectionShieldActive();
         if (agIsInAppCustomConstructedLocation(self)) {
-            if (shieldOn) {
-                raw.fromSimulationController = NO;
-                if (raw.type <= 0) raw.type = 1;
-            }
+            raw.fromSimulationController = NO;
+            if (raw.type <= 0) raw.type = 1;
+            if (raw.integrity == 0) raw.integrity = 50;
             return raw;
         }
         AGSpoofedTelemetry tel;
@@ -26303,18 +26310,21 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
             if (fabs(raw.coordinate.latitude - expectedGCJ.latitude) < 0.0002 &&
                 fabs(raw.coordinate.longitude - expectedGCJ.longitude) < 0.0002) {
                 objc_setAssociatedObject(self, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                if (shieldOn) {
-                    raw.fromSimulationController = NO;
-                    if (raw.type <= 0) raw.type = 1;
-                }
+                raw.fromSimulationController = NO;
+                if (raw.type <= 0) raw.type = 1;
+                if (raw.integrity == 0) raw.integrity = 50;
                 return raw;
             }
 
-            // 1. 核心坐标、室内过差精度修正与新鲜时间戳同步
             raw.coordinate.latitude = tel.lat;
             raw.coordinate.longitude = tel.lon;
             raw.rawCoordinate.latitude = tel.lat;
             raw.rawCoordinate.longitude = tel.lon;
+            raw.fromSimulationController = NO;
+            if (raw.type <= 0 || raw.type > 2) raw.type = 1;
+            if (raw.integrity == 0) raw.integrity = 50;
+            if (raw.suitability <= 0) raw.suitability = 1;
+
             if (raw.horizontalAccuracy <= 0.0 || raw.horizontalAccuracy > 60.0) {
                 raw.horizontalAccuracy = tel.hAcc;
             }
@@ -26332,27 +26342,15 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
                 raw.courseAccuracy = tel.crsAcc;
             }
 
-            // 2. 方案 A 无痕单点脱敏：在 clientLocation 结构体层自然融合真机传感器特征，不写死固定常数
             if (shieldOn) {
                 raw.horizontalAccuracy = tel.hAcc;
                 raw.altitude = tel.alt;
                 raw.ellipsoidalAltitude = tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
                 raw.verticalAccuracy = tel.vAcc;
-                if (tel.speed > 0.05) {
-                    raw.speed = tel.speed;
-                    raw.course = tel.course;
-                    raw.rawCourse = tel.course;
-                    raw.speedAccuracy = tel.spdAcc;
-                    raw.courseAccuracy = tel.crsAcc;
-                }
-                if (raw.suitability <= 0) raw.suitability = 1;
                 if (raw.confidence <= 0) raw.confidence = 60 + (int)(arc4random_uniform(15));
                 if (raw.lifespan <= 0.0) raw.lifespan = 15.0 + (double)(arc4random_uniform(12));
-                if (raw.type <= 0 || raw.type > 2) raw.type = 1;
-                if (raw.integrity == 0) raw.integrity = 50;
                 if (raw.referenceFrame == 0) raw.referenceFrame = 1;
                 if (raw.rawReferenceFrame == 0) raw.rawReferenceFrame = 1;
-                raw.fromSimulationController = NO;
             }
         }
     }
@@ -26406,7 +26404,7 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
 
 %end // end group SpringBoardOnlyHooks
 
-// ==================== 5. 方案 A 极简无痕 IMP 管理引擎 (0 C-Inline-Hook 篡改，保留苹果原厂 Getter 指针) ====================
+// ==================== 5. 全量受控 IMP 映射表与非侵入式 GOT 导入表重绑定引擎 ====================
 typedef struct {
     const char *clsName;
     const char *selName;
@@ -26418,23 +26416,40 @@ typedef struct {
 } AGMethodIMPBackup;
 
 static AGMethodIMPBackup gClientHookTable[] = {
-    // --- 前 3 项：纯环境路径防护 ---
+    // --- 前 3 项：环境路径防护 (默认保持原装 IMP，交由隐根/无根底层处理) ---
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
 
-    // --- 防检测专属：仅保留指定 Wi-Fi 与满分精度授权，CLLocation 其余属性全部保持苹果原装 IMP 指针 ---
+    // --- 防检测专属：Wi-Fi、精度授权、海拔与运动气压传感器 (全量登记，支持 dladdr 原厂指针还原与开关动态卸载) ---
     {"NEHotspotNetwork", "SSID", NO, YES, NULL, NULL, NULL},
     {"NEHotspotNetwork", "BSSID", NO, YES, NULL, NULL, NULL},
     {"CLLocationManager", "accuracyAuthorization", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "altitude", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "ellipsoidalAltitude", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "horizontalAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "verticalAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "speedAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "courseAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "timestamp", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "description", NO, YES, NULL, NULL, NULL},
+    {"CMMotionActivity", "stationary", NO, YES, NULL, NULL, NULL},
+    {"CMMotionActivity", "walking", NO, YES, NULL, NULL, NULL},
+    {"CMMotionActivity", "automotive", NO, YES, NULL, NULL, NULL},
+    {"CMPedometerData", "numberOfSteps", NO, YES, NULL, NULL, NULL},
+    {"CMPedometerData", "distance", NO, YES, NULL, NULL, NULL},
+    {"CMAltitudeData", "relativeAltitude", NO, YES, NULL, NULL, NULL},
+    {"CMAltitudeData", "pressure", NO, YES, NULL, NULL, NULL},
 
-    // --- 基础虚拟定位核心 Hook ---
+    // --- 基础虚拟定位与路线移动核心 Hook ---
     {"CLLocation", "initWithLatitude:longitude:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "copyWithZone:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "coordinate", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "course", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "speed", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "distanceFromLocation:", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "location", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "startUpdatingLocation", NO, NO, NULL, NULL, NULL},
@@ -26465,6 +26480,30 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr) {
     if (gOrig_CLLoc_clientLoc && cleanAddr == ((uintptr_t)agDyn_CLLoc_clientLoc & 0x0000007fffffffffULL)) {
         return (const void *)gOrig_CLLoc_clientLoc;
     }
+    if (gOrig_SrcInfo_isSimSoft && cleanAddr == ((uintptr_t)agDyn_SrcInfo_isSimSoft & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_SrcInfo_isSimSoft;
+    }
+    if (gOrig_SrcInfo_isProdAcc && cleanAddr == ((uintptr_t)agDyn_SrcInfo_isProdAcc & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_SrcInfo_isProdAcc;
+    }
+    if (gOrig_CLLoc_isSim1 && cleanAddr == ((uintptr_t)agDyn_CLLoc_isSim1 & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_CLLoc_isSim1;
+    }
+    if (gOrig_CLLoc_isSim2 && cleanAddr == ((uintptr_t)agDyn_CLLoc_isSim2 & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_CLLoc_isSim2;
+    }
+    if (gOrig_CLLoc_srcInfo && cleanAddr == ((uintptr_t)agDyn_CLLoc_srcInfo & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_CLLoc_srcInfo;
+    }
+    if (gOrig_CLLoc_type && cleanAddr == ((uintptr_t)agDyn_CLLoc_type & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_CLLoc_type;
+    }
+    if (gOrig_AMap_detectRisk && cleanAddr == ((uintptr_t)agDyn_AMap_detectRisk & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_AMap_detectRisk;
+    }
+    if (gOrig_AMap_setDetectRisk && cleanAddr == ((uintptr_t)agDyn_AMap_setDetectRisk & 0x0000007fffffffffULL)) {
+        return (const void *)gOrig_AMap_setDetectRisk;
+    }
     for (size_t i = 0; i < kAGClientHookTableCount; i++) {
         if (gClientHookTable[i].hookedIMP && gClientHookTable[i].origIMP) {
             uintptr_t hookedClean = ((uintptr_t)gClientHookTable[i].hookedIMP & 0x0000007fffffffffULL);
@@ -26476,13 +26515,167 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr) {
     return NULL;
 }
 
-// 铁律：绝不对 libdyld (dladdr / _dyld_get_image_name) 执行 MSHookFunction，保持系统共享缓存 0 脏页，根除 Relaxin 下「使用不可信设备打卡」！
+// 非侵入式 Mach-O 导入表符号重绑定：仅修改当前 App 自身镜像的 __DATA / __DATA_CONST 导入表指针，绝不触碰系统库 __TEXT 段（0 脏页）
+static void agRebindSymbolsInMachOHeader(const struct mach_header *header, intptr_t slide) {
+    if (!header || header->magic != MH_MAGIC_64) return;
+    if ((header->cpusubtype & 0x00ffffff) == 2 /* CPU_SUBTYPE_ARM64E */) return;
+
+    const struct mach_header_64 *h64 = (const struct mach_header_64 *)header;
+    const struct segment_command_64 *linkedit_seg = NULL;
+    const struct symtab_command *symtab_cmd = NULL;
+    const struct dysymtab_command *dysymtab_cmd = NULL;
+
+    uintptr_t cur = (uintptr_t)h64 + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < h64->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)cur;
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            if (strcmp(seg->segname, SEG_LINKEDIT) == 0) {
+                linkedit_seg = seg;
+            }
+        } else if (lc->cmd == LC_SYMTAB) {
+            symtab_cmd = (const struct symtab_command *)lc;
+        } else if (lc->cmd == LC_DYSYMTAB) {
+            dysymtab_cmd = (const struct dysymtab_command *)lc;
+        }
+        cur += lc->cmdsize;
+    }
+
+    if (!linkedit_seg || !symtab_cmd || !dysymtab_cmd) return;
+    if (dysymtab_cmd->nindirectsyms == 0 || symtab_cmd->nsyms == 0) return;
+
+    uintptr_t linkedit_base = (uintptr_t)slide + linkedit_seg->vmaddr - linkedit_seg->fileoff;
+    const struct nlist_64 *symtab = (const struct nlist_64 *)(linkedit_base + symtab_cmd->symoff);
+    const char *strtab = (const char *)(linkedit_base + symtab_cmd->stroff);
+    const uint32_t *indirect_symtab = (const uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
+
+    cur = (uintptr_t)h64 + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < h64->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)cur;
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            if (strcmp(seg->segname, SEG_DATA) != 0 &&
+                strcmp(seg->segname, "__DATA_CONST") != 0 &&
+                strcmp(seg->segname, "__AUTH_CONST") != 0) {
+                cur += lc->cmdsize;
+                continue;
+            }
+            const struct section_64 *sects = (const struct section_64 *)((uintptr_t)seg + sizeof(struct segment_command_64));
+            for (uint32_t j = 0; j < seg->nsects; j++) {
+                const struct section_64 *sect = &sects[j];
+                uint8_t type = sect->flags & SECTION_TYPE;
+                if (type != S_LAZY_SYMBOL_POINTERS && type != S_NON_LAZY_SYMBOL_POINTERS) continue;
+
+                uint32_t indirect_offset = sect->reserved1;
+                if (indirect_offset >= dysymtab_cmd->nindirectsyms) continue;
+
+                const uint32_t *indirect_bindings = indirect_symtab + indirect_offset;
+                void **bindings = (void **)((uintptr_t)slide + sect->addr);
+                size_t count = sect->size / sizeof(void *);
+
+                for (size_t k = 0; k < count; k++) {
+                    if (indirect_offset + k >= dysymtab_cmd->nindirectsyms) break;
+                    uint32_t symtab_idx = indirect_bindings[k];
+                    if (symtab_idx == INDIRECT_SYMBOL_ABS || symtab_idx == INDIRECT_SYMBOL_LOCAL ||
+                        symtab_idx == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
+                        continue;
+                    }
+                    if (symtab_idx >= symtab_cmd->nsyms) continue;
+                    uint32_t strtab_off = symtab[symtab_idx].n_un.n_strx;
+                    if (strtab_off >= symtab_cmd->strsize) continue;
+
+                    const char *sym_name = strtab + strtab_off;
+                    if (sym_name[0] != '_') continue;
+
+                    void *replacement = NULL;
+                    if (strcmp(sym_name, "_dladdr") == 0 && orig_dladdr != NULL) {
+                        replacement = (void *)hooked_dladdr;
+                    } else if (strcmp(sym_name, "_CNCopyCurrentNetworkInfo") == 0 && orig_CNCopyCurrentNetworkInfo != NULL) {
+                        replacement = (void *)hooked_CNCopyCurrentNetworkInfo;
+                    }
+
+                    if (replacement && bindings[k] != replacement) {
+                        vm_address_t page = (vm_address_t)&bindings[k] & ~(vm_address_t)(vm_page_size - 1);
+                        if (vm_protect(mach_task_self(), page, vm_page_size, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
+                            bindings[k] = replacement;
+                        }
+                    }
+                }
+            }
+        }
+        cur += lc->cmdsize;
+    }
+}
+
+static void agOnAppMachOImageAdded(const struct mach_header *header, intptr_t slide) {
+    if (!header || !agIsEnvironmentStealthActive()) return;
+    Dl_info info;
+    if (orig_dladdr && orig_dladdr(header, &info) != 0 && info.dli_fname) {
+        if (strstr(info.dli_fname, ".app/") != NULL && !agIsSuspiciousJailbreakPath(info.dli_fname)) {
+            agRebindSymbolsInMachOHeader(header, slide);
+        }
+    }
+}
+
 static void agInstallEnvStealthCHooksIfNeeded(void) {
+    if (gHasInstalledEnvStealthCHooks || !agIsEnvironmentStealthActive()) return;
     gHasInstalledEnvStealthCHooks = YES;
+    if (!orig_dladdr) {
+        orig_dladdr = (int (*)(const void *, Dl_info *))dlsym(RTLD_DEFAULT, "dladdr");
+    }
+    if (!orig_CNCopyCurrentNetworkInfo) {
+        orig_CNCopyCurrentNetworkInfo = (CFDictionaryRef (*)(CFStringRef))dlsym(RTLD_DEFAULT, "CNCopyCurrentNetworkInfo");
+    }
+    _dyld_register_func_for_add_image(agOnAppMachOImageAdded);
 }
 
 static void agInstallWiFiShieldCHooksIfNeeded(void) {
     gHasInstalledWiFiShieldCHooks = YES;
+    agInstallEnvStealthCHooksIfNeeded();
+}
+
+static void agSyncDynamicAMapHooks(BOOL enableHook) {
+    // "AMapLocationManager" ^ 0x5A
+    static const uint8_t kEncAMapCls[] = {0x1b,0x17,0x3b,0x2a,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x17,0x3b,0x34,0x3b,0x3d,0x3f,0x28};
+    // "detectRiskOfFakeLocation" ^ 0x5A
+    static const uint8_t kEncDetRisk[] = {0x3e,0x3f,0x2e,0x3f,0x39,0x2e,0x08,0x33,0x29,0x31,0x15,0x3c,0x1c,0x3b,0x31,0x3f,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34};
+    // "setDetectRiskOfFakeLocation:" ^ 0x5A
+    static const uint8_t kEncSetRisk[] = {0x29,0x3f,0x2e,0x1e,0x3f,0x2e,0x3f,0x39,0x2e,0x08,0x33,0x29,0x31,0x15,0x3c,0x1c,0x3b,0x31,0x3f,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x60};
+
+    Class amapCls = NSClassFromString(agDecodeObfuscatedCStr(kEncAMapCls, sizeof(kEncAMapCls), 0x5A));
+    if (!amapCls) return;
+
+    if (!gDynMethod_AMap_detectRisk) {
+        SEL selDet = agDecodeSelector(kEncDetRisk, sizeof(kEncDetRisk), 0x5A);
+        if (selDet) {
+            gDynMethod_AMap_detectRisk = class_getInstanceMethod(amapCls, selDet);
+            if (gDynMethod_AMap_detectRisk) {
+                gOrig_AMap_detectRisk = method_getImplementation(gDynMethod_AMap_detectRisk);
+            }
+        }
+    }
+    if (!gDynMethod_AMap_setDetectRisk) {
+        SEL selSet = agDecodeSelector(kEncSetRisk, sizeof(kEncSetRisk), 0x5A);
+        if (selSet) {
+            gDynMethod_AMap_setDetectRisk = class_getInstanceMethod(amapCls, selSet);
+            if (gDynMethod_AMap_setDetectRisk) {
+                gOrig_AMap_setDetectRisk = method_getImplementation(gDynMethod_AMap_setDetectRisk);
+            }
+        }
+    }
+
+    if (gDynMethod_AMap_detectRisk && gOrig_AMap_detectRisk) {
+        IMP target = enableHook ? (IMP)agDyn_AMap_detectRisk : gOrig_AMap_detectRisk;
+        if (method_getImplementation(gDynMethod_AMap_detectRisk) != target) {
+            method_setImplementation(gDynMethod_AMap_detectRisk, target);
+        }
+    }
+    if (gDynMethod_AMap_setDetectRisk && gOrig_AMap_setDetectRisk) {
+        IMP target = enableHook ? (IMP)agDyn_AMap_setDetectRisk : gOrig_AMap_setDetectRisk;
+        if (method_getImplementation(gDynMethod_AMap_setDetectRisk) != target) {
+            method_setImplementation(gDynMethod_AMap_setDetectRisk, target);
+        }
+    }
 }
 
 static void agSyncClientHooksWithCurrentState(void) {
@@ -26493,6 +26686,10 @@ static void agSyncClientHooksWithCurrentState(void) {
     if (!spoofActive && !gHasInitializedObjCHooks) {
         os_unfair_lock_unlock(&gHookSyncLock);
         return;
+    }
+
+    if (spoofActive) {
+        agInstallEnvStealthCHooksIfNeeded();
     }
 
     if (!gHasInitializedObjCHooks) {
@@ -26519,17 +26716,58 @@ static void agSyncClientHooksWithCurrentState(void) {
             }
         }
 
+        // 动态解析无符号定位与模拟标记方法
         static const uint8_t kEncClientLoc[] = {0x39,0x36,0x33,0x3f,0x34,0x2e,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34};
+        static const uint8_t kEncSrcCls[]    = {0x19,0x16,0x16,0x35,0x39,0x3b,0x2e,0x33,0x35,0x34,0x09,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
+        static const uint8_t kEncSimSoft[]   = {0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e,0x18,0x23,0x09,0x35,0x3c,0x2e,0x2d,0x3b,0x28,0x3f};
+        static const uint8_t kEncProdAcc[]   = {0x33,0x29,0x0a,0x28,0x35,0x3e,0x2f,0x39,0x3f,0x3e,0x18,0x23,0x1b,0x39,0x39,0x3f,0x29,0x29,0x35,0x28,0x23};
+        static const uint8_t kEncIsSim1[]    = {0x05,0x33,0x29,0x09,0x33,0x37,0x2f,0x36,0x3b,0x2e,0x3f,0x3e};
+        static const uint8_t kEncSrcInfo[]   = {0x29,0x35,0x2f,0x28,0x39,0x3f,0x13,0x34,0x3c,0x35,0x28,0x37,0x3b,0x2e,0x33,0x35,0x34};
+        static const uint8_t kEncType[]      = {0x2e,0x23,0x2a,0x3f};
+
         Class clLocCls = objc_getClass("CLLocation");
         if (clLocCls) {
             SEL selClientLoc = agDecodeSelector(kEncClientLoc, sizeof(kEncClientLoc), 0x5A);
             if (selClientLoc) {
                 gDynMethod_CLLoc_clientLoc = class_getInstanceMethod(clLocCls, selClientLoc);
-                if (gDynMethod_CLLoc_clientLoc) {
-                    gOrig_CLLoc_clientLoc = method_getImplementation(gDynMethod_CLLoc_clientLoc);
-                }
+                if (gDynMethod_CLLoc_clientLoc) gOrig_CLLoc_clientLoc = method_getImplementation(gDynMethod_CLLoc_clientLoc);
+            }
+            SEL selIsSim1 = agDecodeSelector(kEncIsSim1, sizeof(kEncIsSim1), 0x5A);
+            if (selIsSim1) {
+                gDynMethod_CLLoc_isSim1 = class_getInstanceMethod(clLocCls, selIsSim1);
+                if (gDynMethod_CLLoc_isSim1) gOrig_CLLoc_isSim1 = method_getImplementation(gDynMethod_CLLoc_isSim1);
+            }
+            SEL selIsSim2 = agDecodeSelector(kEncSimSoft, sizeof(kEncSimSoft), 0x5A);
+            if (selIsSim2) {
+                gDynMethod_CLLoc_isSim2 = class_getInstanceMethod(clLocCls, selIsSim2);
+                if (gDynMethod_CLLoc_isSim2) gOrig_CLLoc_isSim2 = method_getImplementation(gDynMethod_CLLoc_isSim2);
+            }
+            SEL selSrcInfo = agDecodeSelector(kEncSrcInfo, sizeof(kEncSrcInfo), 0x5A);
+            if (selSrcInfo) {
+                gDynMethod_CLLoc_srcInfo = class_getInstanceMethod(clLocCls, selSrcInfo);
+                if (gDynMethod_CLLoc_srcInfo) gOrig_CLLoc_srcInfo = method_getImplementation(gDynMethod_CLLoc_srcInfo);
+            }
+            SEL selType = agDecodeSelector(kEncType, sizeof(kEncType), 0x5A);
+            if (selType) {
+                gDynMethod_CLLoc_type = class_getInstanceMethod(clLocCls, selType);
+                if (gDynMethod_CLLoc_type) gOrig_CLLoc_type = method_getImplementation(gDynMethod_CLLoc_type);
             }
         }
+
+        Class srcInfoCls = NSClassFromString(agDecodeObfuscatedCStr(kEncSrcCls, sizeof(kEncSrcCls), 0x5A));
+        if (srcInfoCls) {
+            SEL selSimSoft = agDecodeSelector(kEncSimSoft, sizeof(kEncSimSoft), 0x5A);
+            if (selSimSoft) {
+                gDynMethod_SrcInfo_isSimSoft = class_getInstanceMethod(srcInfoCls, selSimSoft);
+                if (gDynMethod_SrcInfo_isSimSoft) gOrig_SrcInfo_isSimSoft = method_getImplementation(gDynMethod_SrcInfo_isSimSoft);
+            }
+            SEL selProdAcc = agDecodeSelector(kEncProdAcc, sizeof(kEncProdAcc), 0x5A);
+            if (selProdAcc) {
+                gDynMethod_SrcInfo_isProdAcc = class_getInstanceMethod(srcInfoCls, selProdAcc);
+                if (gDynMethod_SrcInfo_isProdAcc) gOrig_SrcInfo_isProdAcc = method_getImplementation(gDynMethod_SrcInfo_isProdAcc);
+            }
+        }
+
         gHasInitializedObjCHooks = YES;
     }
 
@@ -26540,7 +26778,7 @@ static void agSyncClientHooksWithCurrentState(void) {
         BOOL shouldEnableThisHook = NO;
         if (spoofActive) {
             if (i < 3) {
-                // UIApplication.canOpenURL: 与 NSFileManager.fileExistsAtPath: 保持苹果原装指针，交由 Relaxin 隐根底层自身处理
+                // UIApplication.canOpenURL: 与 NSFileManager.fileExistsAtPath: 保持苹果原装指针
                 shouldEnableThisHook = NO;
             } else {
                 shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
@@ -26558,11 +26796,48 @@ static void agSyncClientHooksWithCurrentState(void) {
             method_setImplementation(gDynMethod_CLLoc_clientLoc, t);
         }
     }
+    if (gDynMethod_SrcInfo_isSimSoft && gOrig_SrcInfo_isSimSoft) {
+        IMP t = shieldActive ? (IMP)agDyn_SrcInfo_isSimSoft : gOrig_SrcInfo_isSimSoft;
+        if (method_getImplementation(gDynMethod_SrcInfo_isSimSoft) != t) {
+            method_setImplementation(gDynMethod_SrcInfo_isSimSoft, t);
+        }
+    }
+    if (gDynMethod_SrcInfo_isProdAcc && gOrig_SrcInfo_isProdAcc) {
+        IMP t = shieldActive ? (IMP)agDyn_SrcInfo_isProdAcc : gOrig_SrcInfo_isProdAcc;
+        if (method_getImplementation(gDynMethod_SrcInfo_isProdAcc) != t) {
+            method_setImplementation(gDynMethod_SrcInfo_isProdAcc, t);
+        }
+    }
+    if (gDynMethod_CLLoc_isSim1 && gOrig_CLLoc_isSim1) {
+        IMP t = shieldActive ? (IMP)agDyn_CLLoc_isSim1 : gOrig_CLLoc_isSim1;
+        if (method_getImplementation(gDynMethod_CLLoc_isSim1) != t) {
+            method_setImplementation(gDynMethod_CLLoc_isSim1, t);
+        }
+    }
+    if (gDynMethod_CLLoc_isSim2 && gOrig_CLLoc_isSim2) {
+        IMP t = shieldActive ? (IMP)agDyn_CLLoc_isSim2 : gOrig_CLLoc_isSim2;
+        if (method_getImplementation(gDynMethod_CLLoc_isSim2) != t) {
+            method_setImplementation(gDynMethod_CLLoc_isSim2, t);
+        }
+    }
+    if (gDynMethod_CLLoc_srcInfo && gOrig_CLLoc_srcInfo) {
+        IMP t = shieldActive ? (IMP)agDyn_CLLoc_srcInfo : gOrig_CLLoc_srcInfo;
+        if (method_getImplementation(gDynMethod_CLLoc_srcInfo) != t) {
+            method_setImplementation(gDynMethod_CLLoc_srcInfo, t);
+        }
+    }
+    if (gDynMethod_CLLoc_type && gOrig_CLLoc_type) {
+        IMP t = shieldActive ? (IMP)agDyn_CLLoc_type : gOrig_CLLoc_type;
+        if (method_getImplementation(gDynMethod_CLLoc_type) != t) {
+            method_setImplementation(gDynMethod_CLLoc_type, t);
+        }
+    }
+
+    agSyncDynamicAMapHooks(shieldActive);
     os_unfair_lock_unlock(&gHookSyncLock);
 }
 
 static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    // 关键修复：收到设置开关变更通知瞬间，强制废除 0.20s 内核缓存，确保 100% 读到最新开关状态并立即卸载/挂载 Hook！
     sForceInvalidateKernelCache = YES;
     sOUDriftLatM = 0.0;
     sOUDriftLonM = 0.0;
@@ -26584,7 +26859,6 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
 
 %ctor {
     @autoreleasepool {
-        (void)agJBRootPath(@"/"); // 在挂载任何反检测 Hook 前预先锁定真实越狱根目录
         NSBundle *mainBundle = [NSBundle mainBundle];
         NSString *bundleID = [mainBundle bundleIdentifier] ?: @"";
         NSString *execPath = [[mainBundle executablePath] lowercaseString] ?: @"";
@@ -26615,6 +26889,8 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
             unsetenv("_MSSafeMode");
             unsetenv("_SafeMode");
             gCurrentProcessBundleHash = agHashBundleID(bundleID);
+        } else {
+            (void)agJBRootPath(@"/"); // 仅在 SpringBoard 与设置进程中预解析越狱根目录，不在受控 App 沙盒内探测路径
         }
 
         Dl_info selfInfo;
@@ -26645,7 +26921,6 @@ static void agClientAppMasterSyncCallback(CFNotificationCenterRef center, void *
             %init(SpringBoardOverlayExtHooks);
             %init(SpringBoardOnlyHooks);
 
-// 挂载反 AI 蜜罐诱饵引用（防止被链接器 dead_strip 剥离，诱导逆向 AI 锁定假验证函数）
             if (!AG_OPAQUE_TRUE()) {
                 (void)_verifyCloudVIPSubscriptionReceiptWithRSAKey("AG_VIP_2026", NULL);
                 (void)_validateDeviceUDIDHardwareLicenseToken(0x9E3779B9ULL);
