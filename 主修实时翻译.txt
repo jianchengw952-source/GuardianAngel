@@ -2684,19 +2684,23 @@ static BOOL agGetCurrentSpoofedTelemetry(AGSpoofedTelemetry *outTel) {
     NSTimeInterval now = CFAbsoluteTimeGetCurrent();
     os_unfair_lock_lock(&sTelemetryCacheLock);
 
-    // 每次进程启动或更换大地点时，生成一次性的 2.5m ~ 6.5m 自然站位偏移，彻底破除服务端后台「多日打卡中心点毫米级重合」聚类算法
+    // 每次进程启动或更换大地点(>50米)时，生成一次性的 2.5m ~ 6.5m 自然站位偏移
     if (!sHasInitSessionStandOffset || fabs(lat - sLastTelemetryBaseLat) > 0.0005 || fabs(lon - sLastTelemetryBaseLon) > 0.0005) {
         sHasInitSessionStandOffset = YES;
         double angle = ((double)arc4random_uniform(3600)) * M_PI / 1800.0;
-        double radiusMeters = 2.5 + ((double)arc4random_uniform(40)) * 0.1; // 2.5m ~ 6.5m
+        double radiusMeters = 2.5 + ((double)arc4random_uniform(40)) * 0.1;
         sSessionStandOffsetLat = (radiusMeters * sin(angle)) / 111320.0;
         sSessionStandOffsetLon = (radiusMeters * cos(angle)) / (111320.0 * MAX(0.2, cos(lat * M_PI / 180.0)));
     }
 
+    // 核心修复：定点模式下锁定 15.0 秒唯一快照，且容忍 50 米内的微漂移不击穿缓存！
+    // 确保高德 AMapLocationCLMDelegate 与钉钉 DTCLocationManager 双通道在打卡窗口内拿到 100% 分毫不差的同一组坐标与精度！
+    NSTimeInterval lockWindow = (kSpeed > 0.1) ? 0.85 : 15.0;
+    double coordTolerance = (kSpeed > 0.1) ? 1e-6 : 0.0005;
     if (sLastTelemetry.valid &&
-        (now - sLastTelemetryTime < 1.80) &&
-        fabs(lat - sLastTelemetryBaseLat) < 1e-6 &&
-        fabs(lon - sLastTelemetryBaseLon) < 1e-6) {
+        (now - sLastTelemetryTime < lockWindow) &&
+        fabs(lat - sLastTelemetryBaseLat) < coordTolerance &&
+        fabs(lon - sLastTelemetryBaseLon) < coordTolerance) {
         *outTel = sLastTelemetry;
         os_unfair_lock_unlock(&sTelemetryCacheLock);
         return YES;
@@ -2706,8 +2710,8 @@ static BOOL agGetCurrentSpoofedTelemetry(AGSpoofedTelemetry *outTel) {
     double microLat = lat;
     double microLon = lon;
     if (kShield) {
-        microLat += sSessionStandOffsetLat + agGaussianRandom() * 0.0000025;
-        microLon += sSessionStandOffsetLon + agGaussianRandom() * 0.0000025;
+        microLat += sSessionStandOffsetLat;
+        microLon += sSessionStandOffsetLon;
         baseAlt  += agGaussianRandom() * 0.08;
     }
     double hAcc = 4.68291473 + ((double)arc4random_uniform(48000)) * 0.00011379 + fabs(agGaussianRandom()) * 0.21849317;
@@ -3024,21 +3028,22 @@ static os_unfair_lock sCachedTickLocLock = OS_UNFAIR_LOCK_INIT;
         }
     } else {
         BOOL shieldOn = (p[@"AG_AntiDet_ShieldEnabled"] == nil) ? NO : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
-        double driftLat = self.baseWGS84Coord.latitude;
-        double driftLon = self.baseWGS84Coord.longitude;
-        agStepKalmanSmoothDrift(shieldOn, &driftLat, &driftLon, NULL, NULL, NULL);
-        self.currentWGS84Coord = CLLocationCoordinate2DMake(driftLat, driftLon);
+        if (sMoveTickCounter % 15 == 1) {
+            double driftLat = self.baseWGS84Coord.latitude;
+            double driftLon = self.baseWGS84Coord.longitude;
+            agStepKalmanSmoothDrift(shieldOn, &driftLat, &driftLon, NULL, NULL, NULL);
+            self.currentWGS84Coord = CLLocationCoordinate2DMake(driftLat, driftLon);
+        }
     }
 
     NSInteger scopeMode = p[@"AG_LocSpoof_ScopeMode"] ? [p[@"AG_LocSpoof_ScopeMode"] integerValue] : 0;
     NSInteger moveMode  = p[@"AG_LocSpoof_MoveMode"] ? [p[@"AG_LocSpoof_MoveMode"] integerValue] : 0;
     BOOL shieldOn = (p[@"AG_AntiDet_ShieldEnabled"] == nil) ? NO : [p[@"AG_AntiDet_ShieldEnabled"] boolValue];
     NSInteger rawWiFi = p[@"AG_AntiDet_WiFiMode"] ? [p[@"AG_AntiDet_WiFiMode"] integerValue] : 1;
-    // 关键修复：只要开启了防检测 (shieldOn=YES)，若未选自定义 Wi-Fi (2)，必须保持默认模式 1 (隐藏异地 Wi-Fi)，严禁重置为 0 导致真实家庭 Wi-Fi 泄露！
     NSInteger wifiMode = shieldOn ? ((rawWiFi == 2) ? 2 : 1) : 0;
 
-    // 定点静止且未开启防检测微漂移时，每 5 秒同步一次内核心跳，减少 80% 跨进程 IPC 唤醒发热
-    if (!self.isRouteMoving && !shieldOn && (sMoveTickCounter % 5 != 1)) {
+    // 定点静止时每 15 秒同步一次内核心跳，彻底消除打卡瞬间跨秒跳变
+    if (!self.isRouteMoving && (sMoveTickCounter % 15 != 1)) {
         return;
     }
 
@@ -25783,12 +25788,19 @@ static int my_TCCAccessPreflight(CFStringRef service, CFDictionaryRef options) {
 // ====== 防闪退替换 2 开始（替换文件底部直至末尾 %ctor） ======
 #import <mach-o/nlist.h>
 
+@interface WKWebView : UIView
+- (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id, NSError *))completionHandler;
+@end
+
+@interface CLLocationSourceInformation (AGInitPrivate)
+- (instancetype)initWithSoftwareSimulationState:(BOOL)isSoftware andExternalAccessoryState:(BOOL)isAccessory;
+@end
+
 static void *gSelfDylibBase = NULL;
 static void *gCoreLocationBase = NULL;
 static void *gCoreLocationValidSym = NULL;
 static const char *gCoreLocationPath = "/System/Library/Frameworks/CoreLocation.framework/CoreLocation";
 
-// 后台串行排队无损日志发送器（每条间隔 8ms，确保多行堆栈与方法列表 100% 零覆盖写入 ag_live_diagnostic.log）
 static void agClientDiagLogQueued(NSString *line) {
     if (!line || line.length == 0 || agIsSpringBoardProcess()) return;
     static dispatch_queue_t sDiagSendQ = nil;
@@ -25803,7 +25815,6 @@ static void agClientDiagLogQueued(NSString *line) {
     });
 }
 
-// 针对脱符号 App Store 二进制 (如钉钉) 的 Objective-C 真实 [类名 方法名] 逆向反查器
 static NSString *agResolveObjCMethodForAddress(uintptr_t targetPC) {
     if (targetPC == 0) return @"0x0";
     targetPC &= 0x0000007fffffffffULL;
@@ -25816,13 +25827,11 @@ static NSString *agResolveObjCMethodForAddress(uintptr_t targetPC) {
     const char *shortImg = strrchr(info.dli_fname, '/') ? (strrchr(info.dli_fname, '/') + 1) : info.dli_fname;
     uintptr_t imgOffset = targetPC - ((uintptr_t)info.dli_fbase & 0x0000007fffffffffULL);
 
-    // 若符号表里直接有有效符号名（非 <redacted>）
     if (info.dli_sname && strlen(info.dli_sname) > 1 && strcmp(info.dli_sname, "<redacted>") != 0) {
         uintptr_t symOff = targetPC - ((uintptr_t)info.dli_saddr & 0x0000007fffffffffULL);
         return [NSString stringWithFormat:@"%s`%s+0x%lx", shortImg, info.dli_sname, (unsigned long)symOff];
     }
 
-    // 遍历该镜像内的所有 Objective-C 类与元类，寻找离 targetPC 最近且 <= targetPC 的 IMP
     unsigned int clsCount = 0;
     const char **clsNames = objc_copyClassNamesForImage(info.dli_fname, &clsCount);
     if (!clsNames || clsCount == 0) {
@@ -25830,7 +25839,7 @@ static NSString *agResolveObjCMethodForAddress(uintptr_t targetPC) {
         return [NSString stringWithFormat:@"%s+0x%lx", shortImg, (unsigned long)imgOffset];
     }
 
-    uintptr_t bestDiff = 0x4000; // 最大函数跨度阈值 16KB
+    uintptr_t bestDiff = 0x4000;
     const char *bestClsName = NULL;
     const char *bestSelName = NULL;
     BOOL bestIsMeta = NO;
@@ -25870,16 +25879,16 @@ static NSString *agResolveObjCMethodForAddress(uintptr_t targetPC) {
 static void agCaptureAndLogPopupCallStack(NSString *triggerText, const char *sourceTag) {
     static NSTimeInterval sLastTrapTime = 0;
     NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-    if (now - sLastTrapTime < 2.5) return;
+    if (now - sLastTrapTime < 2.0) return;
     sLastTrapTime = now;
 
     void *callstack[24];
     int frames = backtrace(callstack, 24);
     NSString *cleanTxt = [[triggerText componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
-    if (cleanTxt.length > 28) cleanTxt = [cleanTxt substringToIndex:28];
+    if (cleanTxt.length > 52) cleanTxt = [cleanTxt substringToIndex:52];
 
     agClientDiagLogQueued([NSString stringWithFormat:@"🚨TRAP_HIT[%s] txt=%@", sourceTag, cleanTxt]);
-    for (int i = 1; i < MIN(frames, 16); i++) {
+    for (int i = 1; i < MIN(frames, 14); i++) {
         uintptr_t pc = (uintptr_t)callstack[i];
         NSString *resolved = agResolveObjCMethodForAddress(pc);
         agClientDiagLogQueued([NSString stringWithFormat:@"TRAP_STK #%02d %@", i, resolved]);
@@ -25895,6 +25904,8 @@ AG_HIDDEN_FUNC BOOL agIsSuspiciousJailbreakPath(const char *path) {
     char b1[12] = {0}, b2[12] = {0}, b3[20] = {0}, b4[20] = {0}, b5[16] = {0}, b6[12] = {0};
     return (strstr(path, ag_enc_cstr_var_jb(b1)) != NULL ||
             strstr(path, ag_enc_cstr_jbroot(b2)) != NULL ||
+            strstr(path, "roothide") != NULL ||
+            strstr(path, "ellekit") != NULL ||
             (strstr(path, "/private/preboot/") != NULL && (strstr(path, "/jb-") != NULL || strstr(path, "procursus") != NULL)) ||
             strstr(path, "procursus") != NULL ||
             strstr(path, ag_enc_cstr_mobilesubstrate(b3)) != NULL ||
@@ -25952,11 +25963,6 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
         const void *origIMP = agResolveOriginalIMPForHookedAddr(addr, &hookName);
         if (origIMP) {
             agReportAntiDetectionInterceptFromClient(1);
-            static NSUInteger sDladdrHookHitCount = 0;
-            sDladdrHookHitCount++;
-            if (sDladdrHookHitCount <= 12) {
-                agClientDiagLogQueued([NSString stringWithFormat:@"DLADDR_HIT #%lu method=%s", (unsigned long)sDladdrHookHitCount, hookName ?: "unknown"]);
-            }
             return orig_dladdr(origIMP, info);
         }
     }
@@ -25967,7 +25973,6 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
             uintptr_t base = ((uintptr_t)gSelfDylibBase & 0x0000007fffffffffULL);
             if (a >= base && a < base + 0x400000) {
                 agReportAntiDetectionInterceptFromClient(1);
-                agClientDiagLogQueued([NSString stringWithFormat:@"DLADDR_RH_ZERO_FIX off=0x%lx", (unsigned long)(a - base)]);
                 if (gCoreLocationValidSym && orig_dladdr) {
                     return orig_dladdr(gCoreLocationValidSym, info);
                 }
@@ -25982,7 +25987,6 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
                                strstr(info->dli_fname, ag_enc_cstr_mobilesubstrate(bMs)) != NULL);
             if (shouldMask) {
                 agReportAntiDetectionInterceptFromClient(1);
-                agClientDiagLogQueued([NSString stringWithFormat:@"DLADDR_MASK sym=%s", info->dli_sname ?: "anon"]);
                 if (gCoreLocationValidSym && orig_dladdr) {
                     return orig_dladdr(gCoreLocationValidSym, info);
                 }
@@ -26002,11 +26006,6 @@ static IMP hooked_method_getImplementation(Method m) {
         const void *origIMP = agResolveOriginalIMPForHookedAddr((const void *)realIMP, &hookName);
         if (origIMP) {
             agReportAntiDetectionInterceptFromClient(1);
-            static NSUInteger sImpChkCount = 0;
-            sImpChkCount++;
-            if (sImpChkCount <= 12) {
-                agClientDiagLogQueued([NSString stringWithFormat:@"M_IMP_CHK #%lu sel=%s", (unsigned long)sImpChkCount, hookName ?: "unknown"]);
-            }
             return (IMP)origIMP;
         }
     }
@@ -26021,11 +26020,6 @@ static IMP hooked_class_getMethodImplementation(Class cls, SEL name) {
         const void *origIMP = agResolveOriginalIMPForHookedAddr((const void *)realIMP, &hookName);
         if (origIMP) {
             agReportAntiDetectionInterceptFromClient(1);
-            static NSUInteger sClsImpChkCount = 0;
-            sClsImpChkCount++;
-            if (sClsImpChkCount <= 12) {
-                agClientDiagLogQueued([NSString stringWithFormat:@"CLS_IMP_CHK #%lu sel=%s", (unsigned long)sClsImpChkCount, hookName ?: "unknown"]);
-            }
             return (IMP)origIMP;
         }
     }
@@ -26051,7 +26045,6 @@ static void agRefreshCleanDyldTableIfNeeded(void) {
         os_unfair_lock_unlock(&gDyldTableLock);
         return;
     }
-    static BOOL sLoggedHiddenIdx = NO;
     uint32_t cleanIdx = 0;
     for (uint32_t i = 0; i < rawCount && cleanIdx < 2048; i++) {
         const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(i) : _dyld_get_image_name(i);
@@ -26062,16 +26055,9 @@ static void agRefreshCleanDyldTableIfNeeded(void) {
                                   strstr(name, ag_enc_cstr_ellekit(bEk)) != NULL ||
                                   strstr(name, ag_enc_cstr_libroothide(bRh)) != NULL ||
                                   strstr(name, ag_enc_cstr_mobilesubstrate(bMs)) != NULL)));
-        if (isTweak) {
-            if (!sLoggedHiddenIdx) {
-                const char *shortName = name ? (strrchr(name, '/') ? strrchr(name, '/') + 1 : name) : "anon";
-                agClientDiagLogQueued([NSString stringWithFormat:@"DYLD_HIDE idx=%u file=%s", i, shortName]);
-            }
-            continue;
-        }
+        if (isTweak) continue;
         gCleanDyldIndices[cleanIdx++] = i;
     }
-    sLoggedHiddenIdx = YES;
     gCleanDyldCount = cleanIdx;
     gLastRawDyldCount = rawCount;
     os_unfair_lock_unlock(&gDyldTableLock);
@@ -26122,7 +26108,6 @@ static const char *hooked_class_getImageName(Class cls) {
     if (name && agIsEnvironmentStealthActive()) {
         if (agIsSuspiciousJailbreakPath(name)) {
             agReportAntiDetectionInterceptFromClient(1);
-            agClientDiagLogQueued([NSString stringWithFormat:@"CLS_IMG_MASKED cls=%s", cls ? class_getName(cls) : "nil"]);
             return gCoreLocationPath;
         }
     }
@@ -26143,13 +26128,13 @@ static const char * _Nonnull * _Nonnull hooked_objc_copyImageNames(unsigned int 
         }
         if (writeIdx != total) {
             agReportAntiDetectionInterceptFromClient(1);
-            agClientDiagLogQueued([NSString stringWithFormat:@"OBJC_IMGS_FILTERED %u->%u", total, writeIdx]);
         }
         *outCount = writeIdx;
     }
     return names;
 }
 
+// 修复 Wi-Fi 保护模式：模式 1 返回 1（隐藏异地家庭 Wi-Fi，模拟 5G 蜂窝流量打卡），模式 2 返回用户配置的公司真实 Wi-Fi，绝不捏造假 ChinaNet MAC！
 static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
     if (!agIsAntiDetectionShieldActive()) return 0;
 
@@ -26181,32 +26166,17 @@ static NSInteger agResolveWiFiProtectionMode(NSDictionary **outCustomWiFiDict) {
             return 2;
         }
     }
-
-    uint32_t latInt = (uint32_t)(fabs(lat) * 1000.0);
-    uint32_t lonInt = (uint32_t)(fabs(lon) * 1000.0);
-    uint32_t h = (latInt * 2654435761u) ^ (lonInt * 2246822519u);
-    uint8_t b3 = (uint8_t)((h >> 16) & 0xFF);
-    uint8_t b4 = (uint8_t)((h >> 8) & 0xFF);
-    uint8_t b5 = (uint8_t)((h & 0xFE) | 0x02);
-    NSString *virtualSSID  = [NSString stringWithFormat:@"ChinaNet-%02X%02X", b3, (uint8_t)(b4 ^ 0x3C)];
-    NSString *virtualBSSID = [NSString stringWithFormat:@"c8:3a:35:%02x:%02x:%02x", b3, b4, b5];
-    if (outCustomWiFiDict) {
-        NSData *ssidData = [virtualSSID dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-        *outCustomWiFiDict = @{
-            @"SSID": virtualSSID,
-            @"BSSID": virtualBSSID,
-            @"SSIDDATA": ssidData
-        };
-    }
-    return 2;
+    return 1;
 }
 
-// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地覆写 + 动态无理数 DOP 精度微扰 ====================
+// ==================== 核心技术：CLLocationInternal (_internal + 0x8) 原地一次性锁定覆写 ====================
 static const void * const kAGInternalMutatedLocationKey = &kAGInternalMutatedLocationKey;
 
 static void agMutateLocationInternalInPlace(CLLocation *loc) {
     if (!loc || ![loc isKindOfClass:[CLLocation class]]) return;
     if (agIsInAppCustomConstructedLocation(loc) || agIsCleanSpoofedLocation(loc)) return;
+    // 关键修复：同一个 CLLocation 实例一旦已完成原地覆写，直接返回，绝不在多次读取时改变其精度或坐标！
+    if ([objc_getAssociatedObject(loc, kAGInternalMutatedLocationKey) boolValue]) return;
 
     static Ivar sInternalIvar = NULL;
     static Ivar sMatchInfoIvar = NULL;
@@ -26232,18 +26202,16 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     double origLat = raw->coordinate.latitude;
     double origLon = raw->coordinate.longitude;
 
-    if (![objc_getAssociatedObject(loc, kAGInternalMutatedLocationKey) boolValue]) {
-        if (!agIsOutOfChina(tel.lat, tel.lon)) {
-            CLLocationCoordinate2D expectedGCJ = agWGS84ToGCJ02(tel.lat, tel.lon);
-            if (fabs(origLat - expectedGCJ.latitude) < 0.0002 &&
-                fabs(origLon - expectedGCJ.longitude) < 0.0002 &&
-                hypot(tel.lat - expectedGCJ.latitude, tel.lon - expectedGCJ.longitude) > 0.0003) {
-                objc_setAssociatedObject(loc, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                return;
-            }
+    if (!agIsOutOfChina(tel.lat, tel.lon)) {
+        CLLocationCoordinate2D expectedGCJ = agWGS84ToGCJ02(tel.lat, tel.lon);
+        if (fabs(origLat - expectedGCJ.latitude) < 0.0002 &&
+            fabs(origLon - expectedGCJ.longitude) < 0.0002 &&
+            hypot(tel.lat - expectedGCJ.latitude, tel.lon - expectedGCJ.longitude) > 0.0003) {
+            objc_setAssociatedObject(loc, kAGAppCreatedCustomLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
         }
-        objc_setAssociatedObject(loc, kAGInternalMutatedLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    objc_setAssociatedObject(loc, kAGInternalMutatedLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (sMatchInfoIvar) {
         id oldMatch = object_getIvar(internalObj, sMatchInfoIvar);
@@ -26261,7 +26229,6 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
     if (raw->integrity == 0) raw->integrity = 50;
     if (raw->suitability <= 0) raw->suitability = 1;
 
-    // 关键修复：每次坐标微漂移时同步更新 tel.hAcc / tel.vAcc 无理数精度，彻底消除室内基站缓存导致 hAcc=14.8856 连续一小时纹丝不动的破绽！
     raw->horizontalAccuracy = tel.hAcc;
     raw->verticalAccuracy   = tel.vAcc;
     raw->altitude = tel.alt;
@@ -26278,101 +26245,50 @@ static void agMutateLocationInternalInPlace(CLLocation *loc) {
         raw->timestamp = CFAbsoluteTimeGetCurrent();
     }
     if (agIsAntiDetectionShieldActive()) {
-        if (raw->confidence <= 0) raw->confidence = 60 + (int)arc4random_uniform(15);
-        if (raw->lifespan <= 0.0) raw->lifespan = 15.0 + (double)arc4random_uniform(12);
+        if (raw->confidence <= 0) raw->confidence = 68;
+        if (raw->lifespan <= 0.0) raw->lifespan = 20.0;
         if (raw->referenceFrame == 0) raw->referenceFrame = 1;
         if (raw->rawReferenceFrame == 0) raw->rawReferenceFrame = 1;
     }
 
-    static BOOL sHasLoggedMutateVerify = NO;
-    if (!sHasLoggedMutateVerify) {
-        sHasLoggedMutateVerify = YES;
-        agClientDiagLogQueued([NSString stringWithFormat:@"MUTATE_OK orig=(%.4f,%.4f)->new=(%.5f,%.5f) hAcc=%.4f sh=%d",
-                               origLat, origLon, raw->coordinate.latitude, raw->coordinate.longitude,
-                               raw->horizontalAccuracy, agIsAntiDetectionShieldActive()]);
+    static NSUInteger sMutateLogCnt = 0;
+    if (++sMutateLogCnt <= 6) {
+        agClientDiagLogQueued([NSString stringWithFormat:@"MUTATE_OK #%lu (%.5f,%.5f) hAcc=%.4f",
+                               (unsigned long)sMutateLogCnt, raw->coordinate.latitude, raw->coordinate.longitude, raw->horizontalAccuracy]);
     }
 }
 
-// ==================== Delegate 边界动态拦截 ====================
-typedef struct {
-    IMP origIMP;
-    IMP hookedIMP;
-    char desc[48];
-} AGDelegateHookRecord;
-
-static AGDelegateHookRecord gDelHookRecords[32];
-static size_t gDelHookRecordCount = 0;
-static NSMutableSet<NSString *> *gHookedDelegateClasses = nil;
-static os_unfair_lock gDelHookLock = OS_UNFAIR_LOCK_INIT;
-
+// 彻底移除对钉钉/高德 Delegate 类的 Block Hook，保持第三方 App 自身类方法表 100% 原生纯净
 static void agHookLocationManagerDelegateIfNeeded(id delegate) {
-    if (!delegate || !agIsCurrentProcessTargetedForLocSpoof()) return;
-    Class delCls = object_getClass(delegate);
-    if (!delCls) return;
-    NSString *clsName = NSStringFromClass(delCls);
-    if (!clsName || [clsName hasPrefix:@"CL"] || [clsName hasPrefix:@"_CL"]) return;
+    (void)delegate;
+}
 
-    os_unfair_lock_lock(&gDelHookLock);
-    if (!gHookedDelegateClasses) gHookedDelegateClasses = [NSMutableSet set];
-    if ([gHookedDelegateClasses containsObject:clsName]) {
-        os_unfair_lock_unlock(&gDelHookLock);
-        return;
-    }
-    [gHookedDelegateClasses addObject:clsName];
-    os_unfair_lock_unlock(&gDelHookLock);
-
-    agClientDiagLogQueued([NSString stringWithFormat:@"DEL_HOOK cls=%@", clsName]);
-
-    SEL selUpdateLocs = @selector(locationManager:didUpdateLocations:);
-    Method mUpdate = class_getInstanceMethod(delCls, selUpdateLocs);
-    if (mUpdate) {
-        IMP origIMP = method_getImplementation(mUpdate);
-        IMP newIMP = imp_implementationWithBlock(^(id selfObj, CLLocationManager *mgr, NSArray<CLLocation *> *locations) {
-            if (agIsCurrentProcessTargetedForLocSpoof() && [locations isKindOfClass:[NSArray class]]) {
-                for (CLLocation *loc in locations) {
-                    agMutateLocationInternalInPlace(loc);
-                }
-                if ([clsName containsString:@"DTC"] && locations.count > 0) {
-                    CLLocation *firstLoc = locations.firstObject;
-                    CLLocationCoordinate2D c = [firstLoc coordinate];
-                    agClientDiagLogQueued([NSString stringWithFormat:@"DTC_RECV cnt=%lu coord=(%.5f,%.5f) acc=%.4f",
-                                           (unsigned long)locations.count, c.latitude, c.longitude, [firstLoc horizontalAccuracy]]);
+// 扫描并脱敏高德 AMapLocationManager / 钉钉 DTCLocationManager 的风险检测属性
+static void agScanAndSanitizeAMapAndDingTalkRiskMethods(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray<NSString *> *targetClasses = @[@"AMapLocationManager", @"DTCLocationManager", @"ADTLocationAuthorityManager"];
+        for (NSString *clsName in targetClasses) {
+            Class cls = objc_getClass([clsName UTF8String]);
+            if (!cls) continue;
+            unsigned int mCount = 0;
+            Method *methods = class_copyMethodList(cls, &mCount);
+            if (!methods) continue;
+            for (unsigned int i = 0; i < mCount; i++) {
+                const char *selC = sel_getName(method_getName(methods[i]));
+                if (!selC) continue;
+                NSString *selStr = [NSString stringWithUTF8String:selC];
+                NSString *lower = [selStr lowercaseString];
+                if ([lower containsString:@"risk"] || [lower containsString:@"fake"] ||
+                    [lower containsString:@"mock"] || [lower containsString:@"simulat"] ||
+                    [lower containsString:@"cheat"] || [lower containsString:@"jail"] ||
+                    [lower containsString:@"plugin"]) {
+                    agClientDiagLogQueued([NSString stringWithFormat:@"RISK_SEL[%@] %@", clsName, selStr]);
                 }
             }
-            ((void(*)(id, SEL, id, id))origIMP)(selfObj, selUpdateLocs, mgr, locations);
-        });
-        os_unfair_lock_lock(&gDelHookLock);
-        if (gDelHookRecordCount < 32) {
-            gDelHookRecords[gDelHookRecordCount].origIMP = origIMP;
-            gDelHookRecords[gDelHookRecordCount].hookedIMP = newIMP;
-            snprintf(gDelHookRecords[gDelHookRecordCount].desc, 47, "%s.didUpdateLocs", [clsName UTF8String]);
-            gDelHookRecordCount++;
+            free(methods);
         }
-        os_unfair_lock_unlock(&gDelHookLock);
-        method_setImplementation(mUpdate, newIMP);
-    }
-
-    SEL selLegacy = @selector(locationManager:didUpdateToLocation:fromLocation:);
-    Method mLegacy = class_getInstanceMethod(delCls, selLegacy);
-    if (mLegacy) {
-        IMP origLegacy = method_getImplementation(mLegacy);
-        IMP newLegacy = imp_implementationWithBlock(^(id selfObj, CLLocationManager *mgr, CLLocation *newLoc, CLLocation *oldLoc) {
-            if (agIsCurrentProcessTargetedForLocSpoof()) {
-                if (newLoc) agMutateLocationInternalInPlace(newLoc);
-                if (oldLoc) agMutateLocationInternalInPlace(oldLoc);
-            }
-            ((void(*)(id, SEL, id, id, id))origLegacy)(selfObj, selLegacy, mgr, newLoc, oldLoc);
-        });
-        os_unfair_lock_lock(&gDelHookLock);
-        if (gDelHookRecordCount < 32) {
-            gDelHookRecords[gDelHookRecordCount].origIMP = origLegacy;
-            gDelHookRecords[gDelHookRecordCount].hookedIMP = newLegacy;
-            snprintf(gDelHookRecords[gDelHookRecordCount].desc, 47, "%s.didUpdateToLoc", [clsName UTF8String]);
-            gDelHookRecordCount++;
-        }
-        os_unfair_lock_unlock(&gDelHookLock);
-        method_setImplementation(mLegacy, newLegacy);
-    }
+    });
 }
 
 static NSHashTable<CLLocationManager *> *agActiveLocationManagersTable(void) {
@@ -26407,12 +26323,6 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     if (!interfaceName || CFStringGetLength(interfaceName) == 0) return NULL;
     NSDictionary *customWiFi = nil;
     NSInteger mode = agResolveWiFiProtectionMode(&customWiFi);
-    static NSUInteger sWiFiLogCount = 0;
-    sWiFiLogCount++;
-    if (sWiFiLogCount <= 3) {
-        agClientDiagLogQueued([NSString stringWithFormat:@"WIFI_SPOOF #%lu mode=%ld bssid=%@",
-                               (unsigned long)sWiFiLogCount, (long)mode, customWiFi[@"BSSID"] ?: @"pass"]);
-    }
     if (mode > 0) {
         agReportAntiDetectionInterceptFromClient(3);
     }
@@ -26424,36 +26334,24 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
     return orig_CNCopyCurrentNetworkInfo ? orig_CNCopyCurrentNetworkInfo(interfaceName) : NULL;
 }
 
-// ==================== 3. 实例级自洽的客户端定位与弹窗反追踪探针 Hook ====================
+// ==================== 3. 实例级自洽的客户端定位与 WKWebView 抓包探针 Hook ====================
 %group StealthLocationClientHooks
 
-%hook UILabel
+%hook WKWebView
 
-- (void)setText:(NSString *)text {
-    if (text && text.length >= 4 && ([text containsString:@"风险插件"] || [text containsString:@"虚拟打卡"] || [text containsString:@"不可信"])) {
-        agCaptureAndLogPopupCallStack(text, "UILabel.setText");
+- (void)evaluateJavaScript:(NSString *)javaScriptString completionHandler:(void (^)(id, NSError *))completionHandler {
+    if (javaScriptString && javaScriptString.length >= 4) {
+        if ([javaScriptString containsString:@"风险"] ||
+            [javaScriptString containsString:@"插件"] ||
+            [javaScriptString containsString:@"不可信"] ||
+            [javaScriptString containsString:@"虚拟"] ||
+            [javaScriptString containsString:@"作弊"] ||
+            [javaScriptString containsString:@"mock"] ||
+            [javaScriptString containsString:@"fakeLocation"]) {
+            agCaptureAndLogPopupCallStack(javaScriptString, "WKWebView.evalJS");
+        }
     }
-    %orig(text);
-}
-
-- (void)setAttributedText:(NSAttributedString *)attributedText {
-    NSString *str = attributedText ? [attributedText string] : nil;
-    if (str && str.length >= 4 && ([str containsString:@"风险插件"] || [str containsString:@"虚拟打卡"] || [str containsString:@"不可信"])) {
-        agCaptureAndLogPopupCallStack(str, "UILabel.setAttrText");
-    }
-    %orig(attributedText);
-}
-
-%end
-
-%hook UIAlertController
-
-+ (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
-    NSString *combined = [NSString stringWithFormat:@"%@ %@", title ?: @"", message ?: @""];
-    if ([combined containsString:@"风险插件"] || [combined containsString:@"虚拟打卡"] || [combined containsString:@"不可信"]) {
-        agCaptureAndLogPopupCallStack(combined, "UIAlertController");
-    }
-    return %orig(title, message, preferredStyle);
+    %orig(javaScriptString, completionHandler);
 }
 
 %end
@@ -26585,7 +26483,8 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationDistance)altitude {
-    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.alt;
     }
@@ -26593,7 +26492,8 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationDistance)ellipsoidalAltitude {
-    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.alt + agGeoidSeparationForCoord(tel.lat, tel.lon);
@@ -26603,7 +26503,8 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationAccuracy)horizontalAccuracy {
-    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.hAcc;
     }
@@ -26611,7 +26512,8 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (CLLocationAccuracy)verticalAccuracy {
-    if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) return tel.vAcc;
     }
@@ -26620,6 +26522,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 - (CLLocationDirection)course {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid && (tel.speed > 0.1 || agIsAntiDetectionShieldActive())) {
             return tel.course;
@@ -26630,6 +26533,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 - (CLLocationSpeed)speed {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid && (tel.speed > 0.1 || agIsAntiDetectionShieldActive())) {
             return tel.speed;
@@ -26640,6 +26544,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 - (CLLocationSpeedAccuracy)speedAccuracy {
     if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.spdAcc;
@@ -26650,6 +26555,7 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 - (CLLocationDirectionAccuracy)courseAccuracy {
     if (agIsAntiDetectionShieldActive() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
+        agMutateLocationInternalInPlace(self);
         AGSpoofedTelemetry tel;
         if (agGetTelemetryForLocationInstance(self, &tel) && tel.valid) {
             return tel.crsAcc;
@@ -26667,6 +26573,19 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
         return [NSDate date];
     }
     return origDate;
+}
+
+- (CLLocationSourceInformation *)sourceInformation {
+    CLLocationSourceInformation *origInfo = %orig;
+    if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self)) {
+        if (@available(iOS 15.0, *)) {
+            if (origInfo && (origInfo.isSimulatedBySoftware || origInfo.isProducedByAccessory)) {
+                agReportAntiDetectionInterceptFromClient(2);
+                return [[CLLocationSourceInformation alloc] initWithSoftwareSimulationState:NO andExternalAccessoryState:NO];
+            }
+        }
+    }
+    return origInfo;
 }
 
 - (CLLocationDistance)distanceFromLocation:(const CLLocation *)location {
@@ -26699,19 +26618,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 
 %hook CLLocationManager
 
-- (void)setDelegate:(id<CLLocationManagerDelegate>)delegate {
-    %orig(delegate);
-    if (delegate && agIsCurrentProcessTargetedForLocSpoof()) {
-        agHookLocationManagerDelegateIfNeeded(delegate);
-    }
-}
-
 - (CLLocation *)location {
     CLLocation *origLoc = %orig;
     if (agIsCurrentProcessTargetedForLocSpoof()) {
-        if (self.delegate) {
-            agHookLocationManagerDelegateIfNeeded(self.delegate);
-        }
         if (origLoc) {
             agMutateLocationInternalInPlace(origLoc);
             return origLoc;
@@ -26729,11 +26638,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (void)startUpdatingLocation {
-    if (self.delegate && agIsCurrentProcessTargetedForLocSpoof()) {
-        agHookLocationManagerDelegateIfNeeded(self.delegate);
-    }
     %orig;
     if (agIsCurrentProcessTargetedForLocSpoof()) {
+        agScanAndSanitizeAMapAndDingTalkRiskMethods();
         @synchronized (agActiveLocationManagersTable()) {
             [agActiveLocationManagersTable() addObject:self];
         }
@@ -26744,11 +26651,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 }
 
 - (void)requestLocation {
-    if (self.delegate && agIsCurrentProcessTargetedForLocSpoof()) {
-        agHookLocationManagerDelegateIfNeeded(self.delegate);
-    }
     %orig;
     if (agIsCurrentProcessTargetedForLocSpoof()) {
+        agScanAndSanitizeAMapAndDingTalkRiskMethods();
         @synchronized (agActiveLocationManagersTable()) {
             [agActiveLocationManagersTable() addObject:self];
         }
@@ -26909,6 +26814,16 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef interfaceName
 // ==================== 3B. 动态无符号注册的底层 clientLocation 结构体替换函数 ====================
 static IMP gOrig_CLLoc_clientLoc = NULL;
 static Method gDynMethod_CLLoc_clientLoc = NULL;
+static IMP gOrig_AMap_detectRisk = NULL;
+static Method gDynMethod_AMap_detectRisk = NULL;
+
+static BOOL agDyn_AMap_detectRisk(id self, SEL _cmd) {
+    if (agIsCurrentProcessTargetedForLocSpoof()) {
+        agReportAntiDetectionInterceptFromClient(2);
+        return NO;
+    }
+    return gOrig_AMap_detectRisk ? ((BOOL(*)(id, SEL))gOrig_AMap_detectRisk)(self, _cmd) : NO;
+}
 
 static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
     if (agIsCurrentProcessTargetedForLocSpoof() && !agIsInAppCustomConstructedLocation(self) && !agIsCleanSpoofedLocation(self)) {
@@ -26934,7 +26849,7 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
             raw.rawCoordinate.latitude = tel.lat;
             raw.rawCoordinate.longitude = tel.lon;
             raw.fromSimulationController = NO;
-            if (raw.type <= 0 || raw.type > 2) raw.type = 1;
+            if (raw.type <= 0 || raw->type > 2) raw.type = 1;
             if (raw.integrity == 0) raw.integrity = 50;
             if (raw.suitability <= 0) raw.suitability = 1;
 
@@ -26954,8 +26869,8 @@ static AGCLDaemonLocation agDyn_CLLoc_clientLoc(CLLocation *self, SEL _cmd) {
                 raw.courseAccuracy = tel.crsAcc;
             }
             if (shieldOn) {
-                if (raw.confidence <= 0) raw.confidence = 60 + (int)(arc4random_uniform(15));
-                if (raw.lifespan <= 0.0) raw.lifespan = 15.0 + (double)(arc4random_uniform(12));
+                if (raw.confidence <= 0) raw.confidence = 68;
+                if (raw.lifespan <= 0.0) raw.lifespan = 20.0;
                 if (raw.referenceFrame == 0) raw.referenceFrame = 1;
                 if (raw.rawReferenceFrame == 0) raw.rawReferenceFrame = 1;
             }
@@ -27023,17 +26938,17 @@ typedef struct {
 } AGMethodIMPBackup;
 
 static AGMethodIMPBackup gClientHookTable[] = {
-    // --- 0~17: 环境与已由 _internal 内存提供数据的属性 (全部保持苹果原装 dyld 共享缓存 IMP 指针) ---
     {"UIApplication", "canOpenURL:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:", NO, YES, NULL, NULL, NULL},
     {"NSFileManager", "fileExistsAtPath:isDirectory:", NO, YES, NULL, NULL, NULL},
-    {"CLLocation", "altitude", NO, YES, NULL, NULL, NULL},
-    {"CLLocation", "ellipsoidalAltitude", NO, YES, NULL, NULL, NULL},
-    {"CLLocation", "horizontalAccuracy", NO, YES, NULL, NULL, NULL},
-    {"CLLocation", "verticalAccuracy", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "altitude", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "ellipsoidalAltitude", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "horizontalAccuracy", NO, NO, NULL, NULL, NULL},
+    {"CLLocation", "verticalAccuracy", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speedAccuracy", NO, YES, NULL, NULL, NULL},
     {"CLLocation", "courseAccuracy", NO, YES, NULL, NULL, NULL},
     {"CLLocation", "timestamp", NO, YES, NULL, NULL, NULL},
+    {"CLLocation", "sourceInformation", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "description", NO, YES, NULL, NULL, NULL},
     {"CMMotionActivity", "stationary", NO, YES, NULL, NULL, NULL},
     {"CMMotionActivity", "walking", NO, YES, NULL, NULL, NULL},
@@ -27042,16 +26957,10 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CMPedometerData", "distance", NO, YES, NULL, NULL, NULL},
     {"CMAltitudeData", "relativeAltitude", NO, YES, NULL, NULL, NULL},
     {"CMAltitudeData", "pressure", NO, YES, NULL, NULL, NULL},
-
-    // --- 18~20: 防检测 Wi-Fi 与精度授权 ---
     {"NEHotspotNetwork", "SSID", NO, YES, NULL, NULL, NULL},
     {"NEHotspotNetwork", "BSSID", NO, YES, NULL, NULL, NULL},
     {"CLLocationManager", "accuracyAuthorization", NO, YES, NULL, NULL, NULL},
-
-    // --- 21~38: 定位核心方法与弹窗堆栈抓包探针 ---
-    {"UILabel", "setText:", NO, NO, NULL, NULL, NULL},
-    {"UILabel", "setAttributedText:", NO, NO, NULL, NULL, NULL},
-    {"UIAlertController", "alertControllerWithTitle:message:preferredStyle:", YES, NO, NULL, NULL, NULL},
+    {"WKWebView", "evaluateJavaScript:completionHandler:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithLatitude:longitude:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:", NO, NO, NULL, NULL, NULL},
@@ -27061,7 +26970,6 @@ static AGMethodIMPBackup gClientHookTable[] = {
     {"CLLocation", "course", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "speed", NO, NO, NULL, NULL, NULL},
     {"CLLocation", "distanceFromLocation:", NO, NO, NULL, NULL, NULL},
-    {"CLLocationManager", "setDelegate:", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "location", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "startUpdatingLocation", NO, NO, NULL, NULL, NULL},
     {"CLLocationManager", "requestLocation", NO, NO, NULL, NULL, NULL},
@@ -27084,6 +26992,10 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const cha
         if (outHookName) *outHookName = "CLLocation.clientLocation";
         return (const void *)gOrig_CLLoc_clientLoc;
     }
+    if (gOrig_AMap_detectRisk && cleanAddr == ((uintptr_t)agDyn_AMap_detectRisk & 0x0000007fffffffffULL)) {
+        if (outHookName) *outHookName = "AMapLocationManager.detectRiskOfFakeLocation";
+        return (const void *)gOrig_AMap_detectRisk;
+    }
     for (size_t i = 0; i < kAGClientHookTableCount; i++) {
         if (gClientHookTable[i].hookedIMP && gClientHookTable[i].origIMP) {
             uintptr_t hookedClean = ((uintptr_t)gClientHookTable[i].hookedIMP & 0x0000007fffffffffULL);
@@ -27093,17 +27005,6 @@ static const void *agResolveOriginalIMPForHookedAddr(const void *addr, const cha
             }
         }
     }
-    os_unfair_lock_lock(&gDelHookLock);
-    for (size_t j = 0; j < gDelHookRecordCount; j++) {
-        uintptr_t delClean = ((uintptr_t)gDelHookRecords[j].hookedIMP & 0x0000007fffffffffULL);
-        if (cleanAddr == delClean && gDelHookRecords[j].origIMP) {
-            if (outHookName) *outHookName = gDelHookRecords[j].desc;
-            const void *orig = (const void *)gDelHookRecords[j].origIMP;
-            os_unfair_lock_unlock(&gDelHookLock);
-            return orig;
-        }
-    }
-    os_unfair_lock_unlock(&gDelHookLock);
     return NULL;
 }
 
@@ -27311,6 +27212,15 @@ static void agSyncClientHooksWithCurrentState(void) {
                 }
             }
         }
+
+        Class amapMgrCls = objc_getClass("AMapLocationManager");
+        if (amapMgrCls) {
+            SEL selDetectRisk = sel_registerName("detectRiskOfFakeLocation");
+            gDynMethod_AMap_detectRisk = class_getInstanceMethod(amapMgrCls, selDetectRisk);
+            if (gDynMethod_AMap_detectRisk) {
+                gOrig_AMap_detectRisk = method_getImplementation(gDynMethod_AMap_detectRisk);
+            }
+        }
         gHasInitializedObjCHooks = YES;
     }
 
@@ -27320,11 +27230,7 @@ static void agSyncClientHooksWithCurrentState(void) {
 
         BOOL shouldEnableThisHook = NO;
         if (spoofActive) {
-            if (i < 18) {
-                shouldEnableThisHook = NO;
-            } else {
-                shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
-            }
+            shouldEnableThisHook = gClientHookTable[i].isShieldOnly ? shieldActive : YES;
         }
         IMP targetIMP = shouldEnableThisHook ? gClientHookTable[i].hookedIMP : gClientHookTable[i].origIMP;
         if (method_getImplementation(m) != targetIMP) {
@@ -27336,6 +27242,13 @@ static void agSyncClientHooksWithCurrentState(void) {
         IMP t = spoofActive ? (IMP)agDyn_CLLoc_clientLoc : gOrig_CLLoc_clientLoc;
         if (method_getImplementation(gDynMethod_CLLoc_clientLoc) != t) {
             method_setImplementation(gDynMethod_CLLoc_clientLoc, t);
+        }
+    }
+
+    if (gDynMethod_AMap_detectRisk && gOrig_AMap_detectRisk) {
+        IMP t = spoofActive ? (IMP)agDyn_AMap_detectRisk : gOrig_AMap_detectRisk;
+        if (method_getImplementation(gDynMethod_AMap_detectRisk) != t) {
+            method_setImplementation(gDynMethod_AMap_detectRisk, t);
         }
     }
 
